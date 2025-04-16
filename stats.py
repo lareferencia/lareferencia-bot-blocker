@@ -27,8 +27,8 @@ def main():
         help='Ruta del archivo de log a analizar.'
     )
     parser.add_argument(
-        '--start-date', '-s', required=True,
-        help='Fecha a partir de la cual se analiza el log. Formato: dd/mmm/yyyy:HH:MM:SS (ej. 16/Apr/2025:13:16:50)'
+        '--start-date', '-s', required=False, default=None,
+        help='Fecha a partir de la cual se analiza el log. Formato: dd/mmm/yyyy:HH:MM:SS (ej. 16/Apr/2025:13:16:50). Si no se proporciona, analiza todos los registros.'
     )
     parser.add_argument(
         '--threshold', '-t', type=float, default=100,
@@ -36,12 +36,16 @@ def main():
     )
     args = parser.parse_args()
 
-    # Intentar parsear la fecha de inicio proporcionada
-    try:
-        start_date = datetime.strptime(args.start_date, '%d/%b/%Y:%H:%M:%S')
-    except ValueError:
-        print("Error: Fecha inválida. Use el formato dd/mmm/yyyy:HH:MM:SS (ej. 16/Apr/2025:13:16:50)")
-        return
+    # Definir start_date como None por defecto (analizar todo)
+    start_date = None
+    
+    # Intentar parsear la fecha de inicio solo si fue proporcionada
+    if args.start_date:
+        try:
+            start_date = datetime.strptime(args.start_date, '%d/%b/%Y:%H:%M:%S')
+        except ValueError:
+            print("Error: Fecha inválida. Use el formato dd/mmm/yyyy:HH:MM:SS (ej. 16/Apr/2025:13:16:50)")
+            return
 
     # Diccionario para acumular datos por IP
     ip_data = defaultdict(lambda: {'times': [], 'urls': [], 'useragents': []})
@@ -58,8 +62,8 @@ def main():
                     dt = datetime.strptime(dt_str, '%d/%b/%Y:%H:%M:%S')
                 except ValueError:
                     continue  # Saltar entradas con fecha mal formateada
-                # Filtrar las entradas anteriores a la fecha indicada
-                if dt < start_date:
+                # Filtrar las entradas anteriores a la fecha indicada solo si se proporcionó una fecha
+                if start_date and dt < start_date:
                     continue
                 ip = data['ip']
                 ip_data[ip]['times'].append(dt)
