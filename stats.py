@@ -171,7 +171,7 @@ def main():
             })
     
     # Agregar IPs individuales como amenazas separadas
-    for subnet, ip_infos in subnet_data.items():
+    for subnet, ip_infos in subnet_data.items(): 
         if len(ip_infos) == 1:  # Es una IP individual
             ip_info = ip_infos[0]
             unified_threats.append({
@@ -238,6 +238,44 @@ def main():
             
             if threat['has_suspicious_ua']:
                 print(f"  • User-Agent sospechoso: {threat['suspicious_ua']}")
+    
+    # Generar lista de subredes enmascaradas para firewall
+    print("\n\n=== LISTA DE REGLAS PARA FIREWALL ===")
+    print("# Copie estas reglas para bloquear las amenazas detectadas")
+    
+    # Recopilar subredes y IPs únicas
+    firewall_rules = []
+    
+    # Procesar todas las amenazas
+    for threat in sorted_threats:
+        if threat['type'] == 'subnet':
+            subnet = threat['id']
+            # Agregar la subred con máscara /16 (para los dos primeros octetos)
+            firewall_rules.append(f"{subnet}.0.0/16")
+        else:  # threat['type'] == 'ip'
+            # Para IPs individuales, usar máscara /32
+            firewall_rules.append(f"{threat['id']}/32")
+    
+    # Eliminar duplicados y ordenar
+    firewall_rules = sorted(set(firewall_rules))
+    
+    # Mostrar las reglas
+    print("\n# Bloques de subred (CIDR):")
+    for rule in firewall_rules:
+        print(rule)
+    
+    # Mostrar ejemplos de cómo usar estas reglas en diferentes firewalls
+    print("\n# Ejemplo para iptables (Linux):")
+    for rule in firewall_rules[:3]:  # Mostrar solo algunos ejemplos
+        print(f"iptables -A INPUT -s {rule} -j DROP")
+    if len(firewall_rules) > 3:
+        print("# ... y más reglas similares para las otras subredes/IPs")
+    
+    print("\n# Ejemplo para Cisco ASA:")
+    for rule in firewall_rules[:3]:  # Mostrar solo algunos ejemplos
+        print(f"access-list BLOCK_THREATS deny ip {rule} any")
+    if len(firewall_rules) > 3:
+        print("# ... y más reglas similares para las otras subredes/IPs")
 
 if __name__ == '__main__':
     main()
