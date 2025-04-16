@@ -60,6 +60,10 @@ def main():
         '--threshold', '-t', type=float, default=100,
         help='Umbral de peticiones por minuto para generar alerta (default: 100).'
     )
+    parser.add_argument(
+        '--top', '-n', type=int, default=10,
+        help='Número de subredes más peligrosas a mostrar (default: 10).'
+    )
     args = parser.parse_args()
 
     # Definir start_date como None por defecto (analizar todo)
@@ -146,7 +150,7 @@ def main():
             })
     
     # Mostrar resultados agrupados por subred y ordenados por peligrosidad
-    print("\n=== RESULTADOS AGRUPADOS POR SUBRED ===\n")
+    print(f"\n=== TOP {min(args.top, len(sorted_subnets))} SUBREDES MÁS PELIGROSAS ===\n")
     
     # Ordenar subredes por la suma de peligrosidad de sus IPs
     sorted_subnets = sorted(
@@ -155,7 +159,10 @@ def main():
         reverse=True
     )
     
-    for subnet, ip_infos in sorted_subnets:
+    # Tomar solo las primeras 'top' subredes más peligrosas
+    top_subnets = sorted_subnets[:args.top]
+    
+    for subnet, ip_infos in top_subnets:
         # Ordenar IPs dentro de esta subred por peligrosidad
         sorted_ips = sorted(ip_infos, key=lambda x: x['danger_score'], reverse=True)
         
