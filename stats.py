@@ -1,52 +1,81 @@
 #!/usr/bin/env python3
+"""
+Script principal para análisis de logs y detección de amenazas de bots.
+Detecta patrones sospechosos y puede bloquear IPs mediante UFW.
+
+Uso:
+    python stats.py -f /ruta/a/archivo.log [opciones]
+"""
 import argparse
 import re
-from datetime import datetime
-from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+import sys
+import os
+import logging
+import ipaddress
 
-def parse_log_line(line):
+# Importar módulos propios
+from log_parser import parse_log_line, get_subnet, is_ip_in_whitelist
+from ufw_handler import UFWManager
+from threat_analyzer import ThreatAnalyzer
+
+# Configuración de logging
+LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+
+def setup_logging(log_file=None, log_level=logging.INFO):
     """
-    Extrae los campos clave de una línea del log usando expresión regular.
-    Se asume que el log sigue el formato extendido (CLF extendido).
+    Configura el sistema de logging.
+    
+    Args:
+        log_file (str, optional): Ruta al archivo de log
+        log_level (int): Nivel de logging
     """
-    log_pattern = re.compile(
-        r'(?P<ip>\S+) \S+ \S+ \[(?P<datetime>[^\]]+)\] "(?P<request>[^"]+)" '
-        r'(?P<status>\d{3}) (?P<size>\S+) "(?P<referer>[^"]+)" "(?P<useragent>[^"]+)"'
+    handlers = []
+    
+    # Siempre añadir handler de consola
+    console = logging.StreamHandler()
+    console.setLevel(log_level)
+    console.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
+    handlers.append(console)
+    
+    # Añadir handler de archivo si se especifica
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
+        handlers.append(file_handler)
+    
+    # Configurar logger raíz
+    logging.basicConfig(
+        level=log_level,
+        format=LOG_FORMAT,
+        datefmt=LOG_DATE_FORMAT,
+        handlers=handlers
     )
-    match = log_pattern.search(line)
-    if match:
-        return match.groupdict()
+
+def calculate_start_date(time_window):
+    """
+    Calcula la fecha de inicio según la ventana de tiempo especificada.
+    
+    Args:
+        time_window (str): 'hour', 'day', o 'week'
+    
+    Returns:
+        datetime: Objeto datetime correspondiente a la fecha de inicio
+    """
+    now = datetime.now()
+    if time_window == 'hour':
+        return now - timedelta(hours=1)
+    elif time_window == 'day':
+        return now - timedelta(days=1)
+    elif time_window == 'week':
+        return now - timedelta(weeks=1)
     return None
-
-def get_subnet(ip):
-    """
-    Extrae los dos primeros octetos de la dirección IP para determinar la subred.
-    """
-    octets = ip.split('.')
-    if len(octets) >= 2:
-        return '.'.join(octets[:2])
-    return ip  # En caso de formato IP no estándar, devuelve la IP completa
-
-def calculate_danger_score(rpm, total_requests, has_suspicious_ua):
-    """
-    Calcula una puntuación de peligrosidad basada en el RPM, total de solicitudes
-    y si tiene un user-agent sospechoso.
-    """
-    # Factor base es el RPM normalizado por el umbral
-    score = rpm / 100
-    
-    # Factores adicionales
-    if has_suspicious_ua:
-        score *= 1.5  # Incremento por user-agent sospechoso
-    
-    # Número total de solicitudes también aumenta la peligrosidad
-    score += total_requests / 1000
-    
-    return score
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Analiza un archivo de log y genera estadísticas a partir de una fecha dada.'
+        description='Analiza un archivo de log, genera estadísticas y opcionalmente bloquea amenazas con UFW.'
     )
     parser.add_argument(
         '--file', '-f', required=True,
@@ -57,225 +86,197 @@ def main():
         help='Fecha a partir de la cual se analiza el log. Formato: dd/mmm/yyyy:HH:MM:SS (ej. 16/Apr/2025:13:16:50). Si no se proporciona, analiza todos los registros.'
     )
     parser.add_argument(
+        '--time-window', '-tw', required=False,
+        choices=['hour', 'day', 'week'],
+        help='Analizar solo entradas de la última hora, día o semana.'
+    )
+    parser.add_argument(
         '--threshold', '-t', type=float, default=100,
-        help='Umbral de peticiones por minuto para generar alerta (default: 100).'
+        help='Umbral de peticiones por minuto (RPM) para considerar una IP sospechosa (default: 100).'
     )
     parser.add_argument(
         '--top', '-n', type=int, default=10,
-        help='Número de subredes más peligrosas a mostrar (default: 10).'
+        help='Número de amenazas más peligrosas a mostrar (default: 10).'
+    )
+    parser.add_argument(
+        '--block', action='store_true',
+        help='Activar el bloqueo de amenazas detectadas usando UFW.'
+    )
+    parser.add_argument(
+        '--block-threshold', type=int, default=10,
+        help='Umbral de *peticiones totales* en el periodo analizado para activar el bloqueo UFW (default: 10).'
+    )
+    parser.add_argument(
+        '--block-duration', type=int, default=60,
+        help='Duración del bloqueo UFW en minutos (default: 60).'
+    )
+    parser.add_argument(
+        '--dry-run', action='store_true',
+        help='Mostrar los comandos UFW que se ejecutarían, pero no ejecutarlos.'
+    )
+    parser.add_argument(
+        '--whitelist', '-w',
+        help='Archivo con lista de IPs o subredes que nunca deben ser bloqueadas (una por línea).'
+    )
+    parser.add_argument(
+        '--output', '-o',
+        help='Archivo para guardar los resultados del análisis.'
+    )
+    parser.add_argument(
+        '--format',
+        choices=['json', 'csv', 'text'],
+        default='text',
+        help='Formato de salida cuando se usa --output (default: text).'
+    )
+    parser.add_argument(
+        '--log-file',
+        help='Archivo donde guardar los logs de ejecución.'
+    )
+    parser.add_argument(
+        '--log-level',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        default='INFO',
+        help='Nivel de detalle de los logs (default: INFO).'
+    )
+    parser.add_argument(
+        '--chunk-size', type=int, default=10000,
+        help='Tamaño del fragmento para procesar logs grandes (default: 10000, 0 para no fragmentar).'
+    )
+    parser.add_argument(
+        '--clean-rules', action='store_true',
+        help='Ejecutar limpieza de reglas UFW expiradas y salir.'
     )
     args = parser.parse_args()
 
-    # Definir start_date como None por defecto (analizar todo)
+    # Configurar logging
+    log_level = getattr(logging, args.log_level)
+    setup_logging(args.log_file, log_level)
+    logger = logging.getLogger('botstats.main')
+    
+    # Si solo queremos limpiar reglas, hacerlo y salir
+    if args.clean_rules:
+        logger.info("Iniciando limpieza de reglas UFW expiradas...")
+        ufw = UFWManager(args.dry_run)
+        count = ufw.clean_expired_rules()
+        logger.info(f"Limpieza finalizada. {count} reglas eliminadas.")
+        return
+    
+    # Validar archivo de log
+    if not os.path.exists(args.file):
+        logger.error(f"Error: No se encontró el archivo {args.file}")
+        sys.exit(1)
+        
+    # Definir start_date
     start_date = None
     
-    # Intentar parsear la fecha de inicio solo si fue proporcionada
-    if args.start_date:
+    # Priorizar --time-window sobre --start-date si ambos están presentes
+    if args.time_window:
+        start_date = calculate_start_date(args.time_window)
+        logger.info(f"Usando ventana de tiempo: {args.time_window} (desde {start_date})")
+    elif args.start_date:
         try:
             start_date = datetime.strptime(args.start_date, '%d/%b/%Y:%H:%M:%S')
+            logger.info(f"Usando fecha de inicio: {start_date}")
         except ValueError:
-            print("Error: Fecha inválida. Use el formato dd/mmm/yyyy:HH:MM:SS (ej. 16/Apr/2025:13:16:50)")
-            return
-
-    # Diccionario para acumular datos por IP
-    ip_data = defaultdict(lambda: {'times': [], 'urls': [], 'useragents': []})
-
+            logger.error("Error: Fecha inválida. Use el formato dd/mmm/yyyy:HH:MM:SS (ej. 16/Apr/2025:13:16:50)")
+            sys.exit(1)
+    
+    # Inicializar analizador
+    analyzer = ThreatAnalyzer(rpm_threshold=args.threshold)
+    
+    # Cargar lista blanca si se especificó
+    whitelist_count = 0
+    if args.whitelist:
+        whitelist_count = analyzer.load_whitelist_from_file(args.whitelist)
+        if whitelist_count == 0:
+            logger.warning(f"No se pudieron cargar entradas de la lista blanca desde {args.whitelist}")
+    
+    # Analizar archivo de log
+    logger.info(f"Iniciando análisis de {args.file}...")
     try:
-        with open(args.file, 'r') as f:
-            for line in f:
-                data = parse_log_line(line)
-                if data is None:
-                    continue  # Línea que no coincide con el patrón esperado
-                # Obtener la fecha y hora del log. Se asume que el timezone viene después y se omite.
-                dt_str = data['datetime'].split()[0]
-                try:
-                    dt = datetime.strptime(dt_str, '%d/%b/%Y:%H:%M:%S')
-                except ValueError:
-                    continue  # Saltar entradas con fecha mal formateada
-                # Filtrar las entradas anteriores a la fecha indicada solo si se proporcionó una fecha
-                if start_date and dt < start_date:
-                    continue
-                ip = data['ip']
-                ip_data[ip]['times'].append(dt)
-                ip_data[ip]['urls'].append(data['request'])
-                ip_data[ip]['useragents'].append(data['useragent'])
-    except FileNotFoundError:
-        print(f"Error: No se encontró el archivo {args.file}")
-        return
-
-    # Estructura para agrupar por subred
-    subnet_data = defaultdict(list)
+        analyzer.analyze_log_file(args.file, start_date, args.chunk_size)
+    except Exception as e:
+        logger.error(f"Error analizando archivo de log: {e}")
+        sys.exit(1)
     
-    # Análisis y generación de alertas basadas en la frecuencia y en user-agent
-    suspicious_ips = []
-    for ip, info in ip_data.items():
-        times = sorted(info['times'])
-        total_requests = len(times)
-        if total_requests < 2:
-            continue  # No es posible calcular intervalos de tiempo si hay menos de dos solicitudes.
-        
-        # Calcular el intervalo total (en segundos) entre la primera y la última petición de la IP
-        time_span = (times[-1] - times[0]).total_seconds()
-        # Calcular peticiones por minuto
-        rpm = (total_requests / (time_span / 60)) if time_span > 0 else total_requests
-
-        # Verificar si hay user-agent sospechoso
-        has_suspicious_ua = False
-        suspicious_ua = ""
-        for ua in info['useragents']:
-            if "bot" in ua.lower() or "crawl" in ua.lower():
-                has_suspicious_ua = True
-                suspicious_ua = ua
-                break
-        
-        # Determinar si esta IP es sospechosa
-        is_suspicious = rpm > args.threshold or has_suspicious_ua
-        
-        if is_suspicious:
-            # Calcular peligrosidad
-            danger_score = calculate_danger_score(rpm, total_requests, has_suspicious_ua)
-            
-            # Obtener la subred
-            subnet = get_subnet(ip)
-            
-            # Guardar datos para análisis agrupado
-            subnet_data[subnet].append({
-                'ip': ip,
-                'rpm': rpm,
-                'total_requests': total_requests,
-                'time_span': time_span,
-                'has_suspicious_ua': has_suspicious_ua,
-                'suspicious_ua': suspicious_ua,
-                'danger_score': danger_score
-            })
+    # Identificar amenazas
+    threats = analyzer.identify_threats()
     
-    # Calcular la puntuación total de peligrosidad para cada subred
-    subnet_total_scores = {}
-    subnet_ip_count = {}
-    for subnet, ip_infos in subnet_data.items():
-        subnet_total_scores[subnet] = sum(ip_info['danger_score'] for ip_info in ip_infos)
-        subnet_ip_count[subnet] = len(ip_infos)
+    # Verificar si hay amenazas
+    if not threats:
+        logger.info("No se encontraron amenazas sospechosas según los criterios especificados.")
+        if args.block:
+            logger.info("No se ejecutaron acciones de bloqueo.")
+        sys.exit(0)
     
-    # Crear una lista unificada de amenazas (tanto IPs individuales como subredes)
-    unified_threats = []
+    # Inicializar UFW manager si se requiere bloqueo
+    ufw = None
+    if args.block:
+        ufw = UFWManager(args.dry_run)
     
-    # Agregar amenazas de subredes con múltiples IPs
-    for subnet, ip_infos in subnet_data.items():
-        if len(ip_infos) > 1:  # Es una subred con múltiples IPs
-            unified_threats.append({
-                'type': 'subnet',
-                'id': subnet,
-                'danger_score': subnet_total_scores[subnet],
-                'ip_count': len(ip_infos),
-                'details': ip_infos
-            })
-    
-    # Agregar IPs individuales como amenazas separadas
-    for subnet, ip_infos in subnet_data.items(): 
-        if len(ip_infos) == 1:  # Es una IP individual
-            ip_info = ip_infos[0]
-            unified_threats.append({
-                'type': 'ip',
-                'id': ip_info['ip'],
-                'danger_score': ip_info['danger_score'],
-                'rpm': ip_info['rpm'],
-                'total_requests': ip_info['total_requests'],
-                'time_span': ip_info['time_span'],
-                'has_suspicious_ua': ip_info['has_suspicious_ua'],
-                'suspicious_ua': ip_info['suspicious_ua'] if ip_info['has_suspicious_ua'] else ""
-            })
-    
-    # Ordenar la lista unificada por peligrosidad
-    sorted_threats = sorted(unified_threats, key=lambda x: x['danger_score'], reverse=True)
-    
-    # Comprobar si hay amenazas para mostrar
-    if not sorted_threats:
-        print("\nNo se encontraron amenazas sospechosas según los criterios especificados.")
-        return
-    
-    # Mostrar resultados ordenados por peligrosidad
-    top_count = min(args.top, len(sorted_threats))
-    print(f"\n=== TOP {top_count} AMENAZAS MÁS PELIGROSAS ===\n")
-    
-    # Tomar solo las primeras 'top' amenazas
-    top_threats = sorted_threats[:args.top]
-    
-    for i, threat in enumerate(top_threats, 1):
-        if threat['type'] == 'subnet':
-            subnet = threat['id']
-            danger_score = threat['danger_score']
-            ip_count = threat['ip_count']
-            
-            print(f"\n#{i} Subred: {subnet}.* - Peligrosidad total: {danger_score:.2f} ({ip_count} IPs sospechosas)")
-            
-            # Mostrar las IPs más peligrosas de esta subred
-            sorted_ips = sorted(threat['details'], key=lambda x: x['danger_score'], reverse=True)
-            for ip_info in sorted_ips[:5]:  # Mostrar hasta 5 IPs por subred para no sobrecargar la salida
-                ip = ip_info['ip']
-                rpm = ip_info['rpm']
-                total_requests = ip_info['total_requests']
-                time_span = ip_info['time_span']
-                danger_score = ip_info['danger_score']
-                
-                print(f"[ALERTA] IP: {ip} - Peligrosidad: {danger_score:.2f}")
-                print(f"  • {total_requests} solicitudes en {time_span:.2f} segundos (~{rpm:.2f} rpm)")
-                
-                if ip_info['has_suspicious_ua']:
-                    print(f"  • User-Agent sospechoso: {ip_info['suspicious_ua']}")
-            
-            if len(sorted_ips) > 5:
-                print(f"  ... y {len(sorted_ips) - 5} IPs más en esta subred")
-                
-        else:  # threat['type'] == 'ip'
-            ip = threat['id']
-            danger_score = threat['danger_score']
-            rpm = threat['rpm']
+    # Bloquear amenazas si se activó la opción
+    blocked_targets = set()
+    if args.block:
+        for threat in threats:
+            target = threat['id']
             total_requests = threat['total_requests']
-            time_span = threat['time_span']
-            
-            print(f"\n#{i} IP individual: {ip} - Peligrosidad: {danger_score:.2f}")
-            print(f"  • {total_requests} solicitudes en {time_span:.2f} segundos (~{rpm:.2f} rpm)")
-            
-            if threat['has_suspicious_ua']:
-                print(f"  • User-Agent sospechoso: {threat['suspicious_ua']}")
+            # Verificar umbral para bloqueo
+            should_block = total_requests >= args.block_threshold
+            if should_block and target not in blocked_targets:
+                if ufw.block_target(target, args.block_duration):
+                    blocked_targets.add(target)
     
-    # Generar lista de subredes enmascaradas para firewall
-    print("\n\n=== LISTA DE REGLAS PARA FIREWALL ===")
-    print("# Copie estas reglas para bloquear las amenazas detectadas")
-    
-    # Recopilar subredes y IPs únicas
-    firewall_rules = []
-    
-    # Procesar todas las amenazas
-    for threat in sorted_threats:
+    # Mostrar resultados en consola
+    top_count = min(args.top, len(threats))
+    print(f"\n=== TOP {top_count} AMENAZAS MÁS PELIGROSAS DETECTADAS ===")
+    if args.block:
+        action = "Bloqueadas" if not args.dry_run else "[DRY RUN] Marcadas para bloquear"
+        print(f"--- {action} según --block-threshold={args.block_threshold} peticiones totales y --block-duration={args.block_duration} min ---")
+
+    # Tomar solo las primeras 'top' amenazas para el reporte detallado
+    top_threats_report = threats[:top_count]
+
+    for i, threat in enumerate(top_threats_report, 1):
+        target_id_str = str(threat['id'])
         if threat['type'] == 'subnet':
-            subnet = threat['id']
-            # Agregar la subred con máscara /16 (para los dos primeros octetos)
-            firewall_rules.append(f"{subnet}.0.0/16")
+            print(f"\n#{i} Subred: {target_id_str} - Peligrosidad total: {threat['danger_score']:.2f} ({threat['ip_count']} IPs, {threat['total_requests']} reqs)")
+            # Mostrar detalles de las IPs más peligrosas dentro de la subred
+            for ip_detail in threat['details'][:3]:  # Mostrar hasta 3 IPs
+                rpm_str = f"~{ip_detail['rpm']:.2f} rpm" if ip_detail['is_suspicious_by_rpm'] else "RPM bajo umbral"
+                ua_str = f" | UA: {ip_detail['suspicious_ua']}" if ip_detail['has_suspicious_ua'] else ""
+                print(f"  -> IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, Peligro: {ip_detail['danger_score']:.2f}, {rpm_str}{ua_str})")
+            if threat['ip_count'] > 3:
+                print(f"  ... y {threat['ip_count'] - 3} IPs más en esta subred.")
         else:  # threat['type'] == 'ip'
-            # Para IPs individuales, usar máscara /32
-            firewall_rules.append(f"{threat['id']}/32")
+            rpm_str = f"~{threat['rpm']:.2f} rpm" if threat['is_suspicious_by_rpm'] else "RPM bajo umbral"
+            ua_str = f" | UA: {threat['suspicious_ua']}" if threat['has_suspicious_ua'] else ""
+            print(f"\n#{i} IP: {target_id_str} - Peligrosidad: {threat['danger_score']:.2f} ({threat['total_requests']} reqs, {rpm_str}{ua_str})")
+
+        # Indicar si esta amenaza específica fue bloqueada
+        if args.block and threat['id'] in blocked_targets:
+            block_status = "[BLOQUEADA]" if not args.dry_run else "[DRY RUN - BLOQUEAR]"
+            print(f"  {block_status}")
     
-    # Eliminar duplicados y ordenar
-    firewall_rules = sorted(set(firewall_rules))
+    # Exportar resultados si se especificó
+    if args.output:
+        if analyzer.export_results(args.format, args.output):
+            logger.info(f"Resultados exportados a {args.output} en formato {args.format}")
+        else:
+            logger.error(f"Error exportando resultados a {args.output}")
     
-    # Mostrar las reglas
-    print("\n# Bloques de subred (CIDR):")
-    for rule in firewall_rules:
-        print(rule)
-    
-    # Mostrar ejemplos de cómo usar estas reglas en diferentes firewalls
-    print("\n# Ejemplo para iptables (Linux):")
-    for rule in firewall_rules[:3]:  # Mostrar solo algunos ejemplos
-        print(f"iptables -A INPUT -s {rule} -j DROP")
-    if len(firewall_rules) > 3:
-        print("# ... y más reglas similares para las otras subredes/IPs")
-    
-    print("\n# Ejemplo para Cisco ASA:")
-    for rule in firewall_rules[:3]:  # Mostrar solo algunos ejemplos
-        print(f"access-list BLOCK_THREATS deny ip {rule} any")
-    if len(firewall_rules) > 3:
-        print("# ... y más reglas similares para las otras subredes/IPs")
+    # Ejecutar limpieza de reglas expiradas
+    if args.block:
+        logger.info("Ejecutando limpieza de reglas UFW expiradas...")
+        if ufw:
+            count = ufw.clean_expired_rules()
+            if count > 0:
+                logger.info(f"Limpieza finalizada. {count} reglas eliminadas.")
+
+    # Mostrar resumen final
+    print(f"\nAnálisis completado. {len(blocked_targets)} objetivos únicos {'bloqueados' if not args.dry_run else 'marcados para bloquear'} en esta ejecución.")
+    print(f"De un total de {len(threats)} amenazas detectadas.")
+    if args.block:
+        print(f"Use --clean-rules para eliminar reglas expiradas en el futuro.")
 
 if __name__ == '__main__':
     main()
