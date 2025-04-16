@@ -149,24 +149,36 @@ def main():
                 'danger_score': danger_score
             })
     
-    # Ordenar subredes por la suma de peligrosidad de sus IPs
+    # Calcular la puntuación total de peligrosidad para cada subred
+    subnet_total_scores = {}
+    for subnet, ip_infos in subnet_data.items():
+        subnet_total_scores[subnet] = sum(ip_info['danger_score'] for ip_info in ip_infos)
+    
+    # Ordenar subredes por su puntuación total de peligrosidad
     sorted_subnets = sorted(
         subnet_data.items(),
-        key=lambda x: sum(ip_info['danger_score'] for ip_info in x[1]),
+        key=lambda x: subnet_total_scores[x[0]],
         reverse=True
     )
     
+    # Comprobar si hay subredes para mostrar
+    if not sorted_subnets:
+        print("\nNo se encontraron subredes sospechosas según los criterios especificados.")
+        return
+        
     # Mostrar resultados agrupados por subred y ordenados por peligrosidad
-    print(f"\n=== TOP {min(args.top, len(sorted_subnets))} SUBREDES MÁS PELIGROSAS ===\n")
+    top_count = min(args.top, len(sorted_subnets))
+    print(f"\n=== TOP {top_count} SUBREDES MÁS PELIGROSAS ===\n")
     
     # Tomar solo las primeras 'top' subredes más peligrosas
     top_subnets = sorted_subnets[:args.top]
     
-    for subnet, ip_infos in top_subnets:
+    for i, (subnet, ip_infos) in enumerate(top_subnets, 1):
         # Ordenar IPs dentro de esta subred por peligrosidad
         sorted_ips = sorted(ip_infos, key=lambda x: x['danger_score'], reverse=True)
+        total_score = subnet_total_scores[subnet]
         
-        print(f"\n== Subred: {subnet}.* ({len(sorted_ips)} IPs sospechosas) ==")
+        print(f"\n#{i} Subred: {subnet}.* - Peligrosidad total: {total_score:.2f} ({len(sorted_ips)} IPs sospechosas)")
         
         for ip_info in sorted_ips:
             ip = ip_info['ip']
