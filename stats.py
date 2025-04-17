@@ -12,7 +12,7 @@ import ipaddress
 import pandas as pd
 
 # Import own modules
-from log_parser import parse_log_line, get_subnet, is_ip_in_whitelist
+from log_parser import get_subnet, is_ip_in_whitelist
 from ufw_handler import UFWManager
 from threat_analyzer import ThreatAnalyzer
 
