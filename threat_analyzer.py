@@ -172,12 +172,12 @@ class ThreatAnalyzer:
             logger.info(f"Finished processing. Analyzed {total_processed} log entries within the specified time frame.")
             return total_processed
             
-         except FileNotFoundError:
-             logger.error(f"File not found {log_file}")
-             raise
-         except Exception as e:
-             logger.error(f"Error processing log file {log_file}: {e}")
-             raise
+        except FileNotFoundError:
+            logger.error(f"File not found {log_file}")
+            raise
+        except Exception as e:
+            logger.error(f"Error processing log file {log_file}: {e}")
+            raise
     
     def identify_threats(self):
         """
