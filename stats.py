@@ -153,9 +153,10 @@ def main():
         ufw = UFWManager(args.dry_run) # Dry run still applies if specified
         count = ufw.clean_expired_rules()
         logger.info(f"Cleanup completed. {count} rules deleted.")
-        return # Exit after cleaning
+        return # Ensure this is correctly indented and nothing follows unexpectedly
 
     # Now, if not cleaning rules, --file becomes mandatory
+    # Ensure this block starts at the same indentation level as the 'if args.clean_rules:' line
     if not args.file:
         parser.error("the following arguments are required: --file/-f (unless --clean-rules is used)")
         # Although parser.error usually exits, adding sys.exit for clarity
