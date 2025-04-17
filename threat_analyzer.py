@@ -186,7 +186,7 @@ class ThreatAnalyzer:
         Returns:
             list: List of detected threats, primarily representing subnets.
         """
-        MIN_DURATION_FOR_RPM_SIGNIFICANCE = 2 # Minimum duration in seconds for RPM to be considered significant
+        MIN_DURATION_FOR_RPM_SIGNIFICANCE = 5 # Minimum duration in seconds for RPM to be considered significant
 
         # Step 1: Group all IPs by subnet and calculate individual metrics
         subnet_details = defaultdict(lambda: {'ips': {}, 'total_requests': 0})
@@ -252,6 +252,17 @@ class ThreatAnalyzer:
             subnet_total_danger = sum(info['danger_score'] for info in ips_in_subnet)
             subnet_ip_count = len(ips_in_subnet)
             
+            # Calculate aggregate time span and RPM for the subnet
+            subnet_rpm = 0
+            subnet_time_span = 0
+            all_times = [t for ip_info in ips_in_subnet for t in (ip_info.get('first_seen'), ip_info.get('last_seen')) if t]
+            if len(all_times) >= 2:
+                first_subnet_time = min(all_times)
+                last_subnet_time = max(all_times)
+                subnet_time_span = (last_subnet_time - first_subnet_time).total_seconds()
+                if subnet_time_span > 0:
+                    subnet_rpm = (subnet_total_requests / (subnet_time_span / 60))
+
             # Always create a subnet-type threat
             # Only include subnets where at least one IP was suspicious by RPM OR total requests are high?
             # Let's include if total danger > 0, meaning at least some activity was logged.
@@ -261,6 +272,8 @@ class ThreatAnalyzer:
                     'id': subnet, # Keep the network object as ID
                     'danger_score': subnet_total_danger,
                     'total_requests': subnet_total_requests,
+                    'subnet_rpm': subnet_rpm, # Add aggregate RPM
+                    'subnet_time_span': subnet_time_span, # Add aggregate time span
                     'ip_count': subnet_ip_count,
                     # Sort IPs within the subnet details by their individual danger score
                     'details': sorted(ips_in_subnet, key=lambda x: x['danger_score'], reverse=True)
