@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 import ipaddress
 import logging
+import math # <--- Add this import
 
 # Logger for this module
 logger = logging.getLogger('botstats.parser')
@@ -154,10 +155,6 @@ def calculate_danger_score(rpm, total_requests, time_span=0, min_duration=5):
         score += request_score
     elif total_requests == 1:
         score += 0.1 # Very small score for single requests
-
-    # Bonus for suspicious User Agent (Removed)
-    # if has_suspicious_ua:
-    #    score *= 1.5 # Increase score by 50%
 
     # Ensure score is not negative
     return max(0, score)
