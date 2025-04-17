@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Módulo para manejar interacciones con el firewall UFW.
-Permite bloquear IPs/subredes y limpiar reglas expiradas.
+Module for handling interactions with the UFW firewall.
+Allows blocking IPs/subnets and cleaning expired rules.
 """
 import re
 import subprocess
@@ -10,35 +10,35 @@ from datetime import datetime, timezone, timedelta
 import ipaddress
 import logging
 
-# Logger para este módulo
+# Logger for this module
 logger = logging.getLogger('botstats.ufw')
 
-# Expresión regular para detectar reglas UFW con timestamp de expiración
+# Regular expression to detect UFW rules with expiration timestamp
 RULE_STATUS_REGEX = re.compile(
     r"\[\s*(\d+)\].*(?:ALLOW|DENY)\s+IN\s+FROM\s+(\S+).*\s#\s*blocked_by_stats_py_until_(\d{8}T\d{6}Z)"
 )
 
 class UFWManager:
     """
-    Clase para manejar operaciones con UFW de manera más encapsulada.
+    Class for handling UFW operations in a more encapsulated way.
     """
     
     def __init__(self, dry_run=False):
         """
-        Inicializa el manejador de UFW.
+        Initializes the UFW handler.
         
         Args:
-            dry_run (bool): Si es True, muestra pero no ejecuta los comandos
+            dry_run (bool): If True, shows but does not execute the commands
         """
         self.dry_run = dry_run
         self._check_ufw_available()
         
     def _check_ufw_available(self):
         """
-        Verifica que UFW esté disponible y el usuario tenga permisos.
+        Verifies that UFW is available and the user has permissions.
         
         Returns:
-            bool: True si UFW está disponible, False en caso contrario
+            bool: True if UFW is available, False otherwise
         """
         try:
             result = subprocess.run(
@@ -50,49 +50,49 @@ class UFWManager:
             )
             return result.returncode == 0
         except Exception:
-            logger.warning("No se pudo verificar la disponibilidad de UFW. Algunas operaciones podrían fallar.")
+            logger.warning("Could not verify UFW availability. Some operations might fail.")
             return False
             
     def block_target(self, subnet_or_ip, block_duration_minutes):
         """
-        Bloquea una IP o subred usando UFW.
+        Blocks an IP or subnet using UFW.
         
         Args:
             subnet_or_ip (ipaddress.IPv4Network|ipaddress.IPv6Network|ipaddress.IPv4Address|ipaddress.IPv6Address): 
-                IP o subred a bloquear
-            block_duration_minutes (int): Duración del bloqueo en minutos
+                IP or subnet to block
+            block_duration_minutes (int): Block duration in minutes
             
         Returns:
-            bool: True si el comando se ejecutó con éxito, False en caso contrario
+            bool: True if the command executed successfully, False otherwise
         """
-        # Validar el tipo de dirección o red
+        # Validate address or network type
         valid_types = (
             ipaddress.IPv4Network, ipaddress.IPv6Network, 
             ipaddress.IPv4Address, ipaddress.IPv6Address
         )
         if not isinstance(subnet_or_ip, valid_types):
-            logger.error(f"Tipo de dato inválido para bloqueo: {type(subnet_or_ip)}")
+            logger.error(f"Invalid data type for blocking: {type(subnet_or_ip)}")
             return False
 
         target = str(subnet_or_ip)
-        # Asegurar formato de red para IPs individuales
+        # Ensure network format for individual IPs
         if isinstance(subnet_or_ip, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
-            # /32 para IPv4 y /128 para IPv6
+            # /32 for IPv4 and /128 for IPv6
             prefix_len = 32 if subnet_or_ip.version == 4 else 128
             target = f"{target}/{prefix_len}"
 
-        # Calcular timestamp de expiración en UTC
+        # Calculate expiration timestamp in UTC
         expiry_time = datetime.now(timezone.utc) + timedelta(minutes=block_duration_minutes)
-        # Formato ISO 8601 compacto para nombres de archivo/comentarios
+        # Compact ISO 8601 format for filenames/comments
         expiry_str = expiry_time.strftime('%Y%m%dT%H%M%SZ')
         comment = f"blocked_by_stats_py_until_{expiry_str}"
 
-        # Usar 'insert 1' para dar prioridad a la regla de bloqueo
+        # Use 'insert 1' to give priority to the blocking rule
         command = ["sudo", "ufw", "insert", "1", "deny", "from", target, "to", "any", "comment", comment]
 
-        logger.info(f"Intentando bloquear: {target} hasta {expiry_str} UTC")
+        logger.info(f"Attempting to block: {target} until {expiry_str} UTC")
         if self.dry_run:
-            logger.info(f"[DRY RUN] Comando UFW: {' '.join(command)}")
+            logger.info(f"[DRY RUN] UFW command: {' '.join(command)}")
             return True
 
         try:
@@ -103,40 +103,40 @@ class UFWManager:
                 text=True, 
                 timeout=10
             )
-            logger.info(f"Comando UFW ejecutado exitosamente para {target}.")
+            logger.info(f"UFW command executed successfully for {target}.")
             if result.stdout:
-                logger.debug(f"Salida UFW: {result.stdout.strip()}")
-            # UFW a veces imprime mensajes informativos en stderr
+                logger.debug(f"UFW output: {result.stdout.strip()}")
+            # UFW sometimes prints informational messages to stderr
             if result.stderr:
-                logger.debug(f"Salida UFW (stderr): {result.stderr.strip()}")
+                logger.debug(f"UFW output (stderr): {result.stderr.strip()}")
             return True
         except FileNotFoundError:
-            logger.error("El comando 'sudo' o 'ufw' no se encontró. Asegúrate de que ufw esté instalado.")
+            logger.error("The 'sudo' or 'ufw' command was not found. Make sure ufw is installed.")
             return False
         except subprocess.TimeoutExpired:
-            logger.error(f"Timeout ejecutando comando UFW para {target}.")
+            logger.error(f"Timeout executing UFW command for {target}.")
             return False
         except subprocess.CalledProcessError as e:
-            logger.error(f"Error al ejecutar el comando UFW para {target}:")
-            logger.error(f"Comando: {' '.join(command)}")
-            logger.error(f"Código de retorno: {e.returncode}")
-            logger.error(f"Salida de error: {e.stderr.strip()}")
-            logger.error(f"Salida estándar: {e.stdout.strip()}")
-            # Comprobar si el error es porque la regla ya existe
+            logger.error(f"Error executing the UFW command for {target}:")
+            logger.error(f"Command: {' '.join(command)}")
+            logger.error(f"Return code: {e.returncode}")
+            logger.error(f"Error output: {e.stderr.strip()}")
+            logger.error(f"Standard output: {e.stdout.strip()}")
+            # Check if the error is because the rule already exists
             if "Skipping adding existing rule" in e.stdout or "Skipping adding existing rule" in e.stderr:
-                 logger.info(f"Nota: La regla para {target} probablemente ya existía.")
+                 logger.info(f"Note: The rule for {target} probably already existed.")
                  return True
             return False
         except Exception as e:
-            logger.error(f"Error inesperado al ejecutar UFW para {target}: {e}")
+            logger.error(f"Unexpected error executing UFW for {target}: {e}")
             return False
 
     def get_expired_rules(self):
         """
-        Obtiene una lista de números de reglas UFW expiradas.
+        Gets a list of expired UFW rule numbers.
         
         Returns:
-            list: Lista de números de reglas expiradas ordenadas de mayor a menor
+            list: List of expired rule numbers sorted from highest to lowest
         """
         rules_to_delete = []
         try:
@@ -157,49 +157,49 @@ class UFWManager:
                         pass
             return sorted(rules_to_delete, reverse=True)
         except Exception as e:
-            logger.error(f"Error obteniendo reglas UFW: {e}")
+            logger.error(f"Error getting UFW rules: {e}")
             return []
 
     def delete_rule(self, rule_number):
         """
-        Elimina una regla UFW por su número.
+        Deletes a UFW rule by its number.
         
         Args:
-            rule_number (int): Número de la regla a eliminar
+            rule_number (int): Number of the rule to delete
             
         Returns:
-            bool: True si la regla se eliminó con éxito, False en caso contrario
+            bool: True if the rule was deleted successfully, False otherwise
         """
         command = ["sudo", "ufw", "--force", "delete", str(rule_number)]
         if self.dry_run:
-            logger.info(f"[DRY RUN] Eliminaría regla #{rule_number}: {' '.join(command)}")
+            logger.info(f"[DRY RUN] Would delete rule #{rule_number}: {' '.join(command)}")
             return True
             
         try:
             subprocess.run(command, check=True, capture_output=True, text=True, timeout=10)
-            logger.info(f"Regla UFW #{rule_number} eliminada.")
+            logger.info(f"UFW rule #{rule_number} deleted.")
             return True
         except Exception as e:
-            logger.error(f"Error eliminando regla UFW #{rule_number}: {e}")
+            logger.error(f"Error deleting UFW rule #{rule_number}: {e}")
             return False
 
     def clean_expired_rules(self):
         """
-        Limpia todas las reglas UFW expiradas.
+        Cleans all expired UFW rules.
         
         Returns:
-            int: Número de reglas eliminadas
+            int: Number of rules deleted
         """
-        expiradas = self.get_expired_rules()
-        if not expiradas:
-            logger.info("No hay reglas expiradas para eliminar.")
+        expired = self.get_expired_rules()
+        if not expired:
+            logger.info("No expired rules to delete.")
             return 0
             
         count = 0
-        for rule_num in expiradas:
+        for rule_num in expired:
             if self.delete_rule(rule_num):
                 count += 1
                 
         if count > 0:
-            logger.info(f"Limpieza completada. {count} reglas eliminadas.")
+            logger.info(f"Cleanup completed. {count} rules deleted.")
         return count

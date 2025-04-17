@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Módulo para análisis y detección de amenazas basado en logs de servidores.
+Module for analysis and threat detection based on server logs.
 """
 import ipaddress
 from collections import defaultdict
@@ -12,21 +12,21 @@ import os
 
 from log_parser import parse_log_line, get_subnet, calculate_danger_score, is_ip_in_whitelist, process_log_in_chunks
 
-# Logger para este módulo
+# Logger for this module
 logger = logging.getLogger('botstats.analyzer')
 
 class ThreatAnalyzer:
     """
-    Clase para analizar logs y detectar amenazas potenciales.
+    Class for analyzing logs and detecting potential threats.
     """
     
     def __init__(self, rpm_threshold=100, whitelist=None):
         """
-        Inicializa el analizador de amenazas.
+        Initializes the threat analyzer.
         
         Args:
-            rpm_threshold (float): Umbral de peticiones por minuto para considerar sospechosa una IP
-            whitelist (list): Lista de IPs o subredes que nunca deben ser bloqueadas
+            rpm_threshold (float): Requests per minute threshold to consider an IP suspicious
+            whitelist (list): List of IPs or subnets that should never be blocked
         """
         self.rpm_threshold = rpm_threshold
         self.whitelist = whitelist or []
@@ -37,41 +37,41 @@ class ThreatAnalyzer:
         
     def load_whitelist_from_file(self, whitelist_file):
         """
-        Carga una lista blanca desde un archivo.
+        Loads a whitelist from a file.
         
         Args:
-            whitelist_file (str): Ruta al archivo con la lista blanca
+            whitelist_file (str): Path to the file with the whitelist
             
         Returns:
-            int: Número de entradas cargadas
+            int: Number of entries loaded
         """
         if not os.path.exists(whitelist_file):
-            logger.error(f"Archivo de whitelist no encontrado: {whitelist_file}")
+            logger.error(f"Whitelist file not found: {whitelist_file}")
             return 0
             
         try:
             with open(whitelist_file, 'r') as f:
-                # Filtrar líneas vacías y comentarios
+                # Filter empty lines and comments
                 self.whitelist = [
                     line.strip() for line in f 
                     if line.strip() and not line.strip().startswith('#')
                 ]
-            logger.info(f"Lista blanca cargada con {len(self.whitelist)} entradas desde {whitelist_file}")
+            logger.info(f"Whitelist loaded with {len(self.whitelist)} entries from {whitelist_file}")
             return len(self.whitelist)
         except Exception as e:
-            logger.error(f"Error cargando lista blanca desde {whitelist_file}: {e}")
+            logger.error(f"Error loading whitelist from {whitelist_file}: {e}")
             return 0
     
     def _process_chunk(self, lines, start_date=None):
         """
-        Procesa un fragmento de líneas de log.
+        Processes a chunk of log lines.
         
         Args:
-            lines (list): Lista de líneas de log
-            start_date (datetime, optional): Fecha a partir de la cual analizar
+            lines (list): List of log lines
+            start_date (datetime, optional): Date from which to analyze
             
         Returns:
-            int: Número de líneas procesadas
+            int: Number of lines processed
         """
         processed = 0
         for line in lines:
@@ -79,24 +79,24 @@ class ThreatAnalyzer:
             if data is None:
                 continue
                 
-            # Obtener la fecha y hora del log
+            # Get date and time from the log
             dt_str = data['datetime'].split()[0]
             try:
                 dt = datetime.strptime(dt_str, '%d/%b/%Y:%H:%M:%S')
             except ValueError:
-                continue  # Saltar entradas con fecha mal formateada
+                continue  # Skip entries with malformed date
                 
-            # Filtrar por fecha
+            # Filter by date
             if start_date and dt < start_date:
                 continue
                 
             ip = data['ip']
             
-            # Verificar lista blanca
+            # Check whitelist
             if is_ip_in_whitelist(ip, self.whitelist):
                 continue
                 
-            # Acumular datos
+            # Accumulate data
             self.ip_data[ip]['times'].append(dt)
             self.ip_data[ip]['urls'].append(data['request'])
             self.ip_data[ip]['useragents'].append(data['useragent'])
@@ -106,20 +106,20 @@ class ThreatAnalyzer:
             
     def analyze_log_file(self, log_file, start_date=None, chunk_size=10000):
         """
-        Analiza un archivo de log completo.
+        Analyzes a complete log file.
         
         Args:
-            log_file (str): Ruta al archivo de log
-            start_date (datetime, optional): Fecha a partir de la cual analizar
-            chunk_size (int): Tamaño del fragmento para procesamiento por lotes
+            log_file (str): Path to the log file
+            start_date (datetime, optional): Date from which to analyze
+            chunk_size (int): Chunk size for batch processing
             
         Returns:
-            int: Número de entradas procesadas
+            int: Number of entries processed
         """
         total_processed = 0
         try:
             if chunk_size > 0:
-                logger.info(f"Procesando log en fragmentos de {chunk_size} líneas")
+                logger.info(f"Processing log in chunks of {chunk_size} lines")
                 result = process_log_in_chunks(
                     log_file, 
                     self._process_chunk, 
@@ -129,38 +129,38 @@ class ThreatAnalyzer:
                 if isinstance(result, int):
                     total_processed = result
             else:
-                # Procesamiento de una vez (para archivos pequeños)
+                # Process at once (for small files)
                 with open(log_file, 'r') as f:
                     lines = f.readlines()
                     total_processed = self._process_chunk(lines, start_date)
                     
-            logger.info(f"Procesadas {total_processed} entradas de log")
+            logger.info(f"Processed {total_processed} log entries")
             return total_processed
         except FileNotFoundError:
-            logger.error(f"No se encontró el archivo {log_file}")
+            logger.error(f"File not found {log_file}")
             raise
         except Exception as e:
-            logger.error(f"Error procesando archivo de log {log_file}: {e}")
+            logger.error(f"Error processing log file {log_file}: {e}")
             raise
     
     def identify_threats(self):
         """
-        Identifica amenazas basadas en los datos acumulados.
+        Identifies threats based on accumulated data.
         
         Returns:
-            list: Lista de amenazas detectadas
+            list: List of detected threats
         """
         self.subnet_data = defaultdict(list)
         
-        # Primer paso: analizar cada IP y agrupar por subred
-        logger.info("Analizando IPs y agrupando por subredes...")
+        # First step: analyze each IP and group by subnet
+        logger.info("Analyzing IPs and grouping by subnets...")
         for ip, info in self.ip_data.items():
             times = sorted(info['times'])
             total_requests = len(times)
             if total_requests == 0:
                 continue
 
-            # Calcular RPM
+            # Calculate RPM
             rpm = 0
             time_span = 0
             if total_requests >= 2:
@@ -168,7 +168,7 @@ class ThreatAnalyzer:
                 if time_span > 0:
                     rpm = (total_requests / (time_span / 60))
 
-            # Evaluar suspiciocidad por RPM
+            # Evaluate suspicion by RPM
             has_suspicious_ua = False
             suspicious_ua = ""
             is_suspicious_by_rpm = rpm > self.rpm_threshold
@@ -176,7 +176,7 @@ class ThreatAnalyzer:
 
             if is_suspicious:
                 danger_score = calculate_danger_score(rpm, total_requests, has_suspicious_ua)
-                # Intentar obtener la subred (IPv4 o IPv6)
+                # Try to get the subnet (IPv4 or IPv6)
                 subnet = get_subnet(ip)
                 if subnet:
                     ip_info = {
@@ -191,16 +191,16 @@ class ThreatAnalyzer:
                     }
                     self.subnet_data[subnet].append(ip_info)
 
-        # Segundo paso: unificar amenazas por subred
+        # Second step: unify threats by subnet
         self.unified_threats = []
-        logger.info(f"Evaluando {len(self.subnet_data)} subredes con IPs sospechosas...")
+        logger.info(f"Evaluating {len(self.subnet_data)} subnets with suspicious IPs...")
 
         for subnet, ip_infos in self.subnet_data.items():
             subnet_total_requests = sum(info['total_requests'] for info in ip_infos)
             subnet_total_danger = sum(info['danger_score'] for info in ip_infos)
             subnet_ip_count = len(ip_infos)
             
-            if subnet_ip_count > 1:  # Amenaza de tipo subred
+            if subnet_ip_count > 1:  # Subnet-type threat
                 threat = {
                     'type': 'subnet',
                     'id': subnet,
@@ -210,7 +210,7 @@ class ThreatAnalyzer:
                     'details': sorted(ip_infos, key=lambda x: x['danger_score'], reverse=True)
                 }
                 self.unified_threats.append(threat)
-            else:  # Amenaza de IP individual
+            else:  # Individual IP threat
                 ip_info = ip_infos[0]
                 ip_addr_obj = ipaddress.ip_address(ip_info['ip'])
                 threat = {
@@ -226,25 +226,25 @@ class ThreatAnalyzer:
                 }
                 self.unified_threats.append(threat)
 
-        # Ordenar por peligrosidad
+        # Sort by danger score
         self.unified_threats = sorted(
             self.unified_threats, 
             key=lambda x: x['danger_score'], 
             reverse=True
         )
         
-        logger.info(f"Se identificaron {len(self.unified_threats)} amenazas en total")
+        logger.info(f"Identified {len(self.unified_threats)} threats in total")
         return self.unified_threats
 
     def get_top_threats(self, top=10):
         """
-        Obtiene las amenazas más peligrosas.
+        Gets the most dangerous threats.
         
         Args:
-            top (int): Número de amenazas a devolver
+            top (int): Number of threats to return
             
         Returns:
-            list: Las top N amenazas más peligrosas
+            list: The top N most dangerous threats
         """
         if not self.unified_threats:
             self.identify_threats()
@@ -253,22 +253,22 @@ class ThreatAnalyzer:
         
     def export_results(self, format_type, output_file):
         """
-        Exporta los resultados a un archivo en formato específico.
+        Exports the results to a file in a specific format.
         
         Args:
-            format_type (str): Formato de exportación ('json', 'csv')
-            output_file (str): Ruta del archivo de salida
+            format_type (str): Export format ('json', 'csv')
+            output_file (str): Path of the output file
             
         Returns:
-            bool: True si la exportación fue exitosa, False en caso contrario
+            bool: True if export was successful, False otherwise
         """
         if not self.unified_threats:
-            logger.warning("No hay amenazas para exportar")
+            logger.warning("No threats to export")
             return False
             
         try:
             if format_type.lower() == 'json':
-                # Convertir objetos ipaddress a strings para serialización JSON
+                # Convert ipaddress objects to strings for JSON serialization
                 json_threats = []
                 for threat in self.unified_threats:
                     json_threat = threat.copy()
@@ -282,13 +282,13 @@ class ThreatAnalyzer:
                     
             elif format_type.lower() == 'csv':
                 with open(output_file, 'w', newline='') as f:
-                    # Definir campos según el tipo de amenaza
+                    # Define fields by threat type
                     fieldnames = ['type', 'id', 'danger_score', 'total_requests']
                     writer = csv.DictWriter(f, fieldnames=fieldnames)
                     writer.writeheader()
                     
                     for threat in self.unified_threats:
-                        # Crear una versión simplificada para CSV
+                        # Create a simplified version for CSV
                         csv_threat = {
                             'type': threat['type'],
                             'id': str(threat['id']),
@@ -297,12 +297,12 @@ class ThreatAnalyzer:
                         }
                         writer.writerow(csv_threat)
             else:
-                logger.error(f"Formato de exportación no soportado: {format_type}")
+                logger.error(f"Unsupported export format: {format_type}")
                 return False
                 
-            logger.info(f"Resultados exportados a {output_file} en formato {format_type}")
+            logger.info(f"Results exported to {output_file} in {format_type} format")
             return True
             
         except Exception as e:
-            logger.error(f"Error exportando resultados: {e}")
+            logger.error(f"Error exporting results: {e}")
             return False

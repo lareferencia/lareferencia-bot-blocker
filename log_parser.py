@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Módulo para parsear y analizar logs de servidores web.
-Tiene funciones para extraer información relevante de logs en formato CLF o CLF extendido.
+Module for parsing and analyzing web server logs.
+Contains functions to extract relevant information from logs in CLF or extended CLF format.
 """
 import re
 from datetime import datetime
@@ -9,14 +9,14 @@ import ipaddress
 
 def parse_log_line(line):
     """
-    Extrae los campos clave de una línea del log usando expresión regular.
-    Se asume que el log sigue el formato extendido (CLF extendido).
+    Extracts key fields from a log line using regular expression.
+    Assumes the log follows the extended format (extended CLF).
     
     Args:
-        line (str): Línea del archivo de log a parsear
+        line (str): Log file line to parse
         
     Returns:
-        dict: Diccionario con los campos extraídos o None si la línea no coincide con el patrón
+        dict: Dictionary with extracted fields or None if the line doesn't match the pattern
     """
     log_pattern = re.compile(
         r'(?P<ip>\S+) \S+ \S+ \[(?P<datetime>[^\]]+)\] "(?P<request>[^"]+)" '
@@ -29,70 +29,70 @@ def parse_log_line(line):
 
 def get_subnet(ip_str, version=None):
     """
-    Devuelve la subred como un objeto ipaddress.ip_network.
-    Para IPv4 devuelve una red /24, para IPv6 devuelve una red /64.
+    Returns the subnet as an ipaddress.ip_network object.
+    For IPv4 returns a /24 network, for IPv6 returns a /64 network.
     
     Args:
-        ip_str (str): Dirección IP en formato string
-        version (int, optional): Versión IP a forzar (4 o 6). Default: None (auto-detectar)
+        ip_str (str): IP address in string format
+        version (int, optional): IP version to force (4 or 6). Default: None (auto-detect)
         
     Returns:
-        ipaddress.ip_network: Objeto representando la subred, o None si la IP no es válida
+        ipaddress.ip_network: Object representing the subnet, or None if the IP is invalid
     """
     try:
         ip = ipaddress.ip_address(ip_str)
-        # Si se especifica una versión, verificar que la IP coincida
+        # If version is specified, verify that the IP matches
         if version and ip.version != version:
             return None
             
         if ip.version == 4:
-            # Crea la red /24 sin verificar si la IP es la dirección de red
+            # Create a /24 network without validating if the IP is the network address
             return ipaddress.ip_network(f"{ip_str}/24", strict=False)
         elif ip.version == 6:
-            # Para IPv6 usamos /64 que es común para subredes
+            # For IPv6 we use /64 which is common for subnets
             return ipaddress.ip_network(f"{ip_str}/64", strict=False)
     except ValueError:
         return None
     
-    return None  # Caso no manejado (no debería llegar aquí)
+    return None  # Unhandled case (shouldn't reach here)
 
 def calculate_danger_score(rpm, total_requests, has_suspicious_ua):
     """
-    Calcula una puntuación de peligrosidad basada en el RPM, total de solicitudes
-    y si tiene un user-agent sospechoso.
+    Calculates a danger score based on RPM, total requests
+    and whether it has a suspicious user-agent.
     
     Args:
-        rpm (float): Peticiones por minuto
-        total_requests (int): Total de peticiones
-        has_suspicious_ua (bool): Si tiene un user-agent sospechoso
+        rpm (float): Requests per minute
+        total_requests (int): Total requests
+        has_suspicious_ua (bool): Whether it has a suspicious user-agent
         
     Returns:
-        float: Puntuación de peligrosidad
+        float: Danger score
     """
-    # Factor base es el RPM normalizado por el umbral
+    # Base factor is the RPM normalized by the threshold
     score = rpm / 100
     
-    # Factores adicionales
+    # Additional factors
     if has_suspicious_ua:
-        score *= 1.5  # Incremento por user-agent sospechoso
+        score *= 1.5  # Increase for suspicious user-agent
     
-    # Número total de solicitudes también aumenta la peligrosidad
+    # Total number of requests also increases the danger
     score += total_requests / 1000
     
     return score
 
 def process_log_in_chunks(filename, handler_func, chunk_size=10000, **kwargs):
     """
-    Procesa el archivo de log en segmentos para reducir uso de memoria.
+    Process the log file in segments to reduce memory usage.
     
     Args:
-        filename (str): Ruta del archivo de log
-        handler_func (callable): Función que procesa cada chunk de líneas
-        chunk_size (int): Tamaño del chunk en número de líneas
-        **kwargs: Argumentos adicionales a pasar a handler_func
+        filename (str): Path to the log file
+        handler_func (callable): Function that processes each chunk of lines
+        chunk_size (int): Chunk size in number of lines
+        **kwargs: Additional arguments to pass to handler_func
         
     Returns:
-        Any: El resultado de la última llamada a handler_func
+        Any: The result of the last call to handler_func
     """
     result = None
     with open(filename, 'r') as f:
@@ -102,21 +102,21 @@ def process_log_in_chunks(filename, handler_func, chunk_size=10000, **kwargs):
             if i % chunk_size == chunk_size - 1:
                 result = handler_func(chunk, **kwargs)
                 chunk = []
-        # Procesar el último segmento si existe
+        # Process the last segment if it exists
         if chunk:
             result = handler_func(chunk, **kwargs)
     return result
 
 def is_ip_in_whitelist(ip, whitelist):
     """
-    Verifica si una IP está en la lista blanca.
+    Verifies if an IP is in the whitelist.
     
     Args:
-        ip (str): La dirección IP a verificar
-        whitelist (list): Lista de IPs o subredes en formato string
+        ip (str): The IP address to verify
+        whitelist (list): List of IPs or subnets in string format
         
     Returns:
-        bool: True si la IP está en la lista blanca, False en caso contrario
+        bool: True if the IP is in the whitelist, False otherwise
     """
     if not whitelist:
         return False
@@ -126,12 +126,12 @@ def is_ip_in_whitelist(ip, whitelist):
         
         for item in whitelist:
             try:
-                # Si el item es una red, verificar si la IP está contenida
+                # If the item is a network, verify if the IP is contained
                 if '/' in item:
                     network = ipaddress.ip_network(item, strict=False)
                     if ip_obj in network:
                         return True
-                # Si es una IP exacta
+                # If it's an exact IP
                 else:
                     whitelist_ip = ipaddress.ip_address(item)
                     if ip_obj == whitelist_ip:
