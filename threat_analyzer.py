@@ -184,23 +184,55 @@ class ThreatAnalyzer:
         # Define aggregations
         agg_funcs = {
             'total_requests': 'sum',
-            'danger_score': 'sum',          # Sum individual IP danger scores
-            'avg_rpm_activity': 'mean',     # Average of the IPs' average RPMs
-            'max_rpm_activity': 'max',      # Max of the IPs' max RPMs
-            'time_span_seconds': 'max',     # Use the max time span among IPs in the subnet
-            'ip': 'count'                   # Count distinct IPs in the subnet
-            # 'first_seen': 'min', # Can add if needed
-            # 'last_seen': 'max',  # Can add if needed
+            'danger_score': ['sum', 'count'], # Sum danger scores AND count IPs using this column
+            'avg_rpm_activity': 'mean',
+            'max_rpm_activity': 'max',
+            'time_span_seconds': 'max'
+            # Removed 'ip': 'count'
         }
 
-        self.subnet_metrics_df = self.ip_metrics_df.groupby('subnet').agg(agg_funcs)
+        # Perform aggregation
+        subnet_agg = self.ip_metrics_df.groupby('subnet').agg(agg_funcs)
 
-        # Rename 'ip' column to 'ip_count' and 'danger_score' to 'total_danger_score'
-        self.subnet_metrics_df = self.subnet_metrics_df.rename(
-            columns={'ip': 'ip_count', 'danger_score': 'total_danger_score'}
-        )
+        # Flatten MultiIndex columns if Pandas version creates them (e.g., ('danger_score', 'sum'))
+        if isinstance(subnet_agg.columns, pd.MultiIndex):
+             logger.debug("Flattening MultiIndex columns after aggregation.")
+             subnet_agg.columns = ['_'.join(col).strip() for col in subnet_agg.columns.values]
+             # Rename columns explicitly after flattening
+             self.subnet_metrics_df = subnet_agg.rename(
+                 columns={
+                     'total_requests_sum': 'total_requests', # Assuming sum is default if only one agg
+                     'danger_score_sum': 'total_danger_score',
+                     'danger_score_count': 'ip_count',
+                     'avg_rpm_activity_mean': 'avg_rpm_activity',
+                     'max_rpm_activity_max': 'max_rpm_activity',
+                     'time_span_seconds_max': 'time_span_seconds'
+                 }
+             )
+        else:
+             # Handle older Pandas versions or cases without MultiIndex
+             self.subnet_metrics_df = subnet_agg.rename(
+                 columns={
+                     'danger_score': 'total_danger_score', # Assuming sum was default
+                     # Need to figure out how count was named or recalculate
+                 }
+             )
+             # If count wasn't automatically named, recalculate ip_count separately
+             if 'ip_count' not in self.subnet_metrics_df.columns:
+                  logger.debug("Recalculating ip_count separately.")
+                  ip_counts = self.ip_metrics_df.groupby('subnet').size()
+                  self.subnet_metrics_df['ip_count'] = ip_counts
 
-        # Sort by total_requests descending (as per previous logic)
+
+        # Ensure essential columns exist, fill missing with 0 if necessary
+        expected_cols = ['total_requests', 'total_danger_score', 'ip_count', 'avg_rpm_activity', 'max_rpm_activity', 'time_span_seconds']
+        for col in expected_cols:
+             if col not in self.subnet_metrics_df.columns:
+                  logger.warning(f"Column '{col}' missing after aggregation. Filling with 0.")
+                  self.subnet_metrics_df[col] = 0
+
+
+        # Sort by total_requests descending
         self.subnet_metrics_df = self.subnet_metrics_df.sort_values('total_requests', ascending=False)
 
         logger.info(f"Finished aggregating metrics for {len(self.subnet_metrics_df)} subnets.")
