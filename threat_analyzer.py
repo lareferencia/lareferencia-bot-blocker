@@ -114,8 +114,8 @@ class ThreatAnalyzer:
         Returns:
             int: Number of entries processed
         """
-         total_processed = 0
-         try:
+        total_processed = 0
+        try:
             if start_date:
                 logger.info(f"Processing log file in reverse (newest first), stopping before {start_date}")
                 # Process in reverse, stopping at start_date
