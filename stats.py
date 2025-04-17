@@ -198,39 +198,54 @@ def main():
     # Identify threats
     threats = analyzer.identify_threats()
     
-    # Check if there are threats
-    if not threats:
-        logger.info("No suspicious threats found according to the specified criteria.")
-        if args.block:
-            logger.info("No blocking actions executed.")
-        sys.exit(0)
-    
-    # Initialize UFW manager if blocking is required
-    ufw = None
+    # --- Blocking Logic ---
+    blocked_targets = set() # Store network objects blocked in this run
     if args.block:
-        ufw = UFWManager(args.dry_run)
-    
-    # Block threats if the option is activated
-    blocked_targets = set()
-    if args.block:
-        for threat in threats:
-            target = threat['id']
+        ufw = UFWManager(dry_run=args.dry_run)
+        min_requests_to_block = args.block_threshold
+        block_duration_minutes = args.block_duration
+        comment_prefix = "BOTSTATS"
+
+        logger.info(f"Checking top {args.top} threats for potential blocking (threshold: {min_requests_to_block} requests)...")
+
+        # Determine which threats to consider for blocking (only the top ones)
+        threats_to_consider_for_blocking = threats[:args.top] # Use the top N threats
+
+        # Iterate ONLY over the top threats for blocking decisions
+        for threat in threats_to_consider_for_blocking:
+            target_id = threat['id'] # This is an ipaddress.ip_network object
+            target_id_str = str(target_id)
             total_requests = threat['total_requests']
-            # Check threshold for blocking
-            should_block = total_requests >= args.block_threshold
-            if should_block and target not in blocked_targets:
-                if ufw.block_target(target, args.block_duration):
-                    blocked_targets.add(target)
-    
+
+            # Check if the threat meets the blocking threshold
+            if total_requests >= min_requests_to_block:
+                logger.info(f"Threat {target_id_str} meets block threshold ({total_requests} >= {min_requests_to_block}). Attempting block...")
+                comment = f"{comment_prefix} - {total_requests} reqs - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                if block_duration_minutes > 0:
+                     comment += f" - Remove after {block_duration_minutes} min"
+
+                # Block the target (IP or Subnet)
+                if ufw.block_ip_or_subnet(target_id_str, comment):
+                    blocked_targets.add(target_id) # Add the network object to the set
+            else:
+                 logger.debug(f"Threat {target_id_str} does not meet block threshold ({total_requests} < {min_requests_to_block}). Skipping block.")
+
+        # Schedule cleanup if duration is set
+        if block_duration_minutes > 0:
+            logger.info(f"Scheduling cleanup task for rules older than {block_duration_minutes} minutes.")
+            ufw.schedule_rule_cleanup(comment_prefix, block_duration_minutes)
+
+    # --- Reporting Logic ---
     # Show results in console
-    top_count = min(args.top, len(threats))
+    top_count = min(args.top, len(threats)) # Keep using args.top for reporting count
     print(f"\n=== TOP {top_count} MOST DANGEROUS THREATS DETECTED ===")
     if args.block:
         action = "Blocked" if not args.dry_run else "[DRY RUN] Marked for blocking"
-        print(f"--- {action} based on --block-threshold={args.block_threshold} total requests and --block-duration={args.block_duration} min ---")
+        print(f"--- {action} based on --block-threshold={args.block_threshold} total requests and --block-duration={args.block_duration} min (applied to top {args.top} threats) ---")
 
-    top_threats_report = threats[:top_count]
+    top_threats_report = threats[:top_count] # This list is used for reporting
 
+    # Iterate through the top threats for reporting (this loop remains the same)
     for i, threat in enumerate(top_threats_report, 1):
         target_id_str = str(threat['id'])
         threat_label = "IP" if threat['type'] == 'ip' else "Subnet"
@@ -256,11 +271,25 @@ def main():
                 # ua_str = f" | UA: {ip_detail['suspicious_ua']}" if ip_detail['has_suspicious_ua'] else "" # Keep commented out
                 print(f"  -> IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, {detail_danger_str}, {detail_rpm_str})") # Removed ua_str
 
-        # Indicate if this specific threat was blocked
-        if args.block and threat['id'] in blocked_targets:
-            block_status = "[BLOCKED]" if not args.dry_run else "[DRY RUN - BLOCK]"
-            print(f"  {block_status}")
-    
+        # Indicate if this specific threat target was blocked in this run
+        target_blocked_in_run = False
+        for blocked_net in blocked_targets: # Check against the set of actually blocked targets
+             try:
+                 # Check if the reported threat ID is exactly the one blocked or is contained within a blocked network
+                 if threat['id'] == blocked_net or threat['id'].subnet_of(blocked_net):
+                     target_blocked_in_run = True
+                     break
+                 # Check if the reported threat ID contains a network that was blocked
+                 if blocked_net.subnet_of(threat['id']):
+                      target_blocked_in_run = True
+                      break
+             except (TypeError, AttributeError):
+                 pass # Ignore comparison errors
+
+        if args.block and target_blocked_in_run:
+            block_status = "[BLOCKED]" if not args.dry_run else "[DRY RUN - BLOCKED]"
+            print(f"  {block_status} (Target or encompassing/contained subnet was in top {args.top} and met threshold)")
+
     # Export results if specified
     if args.output:
         if analyzer.export_results(args.format, args.output):

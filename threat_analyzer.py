@@ -68,40 +68,52 @@ class ThreatAnalyzer:
 
         Args:
             rpm_threshold (float): Requests per minute threshold to consider activity suspicious.
-            whitelist (list): List of IPs or subnets that should never be blocked.
+            whitelist (list): List of additional IPs or subnets that should never be blocked.
         """
         self.rpm_threshold = rpm_threshold
-        self.whitelist = whitelist or []
+        # Always include localhost addresses in the whitelist
+        self.whitelist = ['127.0.0.1', '::1']
+        if whitelist:
+            # Add any provided whitelist entries, avoiding duplicates
+            for item in whitelist:
+                if item not in self.whitelist:
+                    self.whitelist.append(item)
+
         # Store data per IP again
         self.ip_data = defaultdict(lambda: {'times': [], 'urls': [], 'useragents': []})
         # We will group by subnet during identify_threats
         self.unified_threats = []
         self.blocked_targets = set() # Keep track of targets blocked in this run
 
-    # ... (load_whitelist_from_file remains the same) ...
     def load_whitelist_from_file(self, whitelist_file):
         """
-        Loads a whitelist from a file.
+        Loads additional whitelist entries from a file, adding them to the existing list.
 
         Args:
             whitelist_file (str): Path to the file with the whitelist
 
         Returns:
-            int: Number of entries loaded
+            int: Number of new entries loaded from the file.
         """
         if not os.path.exists(whitelist_file):
             logger.error(f"Whitelist file not found: {whitelist_file}")
             return 0
 
+        loaded_count = 0
         try:
             with open(whitelist_file, 'r') as f:
                 # Filter empty lines and comments
-                self.whitelist = [
+                entries_from_file = [
                     line.strip() for line in f
                     if line.strip() and not line.strip().startswith('#')
                 ]
-            logger.info(f"Whitelist loaded with {len(self.whitelist)} entries from {whitelist_file}")
-            return len(self.whitelist)
+            # Add entries from file if they are not already in the list
+            for entry in entries_from_file:
+                if entry not in self.whitelist:
+                    self.whitelist.append(entry)
+                    loaded_count += 1
+            logger.info(f"{loaded_count} new entries loaded from {whitelist_file}. Whitelist now has {len(self.whitelist)} total entries.")
+            return loaded_count
         except Exception as e:
             logger.error(f"Error loading whitelist from {whitelist_file}: {e}")
             return 0
