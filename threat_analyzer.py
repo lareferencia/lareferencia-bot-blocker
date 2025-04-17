@@ -253,8 +253,10 @@ class ThreatAnalyzer:
                         'danger_score': subnet_danger_score,
                         'is_suspicious_by_rpm': is_subnet_suspicious_by_rpm,
                         'first_seen': times[0] if times else None,
-                        'last_seen': times[-1] if times else None
-                        # Add UA info if needed later
+                        'last_seen': times[-1] if times else None,
+                        # Add missing keys with default/placeholder values
+                        'has_suspicious_ua': has_suspicious_ua, # Use the placeholder value
+                        'suspicious_ua': suspicious_ua      # Use the placeholder value
                     }]
                 except ValueError:
                     logger.warning(f"Could not create network object for single IP: {single_ip_str}")

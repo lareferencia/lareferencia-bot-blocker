@@ -227,26 +227,29 @@ def main():
     print(f"\n=== TOP {top_count} MOST DANGEROUS THREATS DETECTED ===")
     if args.block:
         action = "Blocked" if not args.dry_run else "[DRY RUN] Marked for blocking"
-        print(f"--- {action} according to --block-threshold={args.block_threshold} total requests and --block-duration={args.block_duration} min ---")
+        print(f"--- {action} based on --block-threshold={args.block_threshold} total requests and --block-duration={args.block_duration} min ---")
 
-    # Take only the first 'top' threats for the detailed report
     top_threats_report = threats[:top_count]
 
     for i, threat in enumerate(top_threats_report, 1):
         target_id_str = str(threat['id'])
-        # Display Subnet Info including aggregate RPM
-        subnet_rpm_str = f", ~{threat.get('subnet_rpm', 0):.2f} agg RPM" if threat.get('subnet_rpm', 0) > 0 else ""
-        print(f"\n#{i} Subnet: {target_id_str} - Total Danger: {threat['danger_score']:.2f} ({threat['ip_count']} IPs, {threat['total_requests']} reqs{subnet_rpm_str})")
-        
-        # Show details of the most dangerous IPs within the subnet
-        for ip_detail in threat['details'][:3]:  # Show up to 3 IPs
-            # Indicate if this specific IP triggered the RPM suspicion flag
-            rpm_flag_str = "*" if ip_detail.get('is_suspicious_by_rpm', False) else ""
-            rpm_str = f"~{ip_detail['rpm']:.2f} rpm{rpm_flag_str}" if ip_detail['rpm'] > 0 else "RPM N/A"
-            ua_str = f" | UA: {ip_detail['suspicious_ua']}" if ip_detail['has_suspicious_ua'] else ""
-            print(f"  -> IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, Danger: {ip_detail['danger_score']:.2f}, {rpm_str}{ua_str})")
-        if threat['ip_count'] > 3:
-            print(f"  ... and {threat['ip_count'] - 3} more IPs in this subnet.")
+        threat_label = "IP" if threat['type'] == 'ip' else "Subnet"
+        rpm_str = f", ~{threat.get('subnet_rpm', 0):.2f} RPM" if threat.get('subnet_rpm', 0) > 0 else ""
+        ip_count_str = f"{threat['ip_count']} IP" if threat['ip_count'] == 1 else f"{threat['ip_count']} IPs"
+
+        print(f"\n#{i} {threat_label}: {target_id_str} - Danger: {threat['danger_score']:.2f} ({ip_count_str}, {threat['total_requests']} reqs{rpm_str})")
+
+        # Show details if available (currently only for single IP threats)
+        if threat['details']:
+             ip_detail = threat['details'][0] # Assuming only one item for 'ip' type
+             rpm_flag_str = "*" if ip_detail.get('is_suspicious_by_rpm', False) else ""
+             detail_rpm_str = f"~{ip_detail['rpm']:.2f} rpm{rpm_flag_str}" if ip_detail['rpm'] > 0 else "RPM N/A"
+             # Remove or comment out the line causing the error:
+             # ua_str = f" | UA: {ip_detail['suspicious_ua']}" if ip_detail['has_suspicious_ua'] else ""
+             print(f"  -> Metrics: {ip_detail['total_requests']} reqs, Danger: {ip_detail['danger_score']:.2f}, {detail_rpm_str}") # Removed ua_str
+        elif threat['type'] == 'subnet':
+             # Indicate multiple IPs involved for subnet threats
+             print(f"  -> Involves {threat['ip_count']} unique IPs.")
 
         # Indicate if this specific threat was blocked
         if args.block and threat['id'] in blocked_targets:
