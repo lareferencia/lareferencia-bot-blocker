@@ -71,9 +71,11 @@ class ThreatAnalyzer:
             start_date (datetime, optional): Date from which to analyze
             
         Returns:
-            int: Number of lines processed
+            int: Number of lines processed, or False to signal stopping
         """
         processed = 0
+        stop_processing = False
+        
         for line in lines:
             data = parse_log_line(line)
             if data is None:
@@ -88,7 +90,8 @@ class ThreatAnalyzer:
                 
             # Filter by date
             if start_date and dt < start_date:
-                continue
+                stop_processing = True
+                break
                 
             ip = data['ip']
             
@@ -102,9 +105,13 @@ class ThreatAnalyzer:
             self.ip_data[ip]['useragents'].append(data['useragent'])
             processed += 1
             
+        if stop_processing:
+            logger.info(f"Stopped processing at entry with date {dt} (before {start_date})")
+            return False
+            
         return processed
             
-    def analyze_log_file(self, log_file, start_date=None, chunk_size=10000):
+    def analyze_log_file(self, log_file, start_date=None, chunk_size=10000, reverse=False):
         """
         Analyzes a complete log file.
         
@@ -112,6 +119,8 @@ class ThreatAnalyzer:
             log_file (str): Path to the log file
             start_date (datetime, optional): Date from which to analyze
             chunk_size (int): Chunk size for batch processing
+            reverse (bool): If True, process file from newest to oldest and stop
+                         when finding entries older than start_date
             
         Returns:
             int: Number of entries processed
@@ -119,11 +128,19 @@ class ThreatAnalyzer:
         total_processed = 0
         try:
             if chunk_size > 0:
-                logger.info(f"Processing log in chunks of {chunk_size} lines")
+                # Decide whether to use reverse mode based on start_date and reverse flag
+                use_reverse = reverse and start_date is not None
+                
+                if use_reverse:
+                    logger.info(f"Processing log in reverse mode with chunks of {chunk_size} lines")
+                else:
+                    logger.info(f"Processing log in forward mode with chunks of {chunk_size} lines")
+                
                 result = process_log_in_chunks(
                     log_file, 
                     self._process_chunk, 
                     chunk_size, 
+                    reverse=use_reverse,
                     start_date=start_date
                 )
                 if isinstance(result, int):

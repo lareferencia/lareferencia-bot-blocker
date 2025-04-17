@@ -146,6 +146,10 @@ def main():
         '--clean-rules', action='store_true',
         help='Run cleanup of expired UFW rules and exit.'
     )
+    parser.add_argument(
+        '--reverse', action='store_true',
+        help='Process log file from newest to oldest, stopping when entries are outside the time window.'
+    )
     args = parser.parse_args()
 
     # Configure logging
@@ -194,7 +198,7 @@ def main():
     # Analyze log file
     logger.info(f"Starting analysis of {args.file}...")
     try:
-        analyzer.analyze_log_file(args.file, start_date, args.chunk_size)
+        analyzer.analyze_log_file(args.file, start_date, args.chunk_size, args.reverse)
     except Exception as e:
         logger.error(f"Error analyzing log file: {e}")
         sys.exit(1)

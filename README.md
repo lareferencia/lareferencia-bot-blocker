@@ -135,6 +135,7 @@ Important considerations when scheduling with cron:
 - When using `--time-window`, ensure that the window size and cron frequency make sense together to avoid analysis gaps
 - For production environments, start with conservative blocking thresholds and durations, then adjust after monitoring results
 
+
 ## Usage
 
 ### Basic Example
@@ -164,7 +165,8 @@ python stats.py -f /var/log/nginx/access.log \
   --format json \
   --log-file /var/log/botstats.log \
   --log-level DEBUG \
-  --chunk-size 50000
+  --chunk-size 50000 \
+  --reverse
 ```
 
 This command:
@@ -174,6 +176,7 @@ This command:
 - Exports the results in JSON format
 - Saves detailed logs to a file
 - Processes the log file in chunks of 50,000 lines to optimize memory
+- Uses reverse processing (from newest to oldest), stopping when entries are outside the time window
 
 ### Only Clean Expired Rules
 
@@ -203,6 +206,7 @@ This command only removes expired UFW rules and exits.
 | `--log-level` | Log detail level: DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO) |
 | `--chunk-size` | Chunk size for processing large logs (default: 10000, 0 to not fragment) |
 | `--clean-rules` | Run cleanup of expired UFW rules and exit |
+| `--reverse` | Process log file from newest to oldest, stopping when entries are outside the time window |
 
 ## Whitelist Format
 

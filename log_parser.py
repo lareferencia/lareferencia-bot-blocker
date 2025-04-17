@@ -6,6 +6,10 @@ Contains functions to extract relevant information from logs in CLF or extended 
 import re
 from datetime import datetime
 import ipaddress
+import logging
+
+# Logger for this module
+logger = logging.getLogger('botstats.parser')
 
 def parse_log_line(line):
     """
@@ -81,7 +85,7 @@ def calculate_danger_score(rpm, total_requests, has_suspicious_ua):
     
     return score
 
-def process_log_in_chunks(filename, handler_func, chunk_size=10000, **kwargs):
+def process_log_in_chunks(filename, handler_func, chunk_size=10000, reverse=False, **kwargs):
     """
     Process the log file in segments to reduce memory usage.
     
@@ -89,23 +93,91 @@ def process_log_in_chunks(filename, handler_func, chunk_size=10000, **kwargs):
         filename (str): Path to the log file
         handler_func (callable): Function that processes each chunk of lines
         chunk_size (int): Chunk size in number of lines
+        reverse (bool): If True, processes the file from end to beginning
+                      and stops when a line is outside the time window
         **kwargs: Additional arguments to pass to handler_func
         
     Returns:
         Any: The result of the last call to handler_func
+        
+    Note:
+        When reverse=True, handler_func should return False to stop processing
+        once it detects a log entry outside the desired time window.
     """
-    result = None
-    with open(filename, 'r') as f:
-        chunk = []
-        for i, line in enumerate(f):
-            chunk.append(line)
-            if i % chunk_size == chunk_size - 1:
+    total_processed = 0
+    
+    if not reverse:
+        # Original forward processing
+        with open(filename, 'r') as f:
+            chunk = []
+            for i, line in enumerate(f):
+                chunk.append(line)
+                if i % chunk_size == chunk_size - 1:
+                    result = handler_func(chunk, **kwargs)
+                    total_processed += chunk_size
+                    chunk = []
+                    # If handler returns False, stop processing
+                    if result is False:
+                        logger.info(f"Handler requested to stop processing after {total_processed} lines")
+                        return total_processed
+            # Process the last segment if it exists
+            if chunk:
                 result = handler_func(chunk, **kwargs)
-                chunk = []
-        # Process the last segment if it exists
-        if chunk:
-            result = handler_func(chunk, **kwargs)
-    return result
+                total_processed += len(chunk)
+                if result is False:
+                    logger.info(f"Handler requested to stop processing after {total_processed} lines")
+    else:
+        # Reverse processing (from newest to oldest)
+        logger.info("Processing log file in reverse mode (newest to oldest)")
+        
+        # First, get file size and calculate number of chunks
+        import os
+        file_size = os.path.getsize(filename)
+        
+        with open(filename, 'r') as f:
+            # Start from end of file
+            position = file_size
+            lines_buffer = []
+            current_chunk = []
+            
+            while position > 0:
+                # Adjust chunk size for last read
+                read_size = min(position, chunk_size * 100)  # Read larger chunks for efficiency
+                position -= read_size
+                
+                # Seek to position and read a block
+                f.seek(position)
+                block = f.read(read_size)
+                
+                # Handle case when position is not at line start
+                if position > 0:
+                    # Skip partial first line if not at BOF
+                    block = block[block.find('\n')+1:]
+                
+                # Add to buffer and split into lines
+                lines_buffer = block.splitlines() + lines_buffer
+                
+                # Process in chunks of the specified size
+                while len(lines_buffer) >= chunk_size:
+                    current_chunk = lines_buffer[:chunk_size]
+                    lines_buffer = lines_buffer[chunk_size:]
+                    
+                    result = handler_func(current_chunk, **kwargs)
+                    total_processed += len(current_chunk)
+                    
+                    # If handler returns False, stop processing
+                    if result is False:
+                        logger.info(f"Handler requested to stop processing after {total_processed} lines")
+                        return total_processed
+                
+                # If we're at the beginning of file, process remaining lines
+                if position == 0 and lines_buffer:
+                    result = handler_func(lines_buffer, **kwargs)
+                    total_processed += len(lines_buffer)
+                    if result is False:
+                        logger.info(f"Handler requested to stop processing after {total_processed} lines")
+    
+    return total_processed
 
 def is_ip_in_whitelist(ip, whitelist):
     """
