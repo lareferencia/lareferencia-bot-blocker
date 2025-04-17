@@ -279,7 +279,7 @@ class UFWManager:
 
     def _run_ufw_command(self, command_args):
         """
-        Executes a UFW command using subprocess.
+        Executes a UFW command using subprocess, handling potential 'delete' confirmation.
 
         Args:
             command_args (list): List of arguments for the ufw command (e.g., ['status', 'numbered']).
@@ -288,38 +288,52 @@ class UFWManager:
             subprocess.CompletedProcess: Result object from subprocess.run.
         """
         base_command = ['sudo', 'ufw']
-        full_command = base_command + command_args
-        command_str = ' '.join(full_command)
+        full_command_list = base_command + command_args
+        command_str = ' '.join(full_command_list)
+        shell_needed = False
+        final_command = full_command_list # Default to list for non-shell execution
+
+        # Check if this is a delete command that might need confirmation
+        is_delete_command = command_args and command_args[0] == 'delete'
 
         if self.dry_run:
-            logger.info(f"[DRY RUN] Would execute: {command_str}")
-            # Return a dummy CompletedProcess object for dry run consistency
-            return subprocess.CompletedProcess(
-                args=full_command,
-                returncode=0,
-                stdout="[DRY RUN] Command not executed.\n",
-                stderr=""
-            )
+            log_prefix = "[DRY RUN]"
+            if is_delete_command:
+                # Simulate piping 'yes' in dry run log message
+                command_str = f"echo y | {command_str}"
+            logger.info(f"{log_prefix} Would execute: {command_str}")
+            return subprocess.CompletedProcess(args=final_command, returncode=0, stdout=f"{log_prefix} Command not executed.\n", stderr="")
         else:
-            logger.debug(f"Executing: {command_str}")
+            log_prefix = ""
+            if is_delete_command:
+                # Prepend 'echo y |' and use shell=True for delete command
+                command_str = f"echo y | {command_str}"
+                shell_needed = True
+                final_command = command_str # Use the full string command for shell=True
+                logger.warning("Using 'shell=True' for UFW delete command to handle confirmation.")
+
+            logger.debug(f"{log_prefix}Executing: {command_str}")
             try:
-                # Execute command, capture output, use text mode
                 result = subprocess.run(
-                    full_command,
+                    final_command, # Use list or string depending on shell_needed
                     capture_output=True,
                     text=True,
-                    check=False # Don't raise exception on non-zero exit code, handle it manually
+                    check=False,
+                    shell=shell_needed # Set shell=True only for delete command
                 )
                 if result.returncode != 0:
                     logger.warning(f"Command '{command_str}' failed with code {result.returncode}")
                     logger.warning(f"Stderr: {result.stderr.strip()}")
+                    logger.warning(f"Stdout: {result.stdout.strip()}") # Log stdout too, might contain info
                 else:
+                    # Check stdout for confirmation messages even on success
+                    if "Proceed with operation (y|n)?" in result.stdout:
+                         logger.debug(f"Handled confirmation prompt for '{command_str}'.")
                     logger.debug(f"Command '{command_str}' executed successfully.")
                 return result
             except FileNotFoundError:
                 logger.error(f"Error: 'sudo' or 'ufw' command not found. Is UFW installed and sudo available?")
-                # Return a dummy error object
-                return subprocess.CompletedProcess(args=full_command, returncode=127, stdout="", stderr="Command not found")
+                return subprocess.CompletedProcess(args=final_command, returncode=127, stdout="", stderr="Command not found")
             except Exception as e:
                 logger.error(f"Error executing UFW command '{command_str}': {e}")
-                return subprocess.CompletedProcess(args=full_command, returncode=1, stdout="", stderr=str(e))
+                return subprocess.CompletedProcess(args=final_command, returncode=1, stdout="", stderr=str(e))
