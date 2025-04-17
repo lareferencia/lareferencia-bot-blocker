@@ -115,23 +115,52 @@ def is_localhost(ip_str):
     except ValueError:
         return False
 
-def calculate_danger_score(rpm, total_requests, has_suspicious_ua, time_span=0, min_duration=5):
+# Remove has_suspicious_ua parameter
+def calculate_danger_score(rpm, total_requests, time_span=0, min_duration=5):
     """
-    Calculates a danger score based only on RPM (requests per minute).
-    Other parameters are maintained for backward compatibility.
-    
+    Calculates a danger score based on RPM and total requests.
+    Higher RPM and more requests increase the score.
+
     Args:
-        rpm (float): Requests per minute
-        total_requests (int): Total requests (not used in calculation)
-        has_suspicious_ua (bool): Whether it has a suspicious user-agent (not used in calculation)
-        time_span (float): Duration of activity in seconds (not used in calculation)
-        min_duration (float): Minimum duration in seconds (not used in calculation)
-        
+        rpm (float): Requests per minute.
+        total_requests (int): Total number of requests.
+        # has_suspicious_ua (bool): Whether a suspicious user agent was detected. (Removed)
+        time_span (float): Duration of activity in seconds.
+        min_duration (int): Minimum duration in seconds for RPM to be considered significant.
+
     Returns:
-        float: Danger score based solely on RPM
+        float: Calculated danger score.
     """
-    # Score is now simply the RPM value
-    return rpm
+    score = 0
+
+    # Score based on RPM (only if duration is significant)
+    if rpm > 0 and time_span >= min_duration:
+        if rpm > 500:
+            score += 100
+        elif rpm > 200:
+            score += 50
+        elif rpm > 100:
+            score += 25
+        elif rpm > 50:
+            score += 10
+        else:
+            score += rpm / 10 # Smaller contribution for lower RPMs
+
+    # Score based on total requests (logarithmic scale to reduce impact of huge numbers)
+    if total_requests > 1:
+        # Using log base 10. Adjust multiplier as needed.
+        # Example: 10 reqs -> ~10 pts, 100 reqs -> ~20 pts, 1000 reqs -> ~30 pts
+        request_score = math.log10(total_requests) * 10
+        score += request_score
+    elif total_requests == 1:
+        score += 0.1 # Very small score for single requests
+
+    # Bonus for suspicious User Agent (Removed)
+    # if has_suspicious_ua:
+    #    score *= 1.5 # Increase score by 50%
+
+    # Ensure score is not negative
+    return max(0, score)
 
 def is_ip_in_whitelist(ip, whitelist):
     """

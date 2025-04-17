@@ -79,8 +79,8 @@ class ThreatAnalyzer:
                 if item not in self.whitelist:
                     self.whitelist.append(item)
 
-        # Store data per IP again
-        self.ip_data = defaultdict(lambda: {'times': [], 'urls': [], 'useragents': []})
+        # Store only timestamps per IP
+        self.ip_data = defaultdict(lambda: {'times': []})
         # We will group by subnet during identify_threats
         self.unified_threats = []
         self.blocked_targets = set() # Keep track of targets blocked in this run
@@ -120,7 +120,7 @@ class ThreatAnalyzer:
 
     def analyze_log_file(self, log_file, start_date=None):
         """
-        Analyzes a log file, storing data per IP address.
+        Analyzes a log file, storing only timestamps per IP address.
 
         Args:
             log_file (str): Path to the log file.
@@ -172,10 +172,8 @@ class ThreatAnalyzer:
                 if is_ip_in_whitelist(ip, self.whitelist):
                     continue
 
-                # Store data per IP
+                # Store only timestamp per IP
                 self.ip_data[ip]['times'].append(dt)
-                self.ip_data[ip]['urls'].append(data['request'])
-                self.ip_data[ip]['useragents'].append(data['useragent'])
                 total_processed += 1
 
             logger.info(f"Finished processing. Analyzed {total_processed} log entries for {len(self.ip_data)} unique IPs.")
@@ -226,9 +224,7 @@ class ThreatAnalyzer:
                  ip_rpm = 0
                  ip_time_span = 0
 
-            has_suspicious_ua = False # Placeholder
-            suspicious_ua = ""      # Placeholder
-            ip_danger_score = calculate_danger_score(ip_rpm, total_requests, has_suspicious_ua)
+            ip_danger_score = calculate_danger_score(ip_rpm, total_requests, ip_time_span, MIN_DURATION_FOR_RPM_SIGNIFICANCE)
             is_suspicious_by_rpm = (
                 ip_rpm > self.rpm_threshold and
                 ip_time_span >= MIN_DURATION_FOR_RPM_SIGNIFICANCE
@@ -244,9 +240,7 @@ class ThreatAnalyzer:
                 'danger_score': ip_danger_score,
                 'is_suspicious_by_rpm': is_suspicious_by_rpm,
                 'first_seen': first_seen,
-                'last_seen': last_seen,
-                'has_suspicious_ua': has_suspicious_ua, # Add placeholders back
-                'suspicious_ua': suspicious_ua
+                'last_seen': last_seen
             }
 
             # Get the default subnet for this IP
@@ -412,7 +406,6 @@ class ThreatAnalyzer:
                              ip_detail = threat['details'][0]
                              rpm_flag_str = "*" if ip_detail.get('is_suspicious_by_rpm', False) else ""
                              detail_rpm_str = f"~{ip_detail['rpm']:.2f} rpm{rpm_flag_str}" if ip_detail['rpm'] > 0 else "RPM N/A"
-                             # ua_str = f" | UA: {ip_detail.get('suspicious_ua', '')}" if ip_detail.get('has_suspicious_ua', False) else "" # If UA added later
                              f.write(f"  -> Activity Metrics: {ip_detail['total_requests']} reqs, {detail_rpm_str}\n")
                          elif threat['type'] == 'subnet':
                              # Could add logic here to fetch and display top IPs from self.subnet_data if needed
