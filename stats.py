@@ -77,9 +77,10 @@ def main():
     parser = argparse.ArgumentParser(
         description='Analyzes a log file, generates statistics and optionally blocks threats with UFW.'
     )
+    # Make --file not required initially
     parser.add_argument(
-        '--file', '-f', required=True,
-        help='Path of the log file to analyze.'
+        '--file', '-f', required=False,
+        help='Path of the log file to analyze (required unless --clean-rules is used).'
     )
     parser.add_argument(
         '--start-date', '-s', required=False, default=None,
@@ -144,20 +145,26 @@ def main():
     )
     args = parser.parse_args()
 
-    # Configure logging
+    # Configure logging early
     log_level = getattr(logging, args.log_level)
     setup_logging(args.log_file, log_level)
     logger = logging.getLogger('botstats.main')
-    
-    # If we only want to clean rules, do it and exit
+
+    # If we only want to clean rules, do it and exit (check this BEFORE checking --file)
     if args.clean_rules:
         logger.info("Starting cleanup of expired UFW rules...")
-        ufw = UFWManager(args.dry_run)
+        ufw = UFWManager(args.dry_run) # Dry run still applies if specified
         count = ufw.clean_expired_rules()
         logger.info(f"Cleanup completed. {count} rules deleted.")
-        return
-    
-    # Validate log file
+        return # Exit after cleaning
+
+    # Now, if not cleaning rules, --file becomes mandatory
+    if not args.file:
+        parser.error("the following arguments are required: --file/-f (unless --clean-rules is used)")
+        # Although parser.error usually exits, adding sys.exit for clarity
+        sys.exit(1)
+
+    # Validate log file (only if not cleaning)
     if not os.path.exists(args.file):
         logger.error(f"Error: File not found {args.file}")
         sys.exit(1)
