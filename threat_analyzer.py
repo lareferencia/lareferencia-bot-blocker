@@ -181,15 +181,15 @@ class ThreatAnalyzer:
     
     def identify_threats(self):
         """
-        Identifies threats based on accumulated data.
+        Identifies threats based on accumulated data, grouping all IPs by subnet first.
         
         Returns:
-            list: List of detected threats
+            list: List of detected threats, primarily representing subnets.
         """
-        self.subnet_data = defaultdict(list)
-        
-        # First step: analyze each IP and group by subnet
+        # Step 1: Group all IPs by subnet and calculate individual metrics
+        subnet_details = defaultdict(lambda: {'ips': {}, 'total_requests': 0})
         logger.info("Analyzing IPs and grouping by subnets...")
+        
         for ip, info in self.ip_data.items():
             times = sorted(info['times'])
             total_requests = len(times)
@@ -203,73 +203,72 @@ class ThreatAnalyzer:
                 time_span = (times[-1] - times[0]).total_seconds()
                 if time_span > 0:
                     rpm = (total_requests / (time_span / 60))
+            elif total_requests == 1:
+                 # Handle single request case - assign a high RPM conceptually or 0?
+                 # Assigning 0 or a nominal value might be safer. Let's use 0 for now.
+                 rpm = 0 
+                 time_span = 0
 
-            # Evaluate suspicion by RPM
-            has_suspicious_ua = False
-            suspicious_ua = ""
+            # Basic check for suspicious user agent (can be expanded)
+            has_suspicious_ua = False # Placeholder
+            suspicious_ua = ""      # Placeholder
+
+            # Calculate individual danger score
+            # Note: We calculate score even if RPM is below threshold, it might be low but non-zero
+            danger_score = calculate_danger_score(rpm, total_requests, has_suspicious_ua)
             is_suspicious_by_rpm = rpm > self.rpm_threshold
-            is_suspicious = is_suspicious_by_rpm
 
-            if is_suspicious:
-                danger_score = calculate_danger_score(rpm, total_requests, has_suspicious_ua)
-                # Try to get the subnet (IPv4 or IPv6)
-                subnet = get_subnet(ip)
-                if subnet:
-                    ip_info = {
-                        'ip': ip,
-                        'rpm': rpm,
-                        'total_requests': total_requests,
-                        'time_span': time_span,
-                        'has_suspicious_ua': has_suspicious_ua,
-                        'suspicious_ua': suspicious_ua,
-                        'danger_score': danger_score,
-                        'is_suspicious_by_rpm': is_suspicious_by_rpm
-                    }
-                    self.subnet_data[subnet].append(ip_info)
+            # Try to get the subnet (IPv4 or IPv6)
+            subnet = get_subnet(ip)
+            if subnet:
+                ip_info = {
+                    'ip': ip,
+                    'rpm': rpm,
+                    'total_requests': total_requests,
+                    'time_span': time_span,
+                    'has_suspicious_ua': has_suspicious_ua,
+                    'suspicious_ua': suspicious_ua,
+                    'danger_score': danger_score,
+                    'is_suspicious_by_rpm': is_suspicious_by_rpm,
+                    'first_seen': times[0] if times else None,
+                    'last_seen': times[-1] if times else None
+                }
+                subnet_details[subnet]['ips'][ip] = ip_info
+                subnet_details[subnet]['total_requests'] += total_requests
 
-        # Second step: unify threats by subnet
+        # Step 2: Create unified threats list based on subnets
         self.unified_threats = []
-        logger.info(f"Evaluating {len(self.subnet_data)} subnets with suspicious IPs...")
+        logger.info(f"Consolidating threats for {len(subnet_details)} subnets...")
 
-        for subnet, ip_infos in self.subnet_data.items():
-            subnet_total_requests = sum(info['total_requests'] for info in ip_infos)
-            subnet_total_danger = sum(info['danger_score'] for info in ip_infos)
-            subnet_ip_count = len(ip_infos)
+        for subnet, details in subnet_details.items():
+            subnet_total_requests = details['total_requests']
+            ips_in_subnet = list(details['ips'].values())
+            subnet_total_danger = sum(info['danger_score'] for info in ips_in_subnet)
+            subnet_ip_count = len(ips_in_subnet)
             
-            if subnet_ip_count > 1:  # Subnet-type threat
+            # Always create a subnet-type threat
+            # Only include subnets where at least one IP was suspicious by RPM OR total requests are high?
+            # Let's include if total danger > 0, meaning at least some activity was logged.
+            if subnet_total_danger > 0:
                 threat = {
                     'type': 'subnet',
-                    'id': subnet,
+                    'id': subnet, # Keep the network object as ID
                     'danger_score': subnet_total_danger,
                     'total_requests': subnet_total_requests,
                     'ip_count': subnet_ip_count,
-                    'details': sorted(ip_infos, key=lambda x: x['danger_score'], reverse=True)
-                }
-                self.unified_threats.append(threat)
-            else:  # Individual IP threat
-                ip_info = ip_infos[0]
-                ip_addr_obj = ipaddress.ip_address(ip_info['ip'])
-                threat = {
-                    'type': 'ip',
-                    'id': ip_addr_obj,
-                    'danger_score': ip_info['danger_score'],
-                    'rpm': ip_info['rpm'],
-                    'total_requests': ip_info['total_requests'],
-                    'time_span': ip_info['time_span'],
-                    'has_suspicious_ua': ip_info['has_suspicious_ua'],
-                    'suspicious_ua': ip_info['suspicious_ua'],
-                    'is_suspicious_by_rpm': ip_info['is_suspicious_by_rpm']
+                    # Sort IPs within the subnet details by their individual danger score
+                    'details': sorted(ips_in_subnet, key=lambda x: x['danger_score'], reverse=True)
                 }
                 self.unified_threats.append(threat)
 
-        # Sort by danger score
+        # Step 3: Sort the unified threats list by the aggregate subnet danger score
         self.unified_threats = sorted(
             self.unified_threats, 
             key=lambda x: x['danger_score'], 
             reverse=True
         )
         
-        logger.info(f"Identified {len(self.unified_threats)} threats in total")
+        logger.info(f"Identified {len(self.unified_threats)} subnet threats in total")
         return self.unified_threats
 
     def get_top_threats(self, top=10):
