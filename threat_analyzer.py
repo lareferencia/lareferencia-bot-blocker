@@ -189,10 +189,11 @@ class ThreatAnalyzer:
     def identify_threats(self):
         """
         Identifies threats based on accumulated data, grouping IPs by multiple subnet levels,
-        sorts by danger score, and then filters to avoid reporting overlapping subnets.
+        sorts by danger score, and then filters to consolidate overlapping subnets,
+        favoring larger blocks when appropriate.
 
         Returns:
-            list: List of filtered, non-overlapping detected threats, sorted by danger score descending.
+            list: List of filtered, consolidated detected threats, sorted by danger score descending.
         """
         # ... (Step 1: Grouping remains the same) ...
         MIN_DURATION_FOR_RPM_SIGNIFICANCE = 5 # Minimum duration in seconds for RPM to be considered significant
@@ -292,44 +293,55 @@ class ThreatAnalyzer:
         )
         logger.info(f"Generated and sorted {len(initial_threats_sorted)} initial threat entries by danger score.")
 
-        # Step 4: Filter out overlapping subnets, keeping the highest-ranked ones encountered first
-        self.unified_threats = []
-        covered_networks = set() # Keep track of networks already added to the final list
-        logger.info("Filtering overlapping subnet threats (keeping highest score first)...")
+        # Step 4: Filter and consolidate overlapping subnets.
+        # Prioritize higher scores, but allow larger networks to replace smaller contained ones.
+        final_threats_dict = {} # Use dict for easier replacement: {network_obj: threat_dict}
+        logger.info("Filtering and consolidating overlapping subnet threats...")
 
-        for threat in initial_threats_sorted:
-            current_network = threat['id']
+        for current_threat in initial_threats_sorted:
+            current_network = current_threat['id']
             is_subsumed = False
-            is_supernet_of_selected = False
+            subsumes_indices = [] # Indices of threats in final_threats_dict to remove
 
-            # Check if current_network is already covered by or equal to a network in the final list
-            for selected_threat in self.unified_threats:
-                selected_network = selected_threat['id']
+            # Check against networks already finalized
+            # Convert keys to list for safe iteration while modifying dict
+            finalized_networks = list(final_threats_dict.keys())
+            for i, existing_network in enumerate(finalized_networks):
                 try:
-                    if current_network.subnet_of(selected_network) or current_network == selected_network:
+                    # 1. Check if current is subsumed by an existing network
+                    if current_network.subnet_of(existing_network) or current_network == existing_network:
                         is_subsumed = True
-                        logger.debug(f"Skipping {current_network} (Score: {threat['danger_score']:.2f}): Subsumed by already selected {selected_network} (Score: {selected_threat['danger_score']:.2f})")
-                        break
-                    # Check if current_network is a supernet of an already selected network
-                    if selected_network.subnet_of(current_network):
-                        is_supernet_of_selected = True
-                        logger.debug(f"Note: {current_network} (Score: {threat['danger_score']:.2f}) is a supernet of already selected {selected_network} (Score: {selected_threat['danger_score']:.2f})")
-                        # We might still add the supernet if it's not subsumed by another,
-                        # but this flag could be used for more complex logic if needed later.
-                        # For now, just note it. We prioritize adding the highest score first.
+                        logger.debug(f"Skipping {current_network} (Score: {current_threat['danger_score']:.2f}): Subsumed by already selected {existing_network} (Score: {final_threats_dict[existing_network]['danger_score']:.2f})")
+                        break # No need to check further if it's subsumed
+
+                    # 2. Check if current subsumes an existing network
+                    if existing_network.subnet_of(current_network):
+                        # Mark the existing smaller network for removal
+                        subsumes_indices.append(existing_network)
+                        logger.debug(f"Marking {existing_network} (Score: {final_threats_dict[existing_network]['danger_score']:.2f}) for removal: Subsumed by {current_network} (Score: {current_threat['danger_score']:.2f})")
+
                 except (TypeError, AttributeError):
-                    continue
+                    continue # Ignore comparison errors (e.g., IPv4 vs IPv6)
 
             if not is_subsumed:
-                # This threat has the highest score among overlapping candidates encountered so far
-                # and is not contained within an already selected threat. Add it.
-                self.unified_threats.append(threat)
-                logger.debug(f"Selected threat: {current_network} (Score: {threat['danger_score']:.2f}).")
-                # Note: We don't need covered_networks set with this logic,
-                # as we directly compare against self.unified_threats as it builds.
+                # Remove smaller networks that this current network subsumes
+                if subsumes_indices:
+                    for network_to_remove in subsumes_indices:
+                        if network_to_remove in final_threats_dict: # Check if not already removed by another subsuming network
+                            logger.debug(f"Removing {network_to_remove} as it is subsumed by {current_network}")
+                            del final_threats_dict[network_to_remove]
 
-        # The final list self.unified_threats is already sorted by danger score due to the initial sort.
-        logger.info(f"Identified {len(self.unified_threats)} final, non-overlapping subnet threats, sorted by danger score.")
+                # Add the current threat (it's either non-overlapping or replaces smaller ones)
+                # Check if it wasn't removed itself in the process (edge case)
+                if current_network not in final_threats_dict:
+                     final_threats_dict[current_network] = current_threat
+                     logger.debug(f"Selected/Updated threat: {current_network} (Score: {current_threat['danger_score']:.2f}).")
+
+
+        # Convert the final dictionary back to a list and sort by danger score
+        self.unified_threats = sorted(final_threats_dict.values(), key=lambda x: x['danger_score'], reverse=True)
+
+        logger.info(f"Identified {len(self.unified_threats)} final, consolidated subnet threats, sorted by danger score.")
         return self.unified_threats
 
     def get_top_threats(self, top=10):
