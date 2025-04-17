@@ -211,9 +211,13 @@ The whitelist file should contain one IP or subnet per line. Examples:
 ```
 # Comments start with #
 192.168.1.1
-10.0.0.0/8MER: EXPERIMENTAL SOFTWARE**
-2001:db8::/64> 
-# Individual IPv6 IPs can also be includedhis software is experimental in nature. It is crucial to fully understand the implications of adding firewall restrictions to a system based on log analysis before applying it to production environments. Incorrect parameterization of this script could generate massive blocks of legitimate access to the service. LA Referencia is not responsible for the improper use of this script or any consequences arising from its use. It is strongly recommended to test it thoroughly in development environments before considering its use in production.2001:db8::1```## Project Structure
+10.0.0.0/8
+2001:db8::/64
+# Individual IPv6 IPs can also be included
+2001:db8::1
+```
+
+## Project Structure
 
 The code is organized in modules:
 
@@ -234,9 +238,18 @@ To contribute to the project:
 
 ## License
 
-[MIT](LICENSE)
+This software is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International License** (CC BY-NC 4.0).
 
----
+You are free to:
+- Share: copy and redistribute the material in any medium or format
+- Adapt: remix, transform, and build upon the material
+
+Under the following terms:
+- Attribution: You must give appropriate credit to LA Referencia, provide a link to the license, and indicate if changes were made.
+- NonCommercial: You may not use the material for commercial purposes.
+
+This is a human-readable summary of the license. The full license is available at:
+[https://creativecommons.org/licenses/by-nc/4.0/legalcode](https://creativecommons.org/licenses/by-nc/4.0/legalcode)
 
 > **⚠️ DISCLAIMER: EXPERIMENTAL SOFTWARE**
 > 
