@@ -31,38 +31,52 @@ def parse_log_line(line):
         return match.groupdict()
     return None
 
-def get_subnet(ip_str, version=None, subnet_mask_ipv4=24, subnet_mask_ipv6=64):
+def get_subnet(ip_str, subnet_masks_ipv4=None, subnet_masks_ipv6=None):
     """
-    Returns the subnet as an ipaddress.ip_network object based on specified masks.
+    Returns a list of subnets as ipaddress.ip_network objects based on specified masks.
     Defaults to /24 for IPv4 and /64 for IPv6 if masks are not provided.
-    
+
     Args:
         ip_str (str): IP address in string format
-        version (int, optional): IP version to force (4 or 6). Default: None (auto-detect)
-        subnet_mask_ipv4 (int): Subnet mask prefix length for IPv4 (e.g., 24 for /24). Default: 24
-        subnet_mask_ipv6 (int): Subnet mask prefix length for IPv6 (e.g., 64 for /64). Default: 64
-        
+        subnet_masks_ipv4 (list[int], optional): List of subnet mask prefix lengths for IPv4. Default: [24]
+        subnet_masks_ipv6 (list[int], optional): List of subnet mask prefix lengths for IPv6. Default: [64]
+
     Returns:
-        ipaddress.ip_network: Object representing the subnet, or None if the IP is invalid
+        list[ipaddress.ip_network]: List of objects representing the subnets, or empty list if IP is invalid
     """
+    # Set default masks if none provided
+    if subnet_masks_ipv4 is None:
+        subnet_masks_ipv4 = [24]
+    if subnet_masks_ipv6 is None:
+        subnet_masks_ipv6 = [64]
+
+    subnets = []
     try:
         ip = ipaddress.ip_address(ip_str)
-        # If version is specified, verify that the IP matches
-        if version and ip.version != version:
-            return None
-            
+
         if ip.version == 4:
-            # Create a network with the specified IPv4 mask
-            return ipaddress.ip_network(f"{ip_str}/{subnet_mask_ipv4}", strict=False)
+            # Create networks for each specified IPv4 mask
+            for mask in subnet_masks_ipv4:
+                try:
+                    network = ipaddress.ip_network(f"{ip_str}/{mask}", strict=False)
+                    subnets.append(network)
+                except ValueError:
+                    logger.warning(f"Could not create IPv4 network {ip_str}/{mask}")
         elif ip.version == 6:
-            # Create a network with the specified IPv6 mask
-            return ipaddress.ip_network(f"{ip_str}/{subnet_mask_ipv6}", strict=False)
+            # Create networks for each specified IPv6 mask
+            for mask in subnet_masks_ipv6:
+                try:
+                    network = ipaddress.ip_network(f"{ip_str}/{mask}", strict=False)
+                    subnets.append(network)
+                except ValueError:
+                    logger.warning(f"Could not create IPv6 network {ip_str}/{mask}")
+
     except ValueError:
         # Log the error or handle it as needed
         logger.error(f"Invalid IP address format: {ip_str}")
-        return None
-    
-    return None # Should not be reached if IP is valid IPv4 or IPv6
+        return [] # Return empty list for invalid IP
+
+    return subnets
 
 def is_localhost(ip_str):
     """
