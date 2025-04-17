@@ -31,14 +31,16 @@ def parse_log_line(line):
         return match.groupdict()
     return None
 
-def get_subnet(ip_str, version=None):
+def get_subnet(ip_str, version=None, subnet_mask_ipv4=24, subnet_mask_ipv6=64):
     """
-    Returns the subnet as an ipaddress.ip_network object.
-    For IPv4 returns a /24 network, for IPv6 returns a /64 network.
+    Returns the subnet as an ipaddress.ip_network object based on specified masks.
+    Defaults to /24 for IPv4 and /64 for IPv6 if masks are not provided.
     
     Args:
         ip_str (str): IP address in string format
         version (int, optional): IP version to force (4 or 6). Default: None (auto-detect)
+        subnet_mask_ipv4 (int): Subnet mask prefix length for IPv4 (e.g., 24 for /24). Default: 24
+        subnet_mask_ipv6 (int): Subnet mask prefix length for IPv6 (e.g., 64 for /64). Default: 64
         
     Returns:
         ipaddress.ip_network: Object representing the subnet, or None if the IP is invalid
@@ -50,15 +52,17 @@ def get_subnet(ip_str, version=None):
             return None
             
         if ip.version == 4:
-            # Create a /24 network without validating if the IP is the network address
-            return ipaddress.ip_network(f"{ip_str}/24", strict=False)
+            # Create a network with the specified IPv4 mask
+            return ipaddress.ip_network(f"{ip_str}/{subnet_mask_ipv4}", strict=False)
         elif ip.version == 6:
-            # For IPv6 we use /64 which is common for subnets
-            return ipaddress.ip_network(f"{ip_str}/64", strict=False)
+            # Create a network with the specified IPv6 mask
+            return ipaddress.ip_network(f"{ip_str}/{subnet_mask_ipv6}", strict=False)
     except ValueError:
+        # Log the error or handle it as needed
+        logger.error(f"Invalid IP address format: {ip_str}")
         return None
     
-    return None  # Unhandled case (shouldn't reach here)
+    return None # Should not be reached if IP is valid IPv4 or IPv6
 
 def is_localhost(ip_str):
     """
