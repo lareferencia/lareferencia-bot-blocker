@@ -9,11 +9,50 @@ import logging
 import json
 import csv
 import os
+import io
 
-from log_parser import parse_log_line, get_subnet, calculate_danger_score, is_ip_in_whitelist, process_log_in_chunks
+from log_parser import parse_log_line, get_subnet, calculate_danger_score, is_ip_in_whitelist
 
 # Logger for this module
 logger = logging.getLogger('botstats.analyzer')
+
+# Helper function for efficient reverse reading
+def _read_lines_reverse(filename, buf_size=8192):
+    """Read a file line by line backwards, memory efficiently."""
+    with open(filename, 'rb') as f:
+        segment = None
+        offset = 0
+        f.seek(0, os.SEEK_END)
+        file_size = remaining_size = f.tell()
+        while remaining_size > 0:
+            offset = min(file_size, offset + buf_size)
+            f.seek(file_size - offset)
+            buffer = f.read(min(remaining_size, buf_size))
+            # Ensure buffer is string
+            try:
+                buffer_str = buffer.decode('utf-8')
+            except UnicodeDecodeError:
+                # Handle potential decoding errors, e.g., skip or replace
+                buffer_str = buffer.decode('utf-8', errors='ignore')
+                
+            remaining_size -= buf_size
+            lines = buffer_str.splitlines(True) # Keep line endings
+            if segment is not None:
+                # If the previous chunk starts right after the previous one's end
+                if buffer_str[-1] != '\n':
+                     # Handle the case where a line is split across chunks
+                     lines[-1] += segment
+                else:
+                    # The segment is a complete line by itself
+                    yield segment
+            segment = lines[0]
+            # Yield lines in reverse order
+            for i in range(len(lines) - 1, 0, -1):
+                 if lines[i]:
+                     yield lines[i]
+        # Don't forget the last segment if it exists
+        if segment is not None:
+            yield segment
 
 class ThreatAnalyzer:
     """
@@ -62,99 +101,83 @@ class ThreatAnalyzer:
             logger.error(f"Error loading whitelist from {whitelist_file}: {e}")
             return 0
     
-    def _process_chunk(self, lines, start_date=None):
+    def analyze_log_file(self, log_file, start_date=None):
         """
-        Processes a chunk of log lines.
-        
-        Args:
-            lines (list): List of log lines
-            start_date (datetime, optional): Date from which to analyze
-            
-        Returns:
-            int or bool: Number of lines processed, or False to signal stopping
-        """
-        processed = 0
-        found_outside_window = False
-        
-        for line in lines:
-            data = parse_log_line(line)
-            if data is None:
-                continue
-                
-            # Get date and time from the log
-            dt_str = data['datetime'].split()[0]
-            try:
-                dt = datetime.strptime(dt_str, '%d/%b/%Y:%H:%M:%S')
-            except ValueError:
-                continue  # Skip entries with malformed date
-                
-            # Filter by date when start_date is specified
-            if start_date and dt < start_date:
-                found_outside_window = True
-                continue  # Skip this line but continue processing others in the chunk
-                
-            ip = data['ip']
-            
-            # Check whitelist
-            if is_ip_in_whitelist(ip, self.whitelist):
-                continue
-                
-            # Accumulate data
-            self.ip_data[ip]['times'].append(dt)
-            self.ip_data[ip]['urls'].append(data['request'])
-            self.ip_data[ip]['useragents'].append(data['useragent'])
-            processed += 1
-        
-        # In reverse mode, if we've found entries outside our time window,
-        # we stop the entire processing as all older entries will also be outside
-        if found_outside_window:
-            return False
-            
-        return processed
-            
-    def analyze_log_file(self, log_file, start_date=None, chunk_size=10000, reverse=False):
-        """
-        Analyzes a complete log file.
+        Analyzes a complete log file. Reads forwards if start_date is None,
+        reads backwards from the end if start_date is provided, stopping
+        when lines older than start_date are found.
         
         Args:
             log_file (str): Path to the log file
             start_date (datetime, optional): Date from which to analyze
-            chunk_size (int): Chunk size for batch processing
-            reverse (bool): If True, process file from newest to oldest
             
         Returns:
             int: Number of entries processed
         """
-        total_processed = 0
-        try:
-            # Use reverse mode only when start_date is specified and reverse is True
-            use_reverse = reverse and start_date is not None
-            
-            if chunk_size > 0:
-                logger.info(f"Processing log in {'reverse' if use_reverse else 'forward'} mode with chunks of {chunk_size} lines")
-                result = process_log_in_chunks(
-                    log_file, 
-                    self._process_chunk, 
-                    chunk_size, 
-                    reverse=use_reverse,
-                    start_date=start_date
-                )
-                if isinstance(result, int):
-                    total_processed = result
+         total_processed = 0
+         try:
+            if start_date:
+                logger.info(f"Processing log file in reverse (newest first), stopping before {start_date}")
+                # Process in reverse, stopping at start_date
+                for line in _read_lines_reverse(log_file):
+                    data = parse_log_line(line)
+                    if data is None:
+                        continue
+                        
+                    # Get date and time from the log
+                    dt_str = data['datetime'].split()[0]
+                    try:
+                        dt = datetime.strptime(dt_str, '%d/%b/%Y:%H:%M:%S')
+                    except ValueError:
+                        continue # Skip malformed date
+                        
+                    # Stop if we reached lines older than start_date
+                    if dt < start_date:
+                        logger.info(f"Reached entry older than {start_date}. Stopping reverse scan.")
+                        break 
+                        
+                    ip = data['ip']
+                    if is_ip_in_whitelist(ip, self.whitelist):
+                        continue
+                        
+                    self.ip_data[ip]['times'].append(dt)
+                    self.ip_data[ip]['urls'].append(data['request'])
+                    self.ip_data[ip]['useragents'].append(data['useragent'])
+                    total_processed += 1
             else:
-                # Process at once (for small files)
+                logger.info("Processing log file forwards (oldest first)")
+                # Process forwards, reading the whole file
                 with open(log_file, 'r') as f:
-                    lines = f.readlines()
-                    total_processed = self._process_chunk(lines, start_date)
-                    
-            logger.info(f"Processed {total_processed} log entries")
+                    for line in f:
+                        data = parse_log_line(line)
+                        if data is None:
+                            continue
+                            
+                        # Get date and time from the log
+                        dt_str = data['datetime'].split()[0]
+                        try:
+                            dt = datetime.strptime(dt_str, '%d/%b/%Y:%H:%M:%S')
+                        except ValueError:
+                            continue # Skip malformed date
+                            
+                        ip = data['ip']
+                        if is_ip_in_whitelist(ip, self.whitelist):
+                            continue
+                            
+                        self.ip_data[ip]['times'].append(dt)
+                        self.ip_data[ip]['urls'].append(data['request'])
+                        self.ip_data[ip]['useragents'].append(data['useragent'])
+                        total_processed += 1
+                        
+            logger.info(f"Finished processing. Analyzed {total_processed} log entries within the specified time frame.")
             return total_processed
-        except FileNotFoundError:
-            logger.error(f"File not found {log_file}")
-            raise
-        except Exception as e:
-            logger.error(f"Error processing log file {log_file}: {e}")
-            raise
+            
+         except FileNotFoundError:
+             logger.error(f"File not found {log_file}")
+             raise
+         except Exception as e:
+             logger.error(f"Error processing log file {log_file}: {e}")
+             raise
     
     def identify_threats(self):
         """

@@ -7,7 +7,6 @@ import re
 from datetime import datetime
 import ipaddress
 import logging
-import os
 
 # Logger for this module
 logger = logging.getLogger('botstats.parser')
@@ -85,81 +84,6 @@ def calculate_danger_score(rpm, total_requests, has_suspicious_ua):
     score += total_requests / 1000
     
     return score
-
-def process_log_in_chunks(filename, handler_func, chunk_size=10000, reverse=False, **kwargs):
-    """
-    Process the log file in segments to reduce memory usage.
-    
-    Args:
-        filename (str): Path to the log file
-        handler_func (callable): Function that processes each chunk of lines
-        chunk_size (int): Chunk size in number of lines
-        reverse (bool): If True, processes the file from end to beginning
-                      and stops when a line is outside the time window
-        **kwargs: Additional arguments to pass to handler_func
-        
-    Returns:
-        int: Number of lines processed
-    """
-    total_processed = 0
-    
-    if not reverse:
-        # Original forward processing
-        with open(filename, 'r') as f:
-            chunk = []
-            for i, line in enumerate(f):
-                chunk.append(line)
-                if i % chunk_size == chunk_size - 1:
-                    result = handler_func(chunk, **kwargs)
-                    total_processed += len(chunk)
-                    chunk = []
-                    # If handler returns False, stop processing
-                    if result is False:
-                        logger.info(f"Handler requested to stop processing after {total_processed} lines")
-                        return total_processed
-            # Process the last segment if it exists
-            if chunk:
-                result = handler_func(chunk, **kwargs)
-                total_processed += len(chunk)
-                if result is False:
-                    logger.info(f"Handler requested to stop processing after {total_processed} lines")
-    else:
-        # Reverse processing (from newest to oldest)
-        logger.info("Processing log file in reverse mode (newest to oldest)")
-        
-        # Get total lines in file for efficient chunking in reverse mode
-        total_lines = sum(1 for _ in open(filename, 'r'))
-        logger.info(f"Log file contains {total_lines} lines")
-        
-        with open(filename, 'r') as f:
-            # Process the file in chunks starting from the end
-            remaining_lines = total_lines
-            while remaining_lines > 0:
-                # Calculate chunk to read
-                current_chunk_size = min(chunk_size, remaining_lines)
-                skip_lines = remaining_lines - current_chunk_size
-                
-                # Skip to the beginning of the current chunk
-                f.seek(0)
-                for _ in range(skip_lines):
-                    f.readline()
-                
-                # Read the current chunk
-                chunk = [f.readline() for _ in range(current_chunk_size)]
-                
-                # Process the chunk
-                result = handler_func(chunk, **kwargs)
-                total_processed += len(chunk)
-                
-                # If handler returns False, stop processing
-                if result is False:
-                    logger.info(f"Handler requested to stop processing after {total_processed} lines")
-                    break
-                
-                # Update remaining lines for next iteration
-                remaining_lines -= current_chunk_size
-    
-    return total_processed
 
 def is_ip_in_whitelist(ip, whitelist):
     """

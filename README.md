@@ -15,7 +15,7 @@ Tool for analyzing web server logs, detecting potential bot threats or attacks, 
 - ✅ Threat grouping by subnets (/24 for IPv4, /64 for IPv6)
 - ✅ Automated blocking of IPs/subnets through UFW rules with expiration
 - ✅ Whitelist of IPs/subnets that should never be blocked
-- ✅ Optimized processing of large logs in chunks
+- ✅ Optimized processing of large logs (reads backwards efficiently when time window is specified)
 - ✅ Multiple export formats (JSON, CSV, text)
 - ✅ Complete logging system
 - ✅ Modular and object-oriented structure
@@ -164,19 +164,16 @@ python stats.py -f /var/log/nginx/access.log \
   --output threats.json \
   --format json \
   --log-file /var/log/botstats.log \
-  --log-level DEBUG \
-  --chunk-size 50000 \
-  --reverse
+  --log-level DEBUG
 ```
 
 This command:
-- Analyzes only entries from the last day
+- Analyzes only entries from the last day (reads log backwards efficiently)
 - Uses a threshold of 200 RPM to consider IPs suspicious
 - Uses a whitelist of IPs/subnets that should not be blocked
 - Exports the results in JSON format
 - Saves detailed logs to a file
-- Processes the log file in chunks of 50,000 lines to optimize memory
-- Uses reverse processing (from newest to oldest), stopping when entries are outside the time window
+- Processes the log file efficiently, stopping when entries are outside the time window
 
 ### Only Clean Expired Rules
 
@@ -191,8 +188,8 @@ This command only removes expired UFW rules and exits.
 | Option | Description |
 |--------|-------------|
 | `--file, -f` | Path to the log file to analyze |
-| `--start-date, -s` | Date from which to analyze the log (format: dd/mmm/yyyy:HH:MM:SS) |
-| `--time-window, -tw` | Analyze only entries from the last hour, day or week |
+| `--start-date, -s` | Date from which to analyze the log (format: dd/mmm/yyyy:HH:MM:SS). Implies reverse reading. |
+| `--time-window, -tw` | Analyze only entries from the last hour, day or week. Implies reverse reading. |
 | `--threshold, -t` | RPM threshold to consider an IP suspicious (default: 100) |
 | `--top, -n` | Number of most dangerous threats to display (default: 10) |
 | `--block` | Enable blocking of threats using UFW |
@@ -204,9 +201,7 @@ This command only removes expired UFW rules and exits.
 | `--format` | Output format: json, csv or text (default: text) |
 | `--log-file` | File to save execution logs |
 | `--log-level` | Log detail level: DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO) |
-| `--chunk-size` | Chunk size for processing large logs (default: 10000, 0 to not fragment) |
 | `--clean-rules` | Run cleanup of expired UFW rules and exit |
-| `--reverse` | Process log file from newest to oldest, stopping when entries are outside the time window |
 
 ## Whitelist Format
 
