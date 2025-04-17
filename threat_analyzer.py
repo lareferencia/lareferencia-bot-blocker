@@ -59,18 +59,25 @@ class ThreatAnalyzer:
     Class for analyzing logs and detecting potential threats.
     """
     
-    def __init__(self, rpm_threshold=100, whitelist=None):
+    def __init__(self, rpm_threshold=100, whitelist=None, subnet_masks_ipv4=None, subnet_masks_ipv6=None):
         """
         Initializes the threat analyzer.
         
         Args:
             rpm_threshold (float): Requests per minute threshold to consider an IP suspicious
             whitelist (list): List of IPs or subnets that should never be blocked
+            subnet_masks_ipv4 (list[int]): List of IPv4 subnet masks to analyze (e.g., [24, 16])
+            subnet_masks_ipv6 (list[int]): List of IPv6 subnet masks to analyze (e.g., [64])
         """
         self.rpm_threshold = rpm_threshold
         self.whitelist = whitelist or []
+        # Use provided masks or defaults
+        self.subnet_masks_ipv4 = subnet_masks_ipv4 if subnet_masks_ipv4 is not None else [24]
+        self.subnet_masks_ipv6 = subnet_masks_ipv6 if subnet_masks_ipv6 is not None else [64]
+        # Ensure masks are sorted from most specific to least specific (largest number first)
+        self.subnet_masks_ipv4.sort(reverse=True)
+        self.subnet_masks_ipv6.sort(reverse=True)
         self.ip_data = defaultdict(lambda: {'times': [], 'urls': [], 'useragents': []})
-        self.subnet_data = defaultdict(list)
         self.unified_threats = []
         self.blocked_targets = set()
         
@@ -181,24 +188,29 @@ class ThreatAnalyzer:
     
     def identify_threats(self):
         """
-        Identifies threats based on accumulated data, grouping all IPs by subnet first.
-        
+        Identifies threats based on accumulated data, grouping IPs by multiple subnet levels,
+        and then filters to avoid reporting overlapping subnets, prioritizing larger subnets.
+
         Returns:
-            list: List of detected threats, primarily representing subnets.
+            list: List of filtered, non-overlapping detected threats, sorted primarily by subnet size (larger first)
+                  and secondarily by danger score.
         """
         MIN_DURATION_FOR_RPM_SIGNIFICANCE = 5 # Minimum duration in seconds for RPM to be considered significant
 
-        # Step 1: Group all IPs by subnet and calculate individual metrics
-        subnet_details = defaultdict(lambda: {'ips': {}, 'total_requests': 0})
-        logger.info("Analyzing IPs and grouping by subnets...")
-        
+        # Step 1: Group all IPs by multiple subnet levels and calculate metrics
+        subnet_details = defaultdict(lambda: {'ips': {}, 'total_requests': 0, 'all_times': []})
+        logger.info(f"Analyzing IPs and grouping by subnets (IPv4: {self.subnet_masks_ipv4}, IPv6: {self.subnet_masks_ipv6})...")
+
+        processed_ips = 0
         for ip, info in self.ip_data.items():
+            processed_ips += 1
             times = sorted(info['times'])
             total_requests = len(times)
             if total_requests == 0:
                 continue
 
-            # Calculate RPM
+            # Calculate RPM, time_span, danger_score, is_suspicious_by_rpm for the IP
+            # ... (calculation logic as before) ...
             rpm = 0
             time_span = 0
             if total_requests >= 2:
@@ -206,56 +218,53 @@ class ThreatAnalyzer:
                 if time_span > 0:
                     rpm = (total_requests / (time_span / 60))
             elif total_requests == 1:
-                 # Handle single request case - assign a high RPM conceptually or 0?
-                 # Assigning 0 or a nominal value might be safer. Let's use 0 for now.
-                 rpm = 0 
+                 rpm = 0
                  time_span = 0
-
-            # Basic check for suspicious user agent (can be expanded)
             has_suspicious_ua = False # Placeholder
             suspicious_ua = ""      # Placeholder
-
-            # Calculate individual danger score
-            # Note: We calculate score even if RPM is below threshold, it might be low but non-zero
             danger_score = calculate_danger_score(rpm, total_requests, has_suspicious_ua)
-            # Consider RPM suspicious only if RPM threshold is met AND there's a minimum number of requests
             is_suspicious_by_rpm = (
                 rpm > self.rpm_threshold and
                 time_span >= MIN_DURATION_FOR_RPM_SIGNIFICANCE
             )
+            first_seen = times[0] if times else None
+            last_seen = times[-1] if times else None
 
-            # Try to get the subnet (IPv4 or IPv6)
-            subnet = get_subnet(ip)
-            if subnet:
+            # Get the list of subnets this IP belongs to for all specified masks
+            subnets = get_subnet(ip, subnet_masks_ipv4=self.subnet_masks_ipv4, subnet_masks_ipv6=self.subnet_masks_ipv6)
+
+            if subnets:
                 ip_info = {
-                    'ip': ip,
-                    'rpm': rpm,
-                    'total_requests': total_requests,
-                    'time_span': time_span,
-                    'has_suspicious_ua': has_suspicious_ua,
-                    'suspicious_ua': suspicious_ua,
-                    'danger_score': danger_score,
-                    'is_suspicious_by_rpm': is_suspicious_by_rpm,
-                    'first_seen': times[0] if times else None,
-                    'last_seen': times[-1] if times else None
+                    'ip': ip, 'rpm': rpm, 'total_requests': total_requests, 'time_span': time_span,
+                    'has_suspicious_ua': has_suspicious_ua, 'suspicious_ua': suspicious_ua,
+                    'danger_score': danger_score, 'is_suspicious_by_rpm': is_suspicious_by_rpm,
+                    'first_seen': first_seen, 'last_seen': last_seen
                 }
-                subnet_details[subnet]['ips'][ip] = ip_info
-                subnet_details[subnet]['total_requests'] += total_requests
+                # Add this IP's info and requests to *each* subnet level it belongs to
+                for subnet in subnets:
+                    if ip not in subnet_details[subnet]['ips']:
+                         subnet_details[subnet]['ips'][ip] = ip_info
+                         # Add timestamps only once per IP per subnet level
+                         if first_seen: subnet_details[subnet]['all_times'].append(first_seen)
+                         if last_seen: subnet_details[subnet]['all_times'].append(last_seen)
+                    # Accumulate total requests for the subnet level
+                    subnet_details[subnet]['total_requests'] += total_requests
+        logger.info(f"Processed {processed_ips} unique IPs into {len(subnet_details)} subnet views.")
 
-        # Step 2: Create unified threats list based on subnets
-        self.unified_threats = []
-        logger.info(f"Consolidating threats for {len(subnet_details)} subnets...")
+        # Step 2: Create initial unified threats list including all subnet levels
+        initial_threats = []
+        logger.info(f"Consolidating initial threats for {len(subnet_details)} subnet views...")
 
         for subnet, details in subnet_details.items():
-            subnet_total_requests = details['total_requests']
             ips_in_subnet = list(details['ips'].values())
             subnet_total_danger = sum(info['danger_score'] for info in ips_in_subnet)
             subnet_ip_count = len(ips_in_subnet)
-            
+            subnet_total_requests = details['total_requests'] # Use accumulated total
+
             # Calculate aggregate time span and RPM for the subnet
             subnet_rpm = 0
             subnet_time_span = 0
-            all_times = [t for ip_info in ips_in_subnet for t in (ip_info.get('first_seen'), ip_info.get('last_seen')) if t]
+            all_times = details['all_times']
             if len(all_times) >= 2:
                 first_subnet_time = min(all_times)
                 last_subnet_time = max(all_times)
@@ -263,31 +272,55 @@ class ThreatAnalyzer:
                 if subnet_time_span > 0:
                     subnet_rpm = (subnet_total_requests / (subnet_time_span / 60))
 
-            # Always create a subnet-type threat
-            # Only include subnets where at least one IP was suspicious by RPM OR total requests are high?
-            # Let's include if total danger > 0, meaning at least some activity was logged.
+            # Create a threat entry if there's any danger score associated
             if subnet_total_danger > 0:
                 threat = {
-                    'type': 'subnet',
-                    'id': subnet, # Keep the network object as ID
-                    'danger_score': subnet_total_danger,
-                    'total_requests': subnet_total_requests,
-                    'subnet_rpm': subnet_rpm, # Add aggregate RPM
-                    'subnet_time_span': subnet_time_span, # Add aggregate time span
-                    'ip_count': subnet_ip_count,
-                    # Sort IPs within the subnet details by their individual danger score
+                    'type': 'subnet', 'id': subnet, 'danger_score': subnet_total_danger,
+                    'total_requests': subnet_total_requests, 'subnet_rpm': subnet_rpm,
+                    'subnet_time_span': subnet_time_span, 'ip_count': subnet_ip_count,
                     'details': sorted(ips_in_subnet, key=lambda x: x['danger_score'], reverse=True)
                 }
-                self.unified_threats.append(threat)
+                initial_threats.append(threat)
 
-        # Step 3: Sort the unified threats list by the aggregate subnet danger score
-        self.unified_threats = sorted(
-            self.unified_threats, 
-            key=lambda x: x['danger_score'], 
-            reverse=True
+        # Step 3: Sort the initial threats list. Primary key: prefix length (ascending), Secondary key: danger score (descending)
+        initial_threats_sorted = sorted(
+            initial_threats,
+            key=lambda x: (x['id'].prefixlen, -x['danger_score']), # Smaller prefixlen = larger network
+            reverse=False # Ascending prefixlen, descending danger_score (due to negation)
         )
-        
-        logger.info(f"Identified {len(self.unified_threats)} subnet threats in total")
+        logger.info(f"Generated and sorted {len(initial_threats_sorted)} initial threat entries (prioritizing larger subnets).")
+
+        # Step 4: Filter out overlapping subnets, keeping the highest-ranked (now based on size then score)
+        self.unified_threats = []
+        covered_networks = set()
+        logger.info("Filtering overlapping subnet threats...")
+
+        for threat in initial_threats_sorted:
+            current_network = threat['id']
+            is_covered = False
+            # Check if this network is already covered by a previously selected network
+            for covered_net in covered_networks:
+                try:
+                    # If current_network is a subnet of or equal to an already covered network
+                    if current_network.subnet_of(covered_net) or current_network == covered_net:
+                        is_covered = True
+                        break
+                except (TypeError, AttributeError): # Handle comparisons between different IP versions or invalid types
+                    continue
+
+            if not is_covered:
+                # This threat is not covered. Select it.
+                self.unified_threats.append(threat)
+                # Add its network to the set of covered ranges
+                covered_networks.add(current_network)
+                logger.debug(f"Selected threat: {current_network} (Prefix: {current_network.prefixlen}, Score: {threat['danger_score']:.2f}). Added to covered networks.")
+            else:
+                 logger.debug(f"Skipping threat: {current_network} (Prefix: {current_network.prefixlen}, Score: {threat['danger_score']:.2f}). Already covered.")
+
+        # The final list self.unified_threats is now sorted according to the filtering logic (based on initial sort)
+        # For final reporting, it might be useful to re-sort by danger score if needed, but the selection prioritizes size.
+        # Let's keep the order determined by the filtering process for now.
+        logger.info(f"Identified {len(self.unified_threats)} final, non-overlapping subnet threats.")
         return self.unified_threats
 
     def get_top_threats(self, top=10):
