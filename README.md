@@ -1,4 +1,4 @@
-# LaReferencia Bot Stats
+# LA Referencia Dynamic Bot Blocker
 
 Tool for analyzing web server logs, detecting potential bot threats or attacks, and optionally blocking suspicious IPs using UFW (Uncomplicated Firewall).
 
@@ -14,6 +14,20 @@ Tool for analyzing web server logs, detecting potential bot threats or attacks, 
 - ✅ Multiple export formats (JSON, CSV, text)
 - ✅ Complete logging system
 - ✅ Modular and object-oriented structure
+
+## Comparison with Fail2Ban
+
+While Fail2Ban is a powerful intrusion prevention tool, LA Referencia Bot Blocker offers several key differences:
+
+- **Specialized Bot Detection**: Focused specifically on identifying bot patterns and suspicious crawler behaviors in web servers, rather than general intrusion attempts.
+- **Subnet Analysis**: Automatically groups related threats by subnets to detect coordinated attacks from IP ranges.
+- **Request Per Minute (RPM) Analysis**: Uses RPM patterns to identify aggressive crawling rather than just matching regex patterns.
+- **Batch Analysis**: Designed for both real-time monitoring and retrospective analysis of log files over specified time windows.
+- **Flexible Export Options**: Provides comprehensive reports in multiple formats for integration with other tools.
+- **Low Dependencies**: Minimal requirements with no database needed, making it lightweight and easy to deploy.
+- **Customized for Academic Repositories**: Optimized for detecting specific patterns common in academic repository and digital library environments.
+
+LA Referencia Bot Blocker is not a replacement for Fail2Ban but rather a complementary tool focused on web crawler behavior analysis and specialized bot detection for web applications.
 
 ## Installation
 
