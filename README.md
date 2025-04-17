@@ -1,5 +1,10 @@
 # LA Referencia Dynamic Bot Blocker
 
+
+> **⚠️ DISCLAIMER: EXPERIMENTAL SOFTWARE**
+> 
+> This software is experimental in nature. It is crucial to fully understand the implications of adding firewall restrictions to a system based on log analysis before applying it to production environments. Incorrect parameterization of this script could generate massive blocks of legitimate access to the service. LA Referencia is not responsible for the improper use of this script or any consequences arising from its use. It is strongly recommended to test it thoroughly in development environments before considering its use in production.
+
 Tool for analyzing web server logs, detecting potential bot threats or attacks, and optionally blocking suspicious IPs using UFW (Uncomplicated Firewall).
 
 ## Features
@@ -29,6 +34,62 @@ While Fail2Ban is a powerful intrusion prevention tool, LA Referencia Bot Blocke
 
 LA Referencia Bot Blocker is not a replacement for Fail2Ban but rather a complementary tool focused on web crawler behavior analysis and specialized bot detection for web applications.
 
+## How IP Analysis Works
+
+The LA Referencia Bot Blocker's IP analysis follows a structured approach to detect potential threats:
+
+### Log Processing
+
+- Processes log files in configurable chunks to optimize memory usage
+- Parses each log line to extract IP addresses, timestamps, URLs, and user agents
+- Applies optional date filtering to analyze only entries within a specified timeframe
+- Automatically excludes whitelisted IPs from analysis
+
+### Metrics Calculation
+
+For each detected IP address, the system:
+
+- Tracks all access timestamps, visited URLs, and used user agents
+- Calculates key metrics:
+  - RPM (Requests Per Minute): The rate of requests over time
+  - Total requests made during the analyzed period
+  - Time span of activity
+
+### Threat Detection
+
+An IP address is flagged as suspicious when:
+- Its RPM exceeds the defined threshold (default: 100 RPM)
+- A "danger score" is calculated based on:
+  - Request rate (RPM)
+  - Total request volume
+  - Presence of suspicious user agents (when applicable)
+
+### Subnet-Based Analysis
+
+The system identifies coordinated attacks by:
+- Grouping suspicious IPs by subnet:
+  - IPv4: /24 subnets (256 addresses)
+  - IPv6: /64 subnets
+- Calculating subnet metrics:
+  - Combined total requests across all IPs in the subnet
+  - Aggregated danger score for the subnet
+  - Count of distinct suspicious IPs within the subnet
+
+### Threat Classification
+
+Threats are classified into two types:
+- **Individual IP threats**: Single IP addresses showing suspicious behavior
+- **Subnet threats**: Multiple related IPs exhibiting coordinated suspicious activity
+
+### Prioritization
+
+Finally, the system:
+- Sorts all threats by their danger score from highest to lowest
+- Prepares the prioritized list for potential blocking action or reporting
+- Exports comprehensive threat information in multiple formats (JSON, CSV, text)
+
+This multi-tiered approach enables detection of both individual suspicious actors and more sophisticated coordinated attacks using multiple addresses within the same network range.
+
 ## Installation
 
 The script doesn't require special installation, it only needs Python 3.6 or higher.
@@ -46,6 +107,33 @@ cd lareferencia-botstats
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
+
+### Scheduled Execution with Cron
+
+For periodic execution, you can add the script to your system's crontab:
+
+```bash
+# Open the crontab editor
+sudo crontab -e
+
+# Add a line to run the script every hour
+# Format: minute hour day month weekday command
+0 * * * * /usr/bin/python3 /path/to/lareferencia-botstats/stats.py -f /var/log/apache2/access.log --block --block-threshold 50 --block-duration 120 --whitelist /etc/botstats/whitelist.txt --log-file /var/log/botstats.log >> /var/log/botstats_cron.log 2>&1
+
+# Or run it daily at midnight
+0 0 * * * /usr/bin/python3 /path/to/lareferencia-botstats/stats.py -f /var/log/apache2/access.log --time-window day --block --block-threshold 100 --block-duration 1440 --whitelist /etc/botstats/whitelist.txt --log-file /var/log/botstats.log >> /var/log/botstats_cron.log 2>&1
+
+# Add a line to clean expired rules every 15 minutes
+*/15 * * * * /usr/bin/python3 /path/to/lareferencia-botstats/stats.py --clean-rules >> /var/log/botstats_clean.log 2>&1
+```
+
+Important considerations when scheduling with cron:
+- Use absolute paths for all files and executables
+- If using a virtual environment, either activate it in the command or use the full path to the Python executable in the virtual environment
+- Include proper logging options to track the script's behavior
+- Make sure the user running the cron job (usually root for UFW operations) has appropriate permissions
+- When using `--time-window`, ensure that the window size and cron frequency make sense together to avoid analysis gaps
+- For production environments, start with conservative blocking thresholds and durations, then adjust after monitoring results
 
 ## Usage
 
@@ -123,13 +211,9 @@ The whitelist file should contain one IP or subnet per line. Examples:
 ```
 # Comments start with #
 192.168.1.1
-10.0.0.0/8
-2001:db8::/64
-# Individual IPv6 IPs can also be included
-2001:db8::1
-```
-
-## Project Structure
+10.0.0.0/8MER: EXPERIMENTAL SOFTWARE**
+2001:db8::/64> 
+# Individual IPv6 IPs can also be includedhis software is experimental in nature. It is crucial to fully understand the implications of adding firewall restrictions to a system based on log analysis before applying it to production environments. Incorrect parameterization of this script could generate massive blocks of legitimate access to the service. LA Referencia is not responsible for the improper use of this script or any consequences arising from its use. It is strongly recommended to test it thoroughly in development environments before considering its use in production.2001:db8::1```## Project Structure
 
 The code is organized in modules:
 
@@ -151,3 +235,9 @@ To contribute to the project:
 ## License
 
 [MIT](LICENSE)
+
+---
+
+> **⚠️ DISCLAIMER: EXPERIMENTAL SOFTWARE**
+> 
+> This software is experimental in nature. It is crucial to fully understand the implications of adding firewall restrictions to a system based on log analysis before applying it to production environments. Incorrect parameterization of this script could generate massive blocks of legitimate access to the service. LA Referencia is not responsible for the improper use of this script or any consequences arising from its use. It is strongly recommended to test it thoroughly in development environments before considering its use in production.
