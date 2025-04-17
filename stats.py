@@ -234,22 +234,27 @@ def main():
     for i, threat in enumerate(top_threats_report, 1):
         target_id_str = str(threat['id'])
         threat_label = "IP" if threat['type'] == 'ip' else "Subnet"
-        rpm_str = f", ~{threat.get('subnet_rpm', 0):.2f} RPM" if threat.get('subnet_rpm', 0) > 0 else ""
+        # Use aggregate RPM for the main line display
+        rpm_str = f", ~{threat.get('subnet_rpm', 0):.2f} agg RPM" if threat.get('subnet_rpm', 0) > 0 else ""
         ip_count_str = f"{threat['ip_count']} IP" if threat['ip_count'] == 1 else f"{threat['ip_count']} IPs"
 
+        # Use the specific danger score (IP score for type 'ip', aggregate for type 'subnet')
         print(f"\n#{i} {threat_label}: {target_id_str} - Danger: {threat['danger_score']:.2f} ({ip_count_str}, {threat['total_requests']} reqs{rpm_str})")
 
-        # Show details if available (currently only for single IP threats)
+        # Show details for IPs within the threat
         if threat['details']:
-             ip_detail = threat['details'][0] # Assuming only one item for 'ip' type
-             rpm_flag_str = "*" if ip_detail.get('is_suspicious_by_rpm', False) else ""
-             detail_rpm_str = f"~{ip_detail['rpm']:.2f} rpm{rpm_flag_str}" if ip_detail['rpm'] > 0 else "RPM N/A"
-             # Remove or comment out the line causing the error:
-             # ua_str = f" | UA: {ip_detail['suspicious_ua']}" if ip_detail['has_suspicious_ua'] else ""
-             print(f"  -> Metrics: {ip_detail['total_requests']} reqs, Danger: {ip_detail['danger_score']:.2f}, {detail_rpm_str}") # Removed ua_str
-        elif threat['type'] == 'subnet':
-             # Indicate multiple IPs involved for subnet threats
-             print(f"  -> Involves {threat['ip_count']} unique IPs.")
+            max_details_to_show = 3 # Limit how many IPs to show for subnets in console
+            for j, ip_detail in enumerate(threat['details']):
+                if j >= max_details_to_show and threat['type'] == 'subnet':
+                    print(f"  ... and {threat['ip_count'] - max_details_to_show} more IPs in this subnet.")
+                    break
+                rpm_flag_str = "*" if ip_detail.get('is_suspicious_by_rpm', False) else ""
+                # Use the individual IP's RPM for the detail line
+                detail_rpm_str = f"~{ip_detail['rpm']:.2f} rpm{rpm_flag_str}" if ip_detail['rpm'] > 0 else "RPM N/A"
+                # Use the individual IP's danger score
+                detail_danger_str = f"Danger: {ip_detail['danger_score']:.2f}"
+                # ua_str = f" | UA: {ip_detail['suspicious_ua']}" if ip_detail['has_suspicious_ua'] else "" # Keep commented out
+                print(f"  -> IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, {detail_danger_str}, {detail_rpm_str})") # Removed ua_str
 
         # Indicate if this specific threat was blocked
         if args.block and threat['id'] in blocked_targets:
