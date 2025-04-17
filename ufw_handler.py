@@ -183,23 +183,98 @@ class UFWManager:
             logger.error(f"Error deleting UFW rule #{rule_number}: {e}")
             return False
 
-    def clean_expired_rules(self):
+    def clean_expired_rules(self, comment_prefix="BOTSTATS"):
         """
-        Cleans all expired UFW rules.
-        
+        Removes expired UFW rules previously added by this script.
+        Parses comments like: "BOTSTATS - 123 reqs - 2023-10-27 15:30 - Remove after 60 min"
+
+        Args:
+            comment_prefix (str): The prefix used in comments for rules added by this script.
+
         Returns:
-            int: Number of rules deleted
+            int: The number of rules deleted.
         """
-        expired = self.get_expired_rules()
-        if not expired:
-            logger.info("No expired rules to delete.")
-            return 0
-            
-        count = 0
-        for rule_num in expired:
-            if self.delete_rule(rule_num):
-                count += 1
-                
-        if count > 0:
-            logger.info(f"Cleanup completed. {count} rules deleted.")
-        return count
+        deleted_count = 0
+        try:
+            # Get numbered rules
+            result = self._run_ufw_command(['status', 'numbered'])
+            if result.returncode != 0:
+                logger.error(f"Failed to get UFW status: {result.stderr}")
+                return 0
+
+            # Regex to find rules added by this script with duration info
+            # Example comment: BOTSTATS - 123 reqs - 2023-10-27 15:30 - Remove after 60 min
+            rule_pattern = re.compile(
+                r"\[\s*(\d+)\].*ALLOW IN.* Anywhere.*#\s*" + # Rule number and basic structure (adjust if needed)
+                re.escape(comment_prefix) +                 # Match the prefix
+                r"\s*-\s*\d+\s*reqs\s*-\s*" +                # Match requests part
+                r"(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2})" +        # Capture timestamp (YYYY-MM-DD HH:MM)
+                r"\s*-\s*Remove after\s*(\d+)\s*min"         # Capture duration in minutes
+            )
+            # Alternative regex if DENY rules are used:
+            # rule_pattern = re.compile(
+            #     r"\[\s*(\d+)\].*DENY IN.* FROM\s*(.*?)\s.*#\s*" + # Rule number, DENY, capture IP/Subnet
+            #     re.escape(comment_prefix) +                 # Match the prefix
+            #     r"\s*-\s*\d+\s*reqs\s*-\s*" +                # Match requests part
+            #     r"(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2})" +        # Capture timestamp (YYYY-MM-DD HH:MM)
+            #     r"\s*-\s*Remove after\s*(\d+)\s*min"         # Capture duration in minutes
+            # )
+
+
+            now_utc = datetime.now(timezone.utc) # Use timezone-aware comparison
+            rules_to_delete = []
+
+            # Iterate through lines of UFW status output in reverse to avoid index shifting during deletion
+            for line in reversed(result.stdout.splitlines()):
+                match = rule_pattern.search(line)
+                if match:
+                    rule_number_str, timestamp_str, duration_str = match.groups()
+                    rule_number = int(rule_number_str)
+                    duration_minutes = int(duration_str)
+
+                    try:
+                        # Assume stored timestamp is naive local time, convert to UTC for comparison
+                        # If the timestamp was stored as UTC, use timezone.utc directly
+                        rule_timestamp_naive = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M')
+                        # Make it timezone-aware (assume it was local time when added)
+                        # This might need adjustment if server timezone changed or rules were added in different zones
+                        rule_timestamp_aware = rule_timestamp_naive.astimezone() # Convert naive local to aware local
+                        rule_timestamp_utc = rule_timestamp_aware.astimezone(timezone.utc) # Convert aware local to UTC
+
+                        expiry_time_utc = rule_timestamp_utc + timedelta(minutes=duration_minutes)
+
+                        if now_utc >= expiry_time_utc:
+                            logger.info(f"Rule {rule_number} expired at {expiry_time_utc}. Marked for deletion.")
+                            rules_to_delete.append(rule_number)
+                        else:
+                             logger.debug(f"Rule {rule_number} has not expired yet (expires at {expiry_time_utc}).")
+
+                    except ValueError as e:
+                        logger.warning(f"Could not parse timestamp or duration for rule in line: {line} - Error: {e}")
+                    except Exception as e:
+                         logger.error(f"Error processing rule in line: {line} - Error: {e}")
+
+
+            # Delete rules by number, in descending order to maintain correct indices
+            if rules_to_delete:
+                 logger.info(f"Attempting to delete {len(rules_to_delete)} expired rules...")
+                 # Sort descending to delete higher numbers first
+                 for rule_num in sorted(rules_to_delete, reverse=True):
+                     # Important: UFW might ask for confirmation interactively.
+                     # Using 'yes' pipe or modifying sudoers might be needed if running non-interactively.
+                     # Simplified approach: Assume non-interactive or sudoers configured.
+                     # Consider adding 'echo y |' before the command if needed and running via shell=True (less safe).
+                     delete_result = self._run_ufw_command(['delete', str(rule_num)])
+                     if delete_result.returncode == 0:
+                         logger.info(f"Successfully deleted rule {rule_num}.")
+                         deleted_count += 1
+                     else:
+                         logger.error(f"Failed to delete rule {rule_num}: {delete_result.stderr}")
+                         # Log stdout as well for potential confirmation prompts
+                         logger.error(f"UFW delete stdout for rule {rule_num}: {delete_result.stdout}")
+
+
+        except Exception as e:
+            logger.error(f"An error occurred during rule cleanup: {e}")
+
+        return deleted_count
