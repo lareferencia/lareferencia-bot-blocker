@@ -186,6 +186,8 @@ class ThreatAnalyzer:
         Returns:
             list: List of detected threats, primarily representing subnets.
         """
+        MIN_DURATION_FOR_RPM_SIGNIFICANCE = 2 # Minimum duration in seconds for RPM to be considered significant
+
         # Step 1: Group all IPs by subnet and calculate individual metrics
         subnet_details = defaultdict(lambda: {'ips': {}, 'total_requests': 0})
         logger.info("Analyzing IPs and grouping by subnets...")
@@ -216,7 +218,11 @@ class ThreatAnalyzer:
             # Calculate individual danger score
             # Note: We calculate score even if RPM is below threshold, it might be low but non-zero
             danger_score = calculate_danger_score(rpm, total_requests, has_suspicious_ua)
-            is_suspicious_by_rpm = rpm > self.rpm_threshold
+            # Consider RPM suspicious only if RPM threshold is met AND there's a minimum number of requests
+            is_suspicious_by_rpm = (
+                rpm > self.rpm_threshold and
+                time_span >= MIN_DURATION_FOR_RPM_SIGNIFICANCE
+            )
 
             # Try to get the subnet (IPv4 or IPv6)
             subnet = get_subnet(ip)
