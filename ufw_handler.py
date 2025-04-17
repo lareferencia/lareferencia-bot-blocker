@@ -278,3 +278,50 @@ class UFWManager:
             logger.error(f"An error occurred during rule cleanup: {e}")
 
         return deleted_count
+
+    def _run_ufw_command(self, command_args):
+        """
+        Executes a UFW command using subprocess.
+
+        Args:
+            command_args (list): List of arguments for the ufw command (e.g., ['status', 'numbered']).
+
+        Returns:
+            subprocess.CompletedProcess: Result object from subprocess.run.
+        """
+        base_command = ['sudo', 'ufw']
+        full_command = base_command + command_args
+        command_str = ' '.join(full_command)
+
+        if self.dry_run:
+            logger.info(f"[DRY RUN] Would execute: {command_str}")
+            # Return a dummy CompletedProcess object for dry run consistency
+            return subprocess.CompletedProcess(
+                args=full_command,
+                returncode=0,
+                stdout="[DRY RUN] Command not executed.\n",
+                stderr=""
+            )
+        else:
+            logger.debug(f"Executing: {command_str}")
+            try:
+                # Execute command, capture output, use text mode
+                result = subprocess.run(
+                    full_command,
+                    capture_output=True,
+                    text=True,
+                    check=False # Don't raise exception on non-zero exit code, handle it manually
+                )
+                if result.returncode != 0:
+                    logger.warning(f"Command '{command_str}' failed with code {result.returncode}")
+                    logger.warning(f"Stderr: {result.stderr.strip()}")
+                else:
+                    logger.debug(f"Command '{command_str}' executed successfully.")
+                return result
+            except FileNotFoundError:
+                logger.error(f"Error: 'sudo' or 'ufw' command not found. Is UFW installed and sudo available?")
+                # Return a dummy error object
+                return subprocess.CompletedProcess(args=full_command, returncode=127, stdout="", stderr="Command not found")
+            except Exception as e:
+                logger.error(f"Error executing UFW command '{command_str}': {e}")
+                return subprocess.CompletedProcess(args=full_command, returncode=1, stdout="", stderr=str(e))
