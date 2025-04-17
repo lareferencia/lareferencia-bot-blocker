@@ -238,37 +238,30 @@ def main():
     # --- Reporting Logic ---
     # Show results in console
     top_count = min(args.top, len(threats))
-    # Update console header
-    print(f"\n=== TOP {top_count} MOST ACTIVE THREATS DETECTED (Sorted by Total Requests) ===")
+    print(f"\n=== TOP {top_count} MOST ACTIVE SUBNETS DETECTED (Sorted by Total Requests) ===") # Adjusted title
     if args.block:
         action = "Blocked" if not args.dry_run else "[DRY RUN] Marked for blocking"
-        # Clarify blocking criteria
-        print(f"--- {action} based on --block-threshold={args.block_threshold} total requests and --block-duration={args.block_duration} min (applied to top {args.top} threats by activity) ---")
+        print(f"--- {action} based on --block-threshold={args.block_threshold} total requests and --block-duration={args.block_duration} min (applied to top {args.top} subnets by activity) ---") # Adjusted description
 
     top_threats_report = threats[:top_count]
 
     for i, threat in enumerate(top_threats_report, 1):
         target_id_str = str(threat['id'])
-        threat_label = "Subnet" # Always subnet now
-        # Display danger score even if not primary sort key
+        threat_label = "Subnet"
         danger_str = f"Danger: {threat['danger_score']:.2f}"
         rpm_str = f", ~{threat.get('subnet_rpm', 0):.2f} agg RPM" if threat.get('subnet_rpm', 0) > 0 else ""
         ip_count_str = f"{threat['ip_count']} IP" if threat['ip_count'] == 1 else f"{threat['ip_count']} IPs"
 
-        # Main line includes total requests prominently
         print(f"\n#{i} {threat_label}: {target_id_str} - Requests: {threat['total_requests']} ({ip_count_str}, {danger_str}{rpm_str})")
 
-        # Show details for IPs within the threat (still sorted by danger score internally)
+        # Show list of IPs involved (limited)
         if threat['details']:
-            max_details_to_show = 3
-            for j, ip_detail in enumerate(threat['details']):
-                if j >= max_details_to_show:
-                    print(f"  ... and {threat['ip_count'] - max_details_to_show} more IPs in this subnet.")
-                    break
-                rpm_flag_str = "*" if ip_detail.get('is_suspicious_by_rpm', False) else ""
-                detail_rpm_str = f"~{ip_detail['rpm']:.2f} rpm{rpm_flag_str}" if ip_detail['rpm'] > 0 else "RPM N/A"
-                # Include individual danger score in details
-                print(f"  -> IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, Danger: {ip_detail['danger_score']:.2f}, {detail_rpm_str})")
+            max_details_to_show = 5
+            ips_to_show = threat['details'][:max_details_to_show]
+            print(f"  -> IPs involved: {', '.join(ips_to_show)}", end="") # Use end="" to potentially add more text
+            if threat['ip_count'] > max_details_to_show:
+                print(f", ... ({threat['ip_count'] - max_details_to_show} more)", end="")
+            print() # Print newline
 
         # Indicate if this specific threat target was blocked in this run
         target_blocked_in_run = False

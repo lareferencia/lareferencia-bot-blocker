@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Module for analysis and threat detection based on server logs.
-Strategy: Calculate per-IP metrics, then group by subnet (/24 or /64)
-to classify as single-IP or multi-IP (subnet) threat with details.
+Strategy: Group logs by default subnet (/24 or /64) during analysis,
+calculate metrics per subnet, and report threats based on subnet activity.
 """
 import ipaddress
 from collections import defaultdict
@@ -12,6 +12,7 @@ import json
 import csv
 import os
 import io
+import math
 
 from log_parser import parse_log_line, get_subnet, calculate_danger_score, is_ip_in_whitelist
 
@@ -59,7 +60,7 @@ def _read_lines_reverse(filename, buf_size=8192):
 
 class ThreatAnalyzer:
     """
-    Class for analyzing logs and detecting potential threats based on IP and subnet activity.
+    Class for analyzing logs and detecting potential threats based on subnet activity.
     """
 
     def __init__(self, rpm_threshold=100, whitelist=None):
@@ -79,9 +80,8 @@ class ThreatAnalyzer:
                 if item not in self.whitelist:
                     self.whitelist.append(item)
 
-        # Store only timestamps per IP
-        self.ip_data = defaultdict(lambda: {'times': []})
-        # We will group by subnet during identify_threats
+        # Store data aggregated by subnet: { subnet_obj: {'times': [], 'ips': set()} }
+        self.subnet_data = defaultdict(lambda: {'times': [], 'ips': set()})
         self.unified_threats = []
         self.blocked_targets = set() # Keep track of targets blocked in this run
 
@@ -120,7 +120,7 @@ class ThreatAnalyzer:
 
     def analyze_log_file(self, log_file, start_date=None):
         """
-        Analyzes a log file, storing only timestamps per IP address.
+        Analyzes a log file, grouping data by default subnet (/24 or /64).
 
         Args:
             log_file (str): Path to the log file.
@@ -172,11 +172,15 @@ class ThreatAnalyzer:
                 if is_ip_in_whitelist(ip, self.whitelist):
                     continue
 
-                # Store only timestamp per IP
-                self.ip_data[ip]['times'].append(dt)
-                total_processed += 1
+                # Get the default subnet (/24 or /64)
+                default_subnet = get_subnet(ip) # Call without masks
+                if default_subnet:
+                    # Store timestamp and IP within the subnet's data
+                    self.subnet_data[default_subnet]['times'].append(dt)
+                    self.subnet_data[default_subnet]['ips'].add(ip) # Add IP string to the set
+                    total_processed += 1
 
-            logger.info(f"Finished processing. Analyzed {total_processed} log entries for {len(self.ip_data)} unique IPs.")
+            logger.info(f"Finished processing. Analyzed {total_processed} log entries grouped into {len(self.subnet_data)} subnets.")
             return total_processed
 
         except FileNotFoundError:
@@ -192,121 +196,75 @@ class ThreatAnalyzer:
 
     def identify_threats(self):
         """
-        Identifies threats by calculating per-IP metrics and grouping them by
-        their default subnet (/24 or /64). All identified threats are represented
-        as subnets containing details of the involved IPs.
+        Identifies threats by calculating metrics directly for each aggregated subnet.
 
         Returns:
             list: List of detected subnet threats, sorted by total requests descending.
         """
         MIN_DURATION_FOR_RPM_SIGNIFICANCE = 5 # Minimum duration in seconds for RPM to be considered significant
         self.unified_threats = []
-        # Structure to hold aggregated subnet info:
-        # { subnet_obj: {'ips': [ip_details_dict], 'all_times': [], 'total_requests': 0} }
-        subnet_aggregation = defaultdict(lambda: {'ips': [], 'all_times': [], 'total_requests': 0})
 
-        logger.info(f"Calculating metrics for {len(self.ip_data)} unique IPs...")
+        logger.info(f"Calculating metrics for {len(self.subnet_data)} aggregated subnets...")
 
-        # 1. Calculate metrics per IP and group by subnet
-        # ... (This part remains the same - calculating ip_details_dict and populating subnet_aggregation) ...
-        for ip, info in self.ip_data.items():
-            times = sorted(info['times'])
+        # Iterate through aggregated subnet data
+        for subnet, details in self.subnet_data.items():
+            times = sorted(details['times'])
             total_requests = len(times)
+            ip_set = details['ips']
+            ip_count = len(ip_set)
+
             if total_requests == 0:
                 continue
 
-            # Calculate metrics for this IP
-            ip_rpm = 0
-            ip_time_span = 0
-            if total_requests >= 2:
-                ip_time_span = (times[-1] - times[0]).total_seconds()
-                if ip_time_span > 0:
-                    ip_rpm = (total_requests / (ip_time_span / 60))
-            elif total_requests == 1:
-                 ip_rpm = 0
-                 ip_time_span = 0
-
-            ip_danger_score = calculate_danger_score(ip_rpm, total_requests, ip_time_span, MIN_DURATION_FOR_RPM_SIGNIFICANCE)
-            is_suspicious_by_rpm = (
-                ip_rpm > self.rpm_threshold and
-                ip_time_span >= MIN_DURATION_FOR_RPM_SIGNIFICANCE
-            )
-            first_seen = times[0] if times else None
-            last_seen = times[-1] if times else None
-
-            ip_details_dict = {
-                'ip': ip,
-                'rpm': ip_rpm,
-                'total_requests': total_requests,
-                'time_span': ip_time_span,
-                'danger_score': ip_danger_score,
-                'is_suspicious_by_rpm': is_suspicious_by_rpm,
-                'first_seen': first_seen,
-                'last_seen': last_seen
-            }
-
-            # Get the default subnet for this IP
-            default_subnet = get_subnet(ip)
-            if default_subnet:
-                subnet_aggregation[default_subnet]['ips'].append(ip_details_dict)
-                subnet_aggregation[default_subnet]['all_times'].extend(times)
-                subnet_aggregation[default_subnet]['total_requests'] += total_requests
-
-
-        logger.info(f"Creating subnet threats from {len(subnet_aggregation)} aggregated subnets...")
-
-        # 2. Create threats based on subnet aggregation - ALWAYS type 'subnet'
-        for subnet, agg_details in subnet_aggregation.items():
-            ips_in_subnet = agg_details['ips']
-            ip_count = len(ips_in_subnet)
-            subnet_total_requests = agg_details['total_requests']
-            all_times_sorted = sorted(agg_details['all_times'])
-
-            if ip_count == 0 or subnet_total_requests == 0:
-                continue
-
-            # Calculate aggregate metrics for the subnet
-            subnet_total_danger = sum(ip['danger_score'] for ip in ips_in_subnet)
+            # Calculate metrics directly for the SUBNET
             subnet_rpm = 0
             subnet_time_span = 0
-            if len(all_times_sorted) >= 2:
-                 subnet_time_span = (all_times_sorted[-1] - all_times_sorted[0]).total_seconds()
-                 if subnet_time_span > 0:
-                     subnet_rpm = (subnet_total_requests / (subnet_time_span / 60))
+            if total_requests >= 2:
+                subnet_time_span = (times[-1] - times[0]).total_seconds()
+                if subnet_time_span > 0:
+                    subnet_rpm = (total_requests / (subnet_time_span / 60))
+            elif total_requests == 1:
+                 subnet_rpm = 0
+                 subnet_time_span = 0
 
-            # Always treat as a subnet threat
-            threat_id = subnet # /24 or /64
+            # Calculate danger score for the subnet based on its aggregate activity
+            subnet_danger_score = calculate_danger_score(subnet_rpm, total_requests, subnet_time_span, MIN_DURATION_FOR_RPM_SIGNIFICANCE)
+            # is_suspicious_by_rpm = ( # This wasn't used in the previous version, can be added if needed
+            #     subnet_rpm > self.rpm_threshold and
+            #     subnet_time_span >= MIN_DURATION_FOR_RPM_SIGNIFICANCE
+            # )
+
+            # Threat is always the subnet
+            threat_id = subnet
             threat_type = 'subnet'
-            # Keep calculating aggregate danger score, even if not used for primary sorting
-            threat_danger_score = subnet_total_danger
-            # Sort IPs within the subnet by their individual danger score for details (keep this)
-            threat_details_list = sorted(ips_in_subnet, key=lambda x: x['danger_score'], reverse=True)
+
+            # Store the list of IPs involved in details
+            threat_details_list = sorted(list(ip_set)) # Sort IPs alphabetically for consistent output
 
             # Create the threat dictionary
-            if threat_id is not None and threat_danger_score > 0: # Keep check on danger score > 0
+            if threat_id is not None and subnet_danger_score > 0: # Keep check on danger score > 0
                 threat = {
                     'type': threat_type,
                     'id': threat_id,
-                    'danger_score': threat_danger_score, # Store aggregate danger score
-                    'total_requests': subnet_total_requests, # Primary sorting key
+                    'danger_score': subnet_danger_score, # Store aggregate danger score
+                    'total_requests': total_requests, # Primary sorting key
                     'subnet_rpm': subnet_rpm,
                     'subnet_time_span': subnet_time_span,
                     'ip_count': ip_count,
-                    'details': threat_details_list
+                    'details': threat_details_list # Store list of IPs
                 }
                 self.unified_threats.append(threat)
 
-        # 3. Sort the final list by TOTAL REQUESTS descending
+        # Sort the final list by TOTAL REQUESTS descending
         self.unified_threats = sorted(
             self.unified_threats,
-            key=lambda x: x['total_requests'], # <--- Changed sort key
+            key=lambda x: x['total_requests'],
             reverse=True
         )
 
-        logger.info(f"Identified {len(self.unified_threats)} subnet threats, sorted by total requests.") # <--- Updated log message
+        logger.info(f"Identified {len(self.unified_threats)} subnet threats, sorted by total requests.")
         return self.unified_threats
 
-    # ... (get_top_threats remains the same) ...
     def get_top_threats(self, top=10):
         """
         Gets the most dangerous threats.
@@ -323,7 +281,6 @@ class ThreatAnalyzer:
         return self.unified_threats[:top]
 
 
-    # ... (export_results needs minor adjustments for potential 'ip' type and details format) ...
     def export_results(self, format_type, output_file):
         """
         Exports the results to a file in a specific format.
@@ -349,15 +306,10 @@ class ThreatAnalyzer:
                 for threat in self.unified_threats:
                     json_threat = threat.copy()
                     json_threat['id'] = str(json_threat['id']) # Convert network object ID
-                    # Convert datetimes in details if they exist
-                    if 'details' in json_threat:
-                        for detail in json_threat['details']:
-                            if 'first_seen' in detail and detail['first_seen']:
-                                detail['first_seen'] = detail['first_seen'].isoformat()
-                            if 'last_seen' in detail and detail['last_seen']:
-                                detail['last_seen'] = detail['last_seen'].isoformat()
+                    # Details are now just a list of IP strings, no datetimes to convert
+                    # json_threat['details'] = threat['details'] # Already a list of strings
                     json_threats.append(json_threat)
-
+                # ... (rest of JSON export) ...
                 with open(output_file, 'w') as f:
                     json.dump(json_threats, f, indent=2)
 
@@ -379,30 +331,24 @@ class ThreatAnalyzer:
 
             elif format_type.lower() == 'text':
                  with open(output_file, 'w') as f:
-                     # Update title to reflect sorting
                      f.write(f"=== {len(self.unified_threats)} SUBNET THREATS DETECTED (Sorted by Total Requests) ===\n")
                      for i, threat in enumerate(self.unified_threats, 1):
                          target_id_str = str(threat['id'])
                          threat_label = "Subnet"
-                         # Display danger score even if not primary sort key
                          danger_str = f"Danger: {threat['danger_score']:.2f}"
-                         rpm_str = f", ~{threat.get('subnet_rpm', 0)::.2f} agg RPM" if threat.get('subnet_rpm', 0) > 0 else ""
+                         rpm_str = f", ~{threat.get('subnet_rpm', 0):.2f} agg RPM" if threat.get('subnet_rpm', 0) > 0 else ""
                          ip_count_str = f"{threat['ip_count']} IP" if threat['ip_count'] == 1 else f"{threat['ip_count']} IPs"
 
-                         # Main line includes total requests prominently
                          f.write(f"\n#{i} {threat_label}: {target_id_str} - Requests: {threat['total_requests']} ({ip_count_str}, {danger_str}{rpm_str})\n")
 
-                         # Show details for IPs within the subnet threat (sorted by danger score)
+                         # Show list of IPs involved (limited)
                          if threat['details']:
-                             max_details_to_show = 3
-                             for j, ip_detail in enumerate(threat['details']):
-                                 if j >= max_details_to_show:
-                                     f.write(f"  ... and {threat['ip_count'] - max_details_to_show} more IPs in this subnet.\n")
-                                     break
-                                 rpm_flag_str = "*" if ip_detail.get('is_suspicious_by_rpm', False) else ""
-                                 detail_rpm_str = f"~{ip_detail['rpm']:.2f} rpm{rpm_flag_str}" if ip_detail['rpm'] > 0 else "RPM N/A"
-                                 # Include individual danger score in details
-                                 f.write(f"  -> IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, Danger: {ip_detail['danger_score']:.2f}, {detail_rpm_str})\n")
+                             max_details_to_show = 5 # Show a few more IPs if available
+                             ips_to_show = threat['details'][:max_details_to_show]
+                             f.write(f"  -> IPs involved: {', '.join(ips_to_show)}")
+                             if threat['ip_count'] > max_details_to_show:
+                                 f.write(f", ... ({threat['ip_count'] - max_details_to_show} more)")
+                             f.write("\n") # Newline after IP list
 
             else:
                 logger.error(f"Unsupported export format: {format_type}")
