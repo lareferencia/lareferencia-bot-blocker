@@ -60,36 +60,43 @@ def get_subnet(ip_str, version=None):
     
     return None  # Unhandled case (shouldn't reach here)
 
+def is_localhost(ip_str):
+    """
+    Checks if an IP address is localhost (IPv4: 127.0.0.1/8 or IPv6: ::1).
+    
+    Args:
+        ip_str (str): IP address in string format
+        
+    Returns:
+        bool: True if the IP is localhost, False otherwise
+    """
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        if ip.version == 4:
+            return ip.is_loopback  # Checks if in 127.0.0.0/8
+        elif ip.version == 6:
+            return ip == ipaddress.IPv6Address('::1')
+        return False
+    except ValueError:
+        return False
+
 def calculate_danger_score(rpm, total_requests, has_suspicious_ua, time_span=0, min_duration=5):
     """
-    Calculates a danger score based on RPM, total requests, time span,
-    and whether it has a suspicious user-agent.
+    Calculates a danger score based only on RPM (requests per minute).
+    Other parameters are maintained for backward compatibility.
     
     Args:
         rpm (float): Requests per minute
-        total_requests (int): Total requests
-        has_suspicious_ua (bool): Whether it has a suspicious user-agent
-        time_span (float): Duration of activity in seconds
-        min_duration (float): Minimum duration in seconds for full RPM weight
+        total_requests (int): Total requests (not used in calculation)
+        has_suspicious_ua (bool): Whether it has a suspicious user-agent (not used in calculation)
+        time_span (float): Duration of activity in seconds (not used in calculation)
+        min_duration (float): Minimum duration in seconds (not used in calculation)
         
     Returns:
-        float: Danger score
+        float: Danger score based solely on RPM
     """
-    # Calculate sustainability factor (0.25-1.0) based on duration
-    # Short bursts get 25% weight, sustained activity gets full weight
-    sustainability = min(1.0, max(0.25, time_span / min_duration))
-    
-    # Base factor is the RPM normalized by the threshold (100), weighted by sustainability
-    score = (rpm / 100) * sustainability
-    
-    # Additional factors
-    if has_suspicious_ua:
-        score *= 1.5  # Increase for suspicious user-agent
-    
-    # Total number of requests also increases the danger
-    score += total_requests / 1000
-    
-    return score
+    # Score is now simply the RPM value
+    return rpm
 
 def is_ip_in_whitelist(ip, whitelist):
     """
