@@ -71,10 +71,10 @@ class ThreatAnalyzer:
             start_date (datetime, optional): Date from which to analyze
             
         Returns:
-            int: Number of lines processed, or False to signal stopping
+            int or bool: Number of lines processed, or False to signal stopping
         """
         processed = 0
-        stop_processing = False
+        found_outside_window = False
         
         for line in lines:
             data = parse_log_line(line)
@@ -88,10 +88,10 @@ class ThreatAnalyzer:
             except ValueError:
                 continue  # Skip entries with malformed date
                 
-            # Filter by date
+            # Filter by date when start_date is specified
             if start_date and dt < start_date:
-                stop_processing = True
-                break
+                found_outside_window = True
+                continue  # Skip this line but continue processing others in the chunk
                 
             ip = data['ip']
             
@@ -104,9 +104,10 @@ class ThreatAnalyzer:
             self.ip_data[ip]['urls'].append(data['request'])
             self.ip_data[ip]['useragents'].append(data['useragent'])
             processed += 1
-            
-        if stop_processing:
-            logger.info(f"Stopped processing at entry with date {dt} (before {start_date})")
+        
+        # In reverse mode, if we've found entries outside our time window,
+        # we stop the entire processing as all older entries will also be outside
+        if found_outside_window:
             return False
             
         return processed
@@ -119,23 +120,18 @@ class ThreatAnalyzer:
             log_file (str): Path to the log file
             start_date (datetime, optional): Date from which to analyze
             chunk_size (int): Chunk size for batch processing
-            reverse (bool): If True, process file from newest to oldest and stop
-                         when finding entries older than start_date
+            reverse (bool): If True, process file from newest to oldest
             
         Returns:
             int: Number of entries processed
         """
         total_processed = 0
         try:
+            # Use reverse mode only when start_date is specified and reverse is True
+            use_reverse = reverse and start_date is not None
+            
             if chunk_size > 0:
-                # Decide whether to use reverse mode based on start_date and reverse flag
-                use_reverse = reverse and start_date is not None
-                
-                if use_reverse:
-                    logger.info(f"Processing log in reverse mode with chunks of {chunk_size} lines")
-                else:
-                    logger.info(f"Processing log in forward mode with chunks of {chunk_size} lines")
-                
+                logger.info(f"Processing log in {'reverse' if use_reverse else 'forward'} mode with chunks of {chunk_size} lines")
                 result = process_log_in_chunks(
                     log_file, 
                     self._process_chunk, 
