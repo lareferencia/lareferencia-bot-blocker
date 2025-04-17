@@ -152,8 +152,10 @@ def main():
         logger.info("Starting cleanup of expired UFW rules...")
         ufw = UFWManager(args.dry_run) # Dry run still applies if specified
         count = ufw.clean_expired_rules()
-        # Ensure no hidden characters exist after this line
-        logger.info(f"Cleanup completed. {count} rules deleted.")
+        # --- TEMPORARY CHANGE FOR DEBUGGING ---
+        # Replace the f-string with a simpler format call:
+        logger.info("Cleanup completed. Rules deleted: %d", count)
+        # --- END TEMPORARY CHANGE ---
         # Ensure this return is correctly indented (same level as logger.info above)
         return
 
