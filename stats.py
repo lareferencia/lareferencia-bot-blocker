@@ -286,11 +286,13 @@ def main():
                 target_to_block_str = str(target_to_block)
 
                 logger.info(f"Processing block for {target_type}: {target_to_block_str}. Reason: {threat.get('block_reason')}")
-                success = ufw_handler.block_target(
+                # --- CHANGE FUNCTION NAME HERE ---
+                success = ufw_handler.add_block_rule(
                     target=target_to_block_str,
                     duration_minutes=args.block_duration,
                     dry_run=args.dry_run
                 )
+                # --- END CHANGE ---
                 if success:
                     blocked_targets_count += 1
                     action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
