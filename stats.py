@@ -107,7 +107,8 @@ def main():
     )
     parser.add_argument(
         '--block-strategy', default='volume_danger',
-        choices=['volume_danger', 'volume_coordination', 'volume_peak_rpm', 'combined', 'sustained_avg_rpm'],
+        # Rename 'sustained_avg_rpm' to 'peak_total_rpm'
+        choices=['volume_danger', 'volume_coordination', 'volume_peak_rpm', 'combined', 'peak_total_rpm'],
         help='Strategy used to score threats and decide on blocking.'
     )
     parser.add_argument(
@@ -127,8 +128,8 @@ def main():
         help='Strategy threshold: Minimum peak RPM from any IP (used by volume_peak_rpm).'
     )
     parser.add_argument(
-        '--block-avg-rpm-threshold', type=float, default=60.0,
-        help='Strategy threshold: Minimum average TOTAL SUBNET RPM (requests per minute for the entire subnet) (used by sustained_avg_rpm).'
+        '--block-total-max-rpm-threshold', type=float, default=300.0, # Default similar to individual peak
+        help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (max requests per minute for the entire subnet) (used by peak_total_rpm).'
     )
     parser.add_argument(
         '--block-duration', type=int, default=60,

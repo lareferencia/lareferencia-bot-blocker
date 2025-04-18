@@ -207,12 +207,12 @@ sudo python3 stats.py --clean-rules --dry-run
 | `--top, -n`                  | Number of top threats (by strategy score) to display and consider for blocking.                            | `10`            |
 | `--whitelist, -w`            | Path to a file containing IPs/subnets to exclude (one per line, `#` for comments).                         | `None`          |
 | `--block`                    | Enable blocking of threats using UFW. Requires appropriate permissions.                                    | `False`         |
-| `--block-strategy`           | Strategy for scoring threats and deciding blocks (`volume_danger`, `volume_coordination`, `volume_peak_rpm`, `combined`, `sustained_avg_rpm`). | `volume_danger` |
+| `--block-strategy`           | Strategy for scoring threats and deciding blocks (`volume_danger`, `volume_coordination`, `volume_peak_rpm`, `combined`, `peak_total_rpm`). | `volume_danger` |
 | `--block-threshold`          | Base: Minimum total requests for a subnet to be considered by any strategy.                                | `50`            |
 | `--block-danger-threshold`   | Strategy: Minimum aggregated IP danger score (used by `volume_danger`, `combined`).                        | `20.0`          |
 | `--block-ip-count-threshold` | Strategy: Minimum number of unique IPs (used by `volume_coordination`, `combined`).                        | `5`             |
-| `--block-max-rpm-threshold`  | Strategy: Minimum peak RPM from any IP (used by `volume_peak_rpm`).                                        | `300.0`         |
-| `--block-avg-rpm-threshold`  | Strategy: Minimum average **TOTAL SUBNET RPM** (requests per minute for the entire subnet) (used by `sustained_avg_rpm`). | `60.0`          |
+| `--block-max-rpm-threshold`  | Strategy: Minimum peak RPM from any *individual* IP (used by `volume_peak_rpm`).                           | `300.0`         |
+| `--block-total-max-rpm-threshold` | Strategy: Minimum peak **TOTAL SUBNET RPM** (max requests per minute for the entire subnet) (used by `peak_total_rpm`). | `300.0`         |
 | `--block-duration`           | Duration of the UFW block in minutes.                                                                      | `60`            |
 | `--dry-run`                  | Show UFW commands that would be executed, but do not execute them.                                         | `False`         |
 | `--output, -o`               | File path to save the analysis results.                                                                    | `None`          |
@@ -238,10 +238,10 @@ Strategies define how threats are scored and whether they should be blocked. All
     *   **Tuning:** Adjust `--block-threshold` and `--block-ip-count-threshold`. Useful for high IP count scenarios.
 
 3.  **`volume_peak_rpm`**
-    *   **Goal:** Catch subnets containing at least one *highly* aggressive IP (bursts).
-    *   **Score:** Primarily based on `subnet_max_ip_rpm`, secondarily on `total_requests`.
+    *   **Goal:** Catch subnets containing at least one *highly* aggressive *individual* IP (bursts).
+    *   **Score:** Primarily based on `subnet_max_ip_rpm` (max RPM of any single IP), secondarily on `total_requests`.
     *   **Blocks If:** `total_requests >= --block-threshold` **AND** `subnet_max_ip_rpm >= --block-max-rpm-threshold`.
-    *   **Tuning:** Adjust `--block-threshold` and `--block-max-rpm-threshold`. Useful for stopping brute-force bursts.
+    *   **Tuning:** Adjust `--block-threshold` and `--block-max-rpm-threshold`. Useful for stopping brute-force bursts from single IPs.
 
 4.  **`combined`**
     *   **Goal:** Catch subnets meeting volume threshold and *either* high aggregated danger *or* high coordination.
@@ -249,11 +249,11 @@ Strategies define how threats are scored and whether they should be blocked. All
     *   **Blocks If:** `total_requests >= --block-threshold` **AND** (`aggregated_ip_danger_score >= --block-danger-threshold` **OR** `ip_count >= --block-ip-count-threshold`).
     *   **Tuning:** Requires tuning three thresholds. Acts as a broader net.
 
-5.  **`sustained_avg_rpm`**
-    *   **Goal:** Catch subnets exhibiting *sustained* high request rates **considering all requests from the subnet combined**.
-    *   **Score:** Primarily based on `subnet_total_avg_rpm`, secondarily on `total_requests`.
-    *   **Blocks If:** `total_requests >= --block-threshold` **AND** `subnet_total_avg_rpm >= --block-avg-rpm-threshold`.
-    *   **Tuning:** Adjust `--block-threshold` for volume and `--block-avg-rpm-threshold` to define the sustained average *total subnet rate* considered abusive (e.g., `60` for >1 RPS average for the whole subnet). More robust against coordinated low-rate attacks than averaging individual IP RPMs.
+5.  **`peak_total_rpm`** (Replaces `sustained_avg_rpm`)
+    *   **Goal:** Catch subnets exhibiting high *peak* request rates **considering all requests from the subnet combined in any single minute**.
+    *   **Score:** Primarily based on `subnet_total_max_rpm`, secondarily on `total_requests`.
+    *   **Blocks If:** `total_requests >= --block-threshold` **AND** `subnet_total_max_rpm >= --block-total-max-rpm-threshold`.
+    *   **Tuning:** Adjust `--block-threshold` for volume and `--block-total-max-rpm-threshold` to define the peak *total subnet rate* considered abusive. Good for identifying short, intense, coordinated bursts from a subnet.
 
 **Note:** The final list of threats is always sorted based on the `strategy_score` calculated by the selected strategy. Blocking actions only apply to the `--top` N threats *that also meet the strategy's specific blocking conditions*.
 
