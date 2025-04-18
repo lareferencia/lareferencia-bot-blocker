@@ -170,11 +170,10 @@ def main():
     # --- Clean Rules Mode ---
     if args.clean_rules:
         logger.info("Starting cleanup of expired UFW rules...")
-        ufw = ufw_handler.UFWManager(args.dry_run)
-        count = ufw.clean_expired_rules()
-        # Use original f-string if Python version >= 3.6
-        # logger.info(f"Cleanup completed. {count} rules deleted.")
-        logger.info("Cleanup completed. Rules deleted: %d", count) # Safer for compatibility
+        # Instance is already created here for cleanup
+        ufw_manager_instance = ufw_handler.UFWManager(args.dry_run)
+        count = ufw_manager_instance.clean_expired_rules()
+        logger.info("Cleanup completed. Rules deleted: %d", count)
         return
 
     # --- File Validation ---
@@ -263,43 +262,49 @@ def main():
     if args.block:
         print("-" * 30)
         logger.info(f"Attempting to block top {args.top} threats meeting criteria (Dry Run: {args.dry_run})...")
+        # --- Instantiate UFWManager here ---
+        ufw_manager_instance = ufw_handler.UFWManager(args.dry_run)
+        # --- End Instantiation ---
+
         # Iterate through the top N threats determined by the strategy score
         top_threats_to_consider = threats[:args.top]
         for threat in top_threats_to_consider:
             if threat.get('should_block'):
-                target_to_block = threat['id'] # Default to subnet ID
+                target_to_block_obj = threat['id'] # Keep as object initially
                 target_type = "Subnet"
 
                 # Check if it's a single IP subnet
                 if threat.get('ip_count') == 1 and threat.get('details'):
                     try:
-                        single_ip = threat['details'][0]['ip']
-                        target_to_block = str(single_ip) # Use the single IP string
+                        # Extract the IP string, then convert to ipaddress object
+                        single_ip_str = threat['details'][0]['ip']
+                        target_to_block_obj = ipaddress.ip_address(single_ip_str) # Convert to object
                         target_type = "Single IP"
-                        logger.info(f"Threat {threat['id']} has only 1 IP. Targeting IP {target_to_block} instead of the whole subnet.")
-                    except (IndexError, KeyError) as e:
-                        logger.warning(f"Could not extract single IP from details for subnet {threat['id']} despite ip_count=1: {e}. Blocking subnet instead.")
-                        target_type = "Subnet" # Fallback to subnet
-                        target_to_block = threat['id']
+                        logger.info(f"Threat {threat['id']} has only 1 IP. Targeting IP {target_to_block_obj} instead of the whole subnet.")
+                    except (IndexError, KeyError, ValueError) as e:
+                        logger.warning(f"Could not extract/convert single IP from details for subnet {threat['id']} despite ip_count=1: {e}. Blocking subnet instead.")
+                        target_type = "Subnet" # Fallback to subnet object
+                        target_to_block_obj = threat['id']
 
-                # Ensure target_to_block is a string for the handler
-                target_to_block_str = str(target_to_block)
+                # Log before calling block_target
+                logger.info(f"Processing block for {target_type}: {target_to_block_obj}. Reason: {threat.get('block_reason')}")
 
-                logger.info(f"Processing block for {target_type}: {target_to_block_str}. Reason: {threat.get('block_reason')}")
-                # --- CHANGE FUNCTION NAME HERE ---
-                success = ufw_handler.add_block_rule(
-                    target=target_to_block_str,
-                    duration_minutes=args.block_duration,
-                    dry_run=args.dry_run
+                # --- Call method on the instance ---
+                # Pass the object directly, block_target handles conversion to string/CIDR
+                success = ufw_manager_instance.block_target(
+                    subnet_or_ip_obj=target_to_block_obj,
+                    block_duration_minutes=args.block_duration
+                    # dry_run is handled by the instance
                 )
                 # --- END CHANGE ---
+
                 if success:
                     blocked_targets_count += 1
                     action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
-                    print(f" -> {action} {target_type}: {target_to_block_str} for {args.block_duration} minutes.")
+                    print(f" -> {action} {target_type}: {target_to_block_obj} for {args.block_duration} minutes.")
                 else:
                     action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
-                    print(f" -> {action} {target_type}: {target_to_block_str}.")
+                    print(f" -> {action} {target_type}: {target_to_block_obj}.")
             else:
                 # Log why a top threat wasn't blocked (optional)
                 logger.debug(f"Threat {threat['id']} in top {args.top} did not meet blocking criteria for strategy '{strategy_name}'.")
@@ -353,7 +358,7 @@ def main():
             logger.error(f"Error exporting results to {args.output}")
 
     # --- Final Summary ---
-    print(f"\nAnalysis completed using strategy '{strategy_name}'. {len(blocked_targets_info)} unique targets {'blocked' if not args.dry_run else 'marked for blocking'} in this execution.")
+    print(f"\nAnalysis completed using strategy '{strategy_name}'. {blocked_targets_count} unique targets {'blocked' if not args.dry_run else 'marked for blocking'} in this execution.")
     print(f"From a total of {len(threats)} detected threats.")
     if args.block:
         print(f"Use '--clean-rules' periodically to remove expired rules.")
