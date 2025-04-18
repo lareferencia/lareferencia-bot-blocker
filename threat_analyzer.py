@@ -12,7 +12,7 @@ import csv
 import os
 import pandas as pd
 import numpy as np
-from ipaddress import ip_network
+from ipaddress import ip_network, IPv4Network, IPv6Network
 
 # Import from log_parser
 from log_parser import (
@@ -224,7 +224,7 @@ class ThreatAnalyzer:
                 aggregated_ip_danger_score=('ip_danger_score', 'sum')
             )
             # Ensure the index is usable, sometimes groupby might drop the subnet object type
-            agg1.index = agg1.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (ip_network)) else x) # Use strict=False for safety
+            agg1.index = agg1.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (IPv4Network, IPv6Network)) else x) # Use strict=False for safety
             logger.debug(f"Aggregation 1 (requests, count, danger):\n{agg1.head()}")
             if agg1.empty and len(subnet_index) > 0:
                  logger.warning("Aggregation 1 resulted in an empty DataFrame despite having subnets.")
@@ -244,7 +244,7 @@ class ThreatAnalyzer:
                 subnet_max_ip_rpm=('max_rpm_activity', 'max'),  # Max of IP maxs
                 subnet_time_span=('time_span_seconds', 'max') # Max timespan
             ).fillna(0) # Fill NaNs here for IPs with single requests
-            agg2.index = agg2.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (ip_network)) else x) # Use strict=False
+            agg2.index = agg2.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (IPv4Network, IPv6Network)) else x) # Use strict=False
             logger.debug(f"Aggregation 2 (IP RPMs, timespan):\n{agg2.head()}")
             if agg2.empty and len(subnet_index) > 0:
                  logger.warning("Aggregation 2 resulted in an empty DataFrame.")
@@ -266,7 +266,7 @@ class ThreatAnalyzer:
              agg3[['subnet_total_avg_rpm', 'subnet_total_max_rpm']] = 0.0
         else:
              # Ensure index consistency
-             agg3.index = agg3.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (ip_network)) else x) # Use strict=False
+             agg3.index = agg3.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (IPv4Network, IPv6Network)) else x) # Use strict=False
              # Ensure columns exist even if calculation returned empty results for some reason
              if agg3.empty and len(subnet_index) > 0:
                   logger.warning("Aggregation 3 resulted in an empty DataFrame.")
@@ -535,3 +535,4 @@ class ThreatAnalyzer:
         except Exception as e:
             logger.error(f"Error exporting results: {e}", exc_info=True)
             return False
+``` 
