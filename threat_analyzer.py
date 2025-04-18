@@ -12,6 +12,7 @@ import csv
 import os
 import pandas as pd
 import numpy as np
+from ipaddress import ip_network
 
 # Import from log_parser
 from log_parser import (
