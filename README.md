@@ -11,8 +11,9 @@ This tool analyzes web server logs (e.g., Apache, Nginx) using Pandas to identif
 -   ✅ **Log Analysis:** Parses common web server log formats.
 -   ✅ **Pandas Integration:** Leverages Pandas DataFrames for efficient metric calculation (RPM, request counts, time spans).
 -   ✅ **Threat Grouping:** Aggregates IP-level metrics by subnet (/24 for IPv4, /64 for IPv6) to identify coordinated activity.
--   ✅ **Configurable Strategies:** Uses selectable strategies to score threats and determine blocking actions based on different criteria (volume, danger score, IP count, peak RPM).
--   ✅ **Automated Blocking:** Integrates with UFW to insert temporary `deny` rules with comments indicating expiration time (ISO 8601 UTC).
+-   ✅ **Simplified Supernet Blocking (NEW):** Automatically blocks the encompassing /16 supernet (IPv4) if it contains multiple /24 subnets where at least one meets the blocking criteria, preventing redundant individual blocks.
+-   ✅ **Configurable Strategies:** Uses selectable strategies to score threats (/24 or /64) and determine blocking actions based on different criteria (volume, danger score, IP count, peak RPM).
+-   ✅ **Automated Blocking:** Integrates with UFW to insert temporary `deny` rules with comments indicating expiration time (ISO 8601 UTC). Supports blocking individual IPs, /24 or /64 subnets, and /16 supernets based on the simplified logic.
 -   ✅ **Rule Cleanup:** Includes a mode to automatically remove expired UFW rules added by this script.
 -   ✅ **Whitelisting:** Supports excluding specific IPs or subnets from analysis and blocking.
 -   ✅ **Efficient Log Reading:** Can process logs in reverse when a time window (`--time-window` or `--start-date`) is specified, significantly speeding up analysis of recent activity in large files.
@@ -40,35 +41,18 @@ This tool can complement Fail2Ban by focusing specifically on abusive web crawli
     *   If `--start-date` or `--time-window` is used, only entries within the specified period are processed.
 3.  **IP Metrics Calculation (Pandas):**
     *   The filtered log entries (IP, Timestamp) are loaded into a Pandas DataFrame.
-    *   For each unique IP address, the script calculates:
-        *   `total_requests`: Total number of requests.
-        *   `first_seen`, `last_seen`: Timestamps of the first and last request.
-        *   `time_span_seconds`: Duration of activity.
-        *   `avg_rpm_activity`: Average requests per minute *during active minutes*.
-        *   `max_rpm_activity`: Maximum requests observed in any single minute.
-        *   `ip_danger_score`: A basic score for ranking IPs within a subnet's details (based on RPM and request count).
+    *   For each unique IP address, the script calculates various metrics like request counts, RPM, etc.
 4.  **Subnet Aggregation (Pandas):**
     *   IPs are grouped by their calculated subnet (/24 for IPv4, /64 for IPv6).
-    *   For each subnet, the script aggregates metrics from the IPs within it:
-        *   `total_requests`: Sum of requests from all IPs in the subnet.
-        *   `ip_count`: Number of unique IPs in the subnet.
-        *   `aggregated_ip_danger_score`: Sum of the basic `ip_danger_score` for all IPs in the subnet.
-        *   `subnet_avg_ip_rpm`: Average of the `avg_rpm_activity` across individual IPs.
-        *   `subnet_max_ip_rpm`: Maximum `max_rpm_activity` seen from any individual IP.
-        *   `subnet_time_span`: Maximum time span observed among IPs.
-    *   **Additionally**, the script calculates RPM for the *entire subnet*:
-        *   `subnet_total_avg_rpm`: Average RPM of the whole subnet during its active minutes (total requests/min).
-        *   `subnet_total_max_rpm`: Maximum RPM reached by the whole subnet in any single minute.
-5.  **Strategy Application:**
+    *   For each subnet, the script aggregates metrics from the IPs within it (total requests, IP count, danger score, average/max IP RPM, total subnet RPM, etc.).
+5.  **Strategy Application (/24 or /64):**
     *   The script loads the selected `--block-strategy`.
-    *   For each subnet, the strategy's `calculate_threat_score_and_block` method is called with the aggregated metrics and command-line configuration (`args`).
-    *   The strategy returns:
-        *   `strategy_score`: A score used for ranking threats (higher is generally worse).
-        *   `should_block`: A boolean indicating if the subnet meets the strategy's blocking criteria.
-        *   `reason`: A string explaining why blocking is recommended (if `should_block` is True).
-6.  **Sorting & Filtering:** Threats are sorted in descending order based on the `strategy_score`. Only the `--top` N threats are considered for reporting and potential blocking.
-7.  **Blocking (Optional):** If `--block` is enabled, the script iterates through the top N threats. If a threat has `should_block == True`, `ufw_handler` attempts to insert a `deny` rule for the subnet using `sudo ufw insert 1 deny from <subnet> ...`. The rule includes a comment with an ISO 8601 UTC expiration timestamp based on `--block-duration`.
-8.  **Reporting:** Displays the top N threats to the console and optionally exports the full sorted list to a file (`--output`) in the specified format (`--format`).
+    *   For each subnet, the strategy calculates a `strategy_score` and determines if it `should_block` based on the strategy's criteria and thresholds (e.g., `--block-threshold`, `--block-danger-threshold`). A list of 'blockable' threats is maintained.
+6.  **Sorting & Filtering:** All threats (/24 or /64) are sorted in descending order based on the `strategy_score` for reporting purposes.
+7.  **Blocking (Optional):** If `--block` is enabled:
+    *   **Supernet /16 Blocking Check:** The script groups all 'blockable' IPv4 /24 threats by their /16 supernet. If any /16 supernet contains **two or more** such /24 threats, the entire /16 supernet is blocked using the standard `--block-duration`. Subnets contained within a blocked /16 are marked to avoid redundant blocking.
+    *   **Individual Blocking:** It then iterates through the **top N** individual threats (/24, /64, or single IPs) from the sorted list. If a threat `should_block` (based on its strategy) AND it wasn't already covered by a /16 block, `ufw_handler` attempts to insert a `deny` rule using `--block-duration`.
+8.  **Reporting:** Displays the top N individual threats to the console, indicating if they were blocked directly or covered by a /16 block. Optionally exports the *individual* threat list to a file (`--output`).
 9.  **Rule Cleanup:** The `--clean-rules` mode scans UFW rules for comments matching the script's format and removes rules whose expiration timestamp has passed.
 
 ## Installation
@@ -160,6 +144,7 @@ python3 stats.py -f /var/log/apache2/access.log --block-strategy volume_coordina
 
 ```bash
 # Analyze last day, block top 10 threats meeting 'volume_danger' criteria
+# Automatically blocks /16 if >=2 contained /24s are blockable
 sudo python3 stats.py -f /var/log/apache2/access.log --time-window day --block \
     --block-strategy volume_danger \
     --block-threshold 100 \
@@ -167,6 +152,7 @@ sudo python3 stats.py -f /var/log/apache2/access.log --time-window day --block \
     --block-duration 120 # Block for 2 hours
 
 # Analyze last hour, block top 5 threats meeting 'combined' criteria (Dry Run)
+# Also shows potential /16 blocks in dry run output
 sudo python3 stats.py -f /var/log/nginx/access.log --time-window hour --block --top 5 --dry-run \
     --block-strategy combined \
     --block-threshold 50 \
@@ -174,6 +160,8 @@ sudo python3 stats.py -f /var/log/nginx/access.log --time-window hour --block --
     --block-ip-count-threshold 8 \
     --block-duration 60
 ```
+
+### ~~Analysis with Supernet Evaluation~~ (Removed - Now Automatic)
 
 ### Exporting Results
 
@@ -204,18 +192,18 @@ sudo python3 stats.py --clean-rules --dry-run
 | `--file, -f`                 | Path to the log file to analyze (required unless `--clean-rules`).                                         | `None`          |
 | `--start-date, -s`           | Analyze logs from this date/time (Format: `dd/Mmm/YYYY:HH:MM:SS`, e.g., `16/Apr/2024:10:00:00`).             | `None`          |
 | `--time-window, -tw`         | Analyze logs from the `hour`, `day`, or `week` (overrides `--start-date`).                                   | `None`          |
-| `--top, -n`                  | Number of top threats (by strategy score) to display and consider for blocking.                            | `10`            |
+| `--top, -n`                  | Number of top *individual* threats (/24 or /64 by strategy score) to display and consider for blocking.    | `10`            |
 | `--whitelist, -w`            | Path to a file containing IPs/subnets to exclude (one per line, `#` for comments).                         | `None`          |
 | `--block`                    | Enable blocking of threats using UFW. Requires appropriate permissions.                                    | `False`         |
-| `--block-strategy`           | Strategy for scoring threats and deciding blocks (`volume_danger`, `volume_coordination`, `volume_peak_rpm`, `combined`, `peak_total_rpm`). | `volume_danger` |
-| `--block-threshold`          | Base: Minimum total requests for a subnet to be considered by any strategy.                                | `50`            |
-| `--block-danger-threshold`   | Strategy: Minimum aggregated IP danger score (used by `volume_danger`, `combined`).                        | `20.0`          |
-| `--block-ip-count-threshold` | Strategy: Minimum number of unique IPs (used by `volume_coordination`, `combined`).                        | `5`             |
-| `--block-max-rpm-threshold`  | Strategy: Minimum peak RPM from any *individual* IP (used by `volume_peak_rpm`).                           | `300.0`         |
-| `--block-total-max-rpm-threshold` | Strategy: Minimum peak **TOTAL SUBNET RPM** (max requests per minute for the entire subnet) (used by `peak_total_rpm`). | `300.0`         |
-| `--block-duration`           | Duration of the UFW block in minutes.                                                                      | `60`            |
+| `--block-strategy`           | Strategy for scoring *individual* threats (`volume_danger`, `volume_coordination`, `volume_peak_rpm`, `combined`, `peak_total_rpm`). | `volume_danger` |
+| `--block-threshold`          | Base: Minimum total requests for an individual subnet to be considered by any strategy.                    | `100`           |
+| `--block-danger-threshold`   | Strategy: Minimum aggregated IP danger score (used by `volume_danger`, `combined`).                        | `50.0`          |
+| `--block-ip-count-threshold` | Strategy: Minimum number of unique IPs (used by `volume_coordination`, `combined`).                        | `10`            |
+| `--block-max-rpm-threshold`  | Strategy: Minimum peak RPM from any *individual* IP (used by `volume_peak_rpm`).                           | `62.0`          |
+| `--block-total-max-rpm-threshold` | Strategy: Minimum peak **TOTAL SUBNET RPM** (max requests per minute for the entire subnet) (used by `peak_total_rpm`). | `62.0`          |
+| `--block-duration`           | Duration of the UFW block in minutes (used for individual blocks and automatic /16 blocks).              | `60`            |
 | `--dry-run`                  | Show UFW commands that would be executed, but do not execute them.                                         | `False`         |
-| `--output, -o`               | File path to save the analysis results.                                                                    | `None`          |
+| `--output, -o`               | File path to save the analysis results (currently exports individual threats).                             | `None`          |
 | `--format`                   | Output format for the results file (`json`, `csv`, `text`).                                                | `text`          |
 | `--log-file`                 | File path to save execution logs.                                                                          | `None`          |
 | `--log-level`                | Logging detail level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).                                    | `INFO`          |

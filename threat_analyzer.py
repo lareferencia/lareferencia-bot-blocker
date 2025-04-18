@@ -427,111 +427,56 @@ class ThreatAnalyzer:
         logger.info(f"Threat identification complete. Found {len(self.unified_threats)} subnet threats.")
         return self.unified_threats
 
-    # --- REMOVE get_top_threats method ---
-    # def get_top_threats(self, top=10):
-    #     # ... (method removed) ...
-    #     pass
-    # --- END REMOVAL ---
+    def export_results(self, format_type, output_file, config=None, threats=None):
+        """
+        Exports the identified threats to a specified format.
+        Accepts the primary threats list.
+        """
+        if threats is None:
+             logger.error("No threat data provided for export.")
+             return False
 
-    def export_results(self, format_type, output_file, config=None):
-        """Exports the results (unified_threats list) to a file."""
-        if not self.unified_threats:
-            self.identify_threats()
-            if not self.unified_threats:
-                 logger.warning("No threats identified, cannot export.")
-                 return False
+        logger.info(f"Preparing to export {len(threats)} individual threats to {output_file} in {format_type} format.")
 
-        logger.info(f"Exporting {len(self.unified_threats)} threats to {output_file} in {format_type} format...")
+        # Convert threat data for export (handle ipaddress objects)
+        export_data = []
+        for threat in threats:
+             # Create a copy to avoid modifying the original dict
+             threat_copy = threat.copy()
+             # Convert ipaddress object ID to string
+             if isinstance(threat_copy.get('id'), (ipaddress.IPv4Network, ipaddress.IPv6Network)):
+                 threat_copy['id'] = str(threat_copy['id'])
+             # Convert details IP objects if necessary (should already be strings based on identify_threats)
+             # Ensure all data is serializable
+             for key, value in threat_copy.items():
+                 if isinstance(value, (datetime, pd.Timestamp)):
+                     threat_copy[key] = value.isoformat()
+                 elif isinstance(value, (ipaddress.IPv4Network, ipaddress.IPv6Network, ipaddress.IPv4Address, ipaddress.IPv6Address)):
+                      threat_copy[key] = str(value) # Catch any other potential IP objects
+
+             export_data.append(threat_copy)
+
 
         try:
-            if format_type.lower() == 'json':
-                json_threats = []
-                for threat in self.unified_threats:
-                    json_threat = threat.copy()
-                    json_threat['id'] = str(json_threat['id']) # Convert network object
-                    # Details are already serializable (basic types)
-                    json_threats.append(json_threat)
+            df_export = pd.DataFrame(export_data)
+            # Reorder columns for clarity if needed
+            # cols = ['id', 'strategy_score', 'should_block', 'block_reason', 'total_requests', ...]
+            # df_export = df_export[cols]
+
+            if format_type == 'csv':
+                df_export.to_csv(output_file, index=False)
+            elif format_type == 'json':
+                # Use records orientation for a list of JSON objects
+                df_export.to_json(output_file, orient='records', indent=4)
+            elif format_type == 'text':
+                # Basic text output, similar to console but to file
                 with open(output_file, 'w') as f:
-                    json.dump(json_threats, f, indent=2)
-
-            elif format_type.lower() == 'csv':
-                 # Flatten the structure for CSV
-                 csv_data = []
-                 for threat in self.unified_threats:
-                      row = {
-                          'type': threat['type'],
-                          'id': str(threat['id']),
-                          'strategy_score': threat.get('strategy_score', 0), # Add strategy score
-                          'should_block': threat.get('should_block', False), # Add block decision
-                          'block_reason': threat.get('block_reason', ''), # Add reason
-                          'total_requests': threat['total_requests'],
-                          'ip_count': threat['ip_count'],
-                          'aggregated_ip_danger_score': threat.get('aggregated_ip_danger_score', 0), # Added
-                          'subnet_avg_ip_rpm': threat.get('subnet_avg_ip_rpm', 0),
-                          'subnet_max_ip_rpm': threat.get('subnet_max_ip_rpm', 0),
-                          'subnet_total_avg_rpm': threat.get('subnet_total_avg_rpm', 0), # Subnet total avg RPM
-                          'subnet_total_max_rpm': threat.get('subnet_total_max_rpm', 0), # Subnet total max RPM
-                          'subnet_time_span': threat.get('subnet_time_span', 0),
-                          'top_ip_1': threat['details'][0]['ip'] if len(threat['details']) > 0 else '',
-                          'top_ip_1_reqs': threat['details'][0]['total_requests'] if len(threat['details']) > 0 else '',
-                          'top_ip_1_score': threat['details'][0]['danger_score'] if len(threat['details']) > 0 else '',
-                          'top_ip_1_max_rpm': threat['details'][0]['max_rpm'] if len(threat['details']) > 0 else '', # Added top IP max RPM
-                      }
-                      csv_data.append(row)
-
-                 if csv_data:
-                     fieldnames = csv_data[0].keys() # Get headers from first row
-                     with open(output_file, 'w', newline='') as f:
-                        writer = csv.DictWriter(f, fieldnames=fieldnames)
-                        writer.writeheader()
-                        writer.writerows(csv_data)
-                 else:
-                      logger.warning("No data to write to CSV.")
-
-
-            elif format_type.lower() == 'text':
-                 with open(output_file, 'w') as f:
-                     f.write(f"=== {len(self.unified_threats)} SUBNET THREATS DETECTED (Sorted by Strategy Score) ===\n")
-                     for i, threat in enumerate(self.unified_threats, 1):
-                         target_id_str = str(threat['id'])
-                         # Display strategy score
-                         strat_score_str = f"Score: {threat.get('strategy_score', 0):.2f}"
-                         avg_rpm_str = f"~{threat.get('subnet_avg_ip_rpm', 0):.2f} avg_ip_rpm"
-                         max_rpm_str = f"{threat.get('subnet_max_ip_rpm', 0):.0f} max_ip_rpm"
-                         subnet_total_avg_rpm_str = f"~{threat.get('subnet_total_avg_rpm', 0):.1f} avg_total_rpm"
-                         subnet_total_max_rpm_str = f"{threat.get('subnet_total_max_rpm', 0):.0f} max_total_rpm"
-                         ip_count_str = f"{threat['ip_count']} IPs"
-                         req_str = f"{threat['total_requests']} reqs"
-                         agg_danger_str = f"AggDanger: {threat.get('aggregated_ip_danger_score', 0):.2f}" # Added
-
-                         # Combine metrics for display
-                         metrics_summary = f"{req_str}, {ip_count_str}, {agg_danger_str}, {avg_rpm_str}, {max_rpm_str}, {subnet_total_avg_rpm_str}, {subnet_total_max_rpm_str}"
-                         # Add block status/reason
-                         block_info = ""
-                         # Use config if available to check dry_run
-                         is_dry_run = config.dry_run if config else False # Default to False if config not passed
-                         if threat.get('should_block'):
-                              block_status = "[BLOCKED]" if not is_dry_run else "[DRY RUN - BLOCKED]" # Need config here! Pass config to export?
-                              block_info = f" {block_status} Reason: {threat.get('block_reason', 'N/A')}"
-
-
-                         f.write(f"\n#{i} Subnet: {target_id_str} - {strat_score_str} ({metrics_summary}){block_info}\n")
-
-                         # Update details header
-                         if threat['details']:
-                             f.write("  -> Top IPs (by Max RPM):\n") # Changed header
-                             for ip_detail in threat['details']:
-                                 # Display order remains the same, but the IPs listed are now sorted by MaxRPM
-                                 f.write(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, Score: {ip_detail['danger_score']:.2f}, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})\n")
-                         else:
-                              f.write("  -> No IP details available.\n")
+                    # You might want to replicate the console output format here
+                    f.write(df_export.to_string(index=False))
             else:
                 logger.error(f"Unsupported export format: {format_type}")
                 return False
-
-            logger.info(f"Results exported successfully to {output_file}")
             return True
-
         except Exception as e:
-            logger.error(f"Error exporting results: {e}", exc_info=True)
+            logger.error(f"Failed to export results to {output_file}: {e}", exc_info=True)
             return False
