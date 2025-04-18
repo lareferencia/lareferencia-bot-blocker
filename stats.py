@@ -39,7 +39,7 @@ def setup_logging(log_file=None, log_level=logging.INFO):
     handlers.append(console)
     
     # Add file handler if specified
-    if log_file:
+    if (log_file):
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(log_level)
         file_handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
@@ -107,7 +107,7 @@ def main():
     )
     parser.add_argument(
         '--block-strategy', default='volume_danger',
-        choices=['volume_danger', 'volume_coordination', 'volume_peak_rpm', 'combined'],
+        choices=['volume_danger', 'volume_coordination', 'volume_peak_rpm', 'combined', 'sustained_avg_rpm'],
         help='Strategy used to score threats and decide on blocking.'
     )
     parser.add_argument(
@@ -125,6 +125,10 @@ def main():
     parser.add_argument(
         '--block-max-rpm-threshold', type=float, default=300.0, # Default for volume_peak_rpm
         help='Strategy threshold: Minimum peak RPM from any IP (used by volume_peak_rpm).'
+    )
+    parser.add_argument(
+        '--block-avg-rpm-threshold', type=float, default=60.0,
+        help='Strategy threshold: Minimum average TOTAL SUBNET RPM (requests per minute for the entire subnet) (used by sustained_avg_rpm).'
     )
     parser.add_argument(
         '--block-duration', type=int, default=60,
@@ -290,15 +294,15 @@ def main():
 
     for i, threat in enumerate(top_threats_report, 1):
         target_id_str = str(threat['id'])
-        # Display strategy score and base metrics
         strat_score_str = f"Score: {threat.get('strategy_score', 0):.2f}"
-        avg_rpm_str = f"~{threat.get('subnet_avg_ip_rpm', 0):.2f} avg_ip_rpm"
-        max_rpm_str = f"{threat.get('subnet_max_ip_rpm', 0):.0f} max_ip_rpm"
-        ip_count_str = f"{threat['ip_count']} IPs"
         req_str = f"{threat['total_requests']} reqs"
-        metrics_summary = f"{req_str}, {ip_count_str}, {avg_rpm_str}, {max_rpm_str}"
+        ip_count_str = f"{threat['ip_count']} IPs"
+        agg_danger_str = f"AggDanger: {threat.get('aggregated_ip_danger_score', 0):.2f}"
+        subnet_total_avg_rpm_str = f"~{threat.get('subnet_total_avg_rpm', 0):.1f} avg_total_rpm"
+        subnet_total_max_rpm_str = f"{threat.get('subnet_total_max_rpm', 0):.0f} max_total_rpm"
 
-        # Indicate block status based on strategy decision for this threat
+        metrics_summary = f"{req_str}, {ip_count_str}, {agg_danger_str}, {subnet_total_avg_rpm_str}, {subnet_total_max_rpm_str}"
+
         block_info = ""
         if args.block and threat.get('should_block') and i <= args.top: # Check if it was among the top N considered
              block_status = "[BLOCKED]" if not args.dry_run else "[DRY RUN - BLOCKED]"
@@ -306,18 +310,15 @@ def main():
 
         print(f"\n#{i} Subnet: {target_id_str} - {strat_score_str} ({metrics_summary}){block_info}")
 
-        # Update details header in console output
         if threat['details']:
             print("  -> Top IPs (by Max RPM):") # Changed header
             for ip_detail in threat['details']:
-                 # Display order remains the same, but the IPs listed are now sorted by MaxRPM
                  print(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, Score: {ip_detail['danger_score']:.2f}, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})")
         else:
              print("  -> No IP details available.")
 
     # --- Export Results ---
     if args.output:
-        # Pass config (args) to export_results
         if analyzer.export_results(args.format, args.output, config=args):
             logger.info(f"Results exported to {args.output} in {args.format} format")
         else:

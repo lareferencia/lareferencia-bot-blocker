@@ -99,6 +99,13 @@ class ThreatAnalyzer:
              logger.error("Timestamp column not found after loading log data.")
              return -1
 
+        # Add subnet information directly to the main log DataFrame
+        logger.debug("Adding subnet information to log DataFrame...")
+        self.log_df['subnet'] = self.log_df['ip'].map(get_subnet)
+        # Drop rows where subnet couldn't be determined (should be rare)
+        self.log_df = self.log_df.dropna(subset=['subnet'])
+        logger.debug("Subnet information added.")
+
         return len(self.log_df)
 
     def _calculate_ip_metrics(self):
@@ -167,6 +174,29 @@ class ThreatAnalyzer:
         logger.info(f"Finished calculating metrics for {len(self.ip_metrics_df)} IPs.")
         return True
 
+    def _calculate_subnet_rpm_metrics(self):
+        """Calculates total RPM metrics per Subnet."""
+        if self.log_df is None or self.log_df.empty:
+             logger.warning("Log DataFrame not available. Cannot calculate subnet RPM metrics.")
+             return None
+
+        logger.info("Calculating total RPM metrics per Subnet...")
+        try:
+            # Group by subnet and resample per minute
+            subnet_group = self.log_df.groupby('subnet')
+            rpm_counts_subnet = subnet_group.resample('T').size()
+            rpm_counts_subnet = rpm_counts_subnet[rpm_counts_subnet > 0] # Filter inactive minutes
+
+            # Calculate avg and max RPM for the whole subnet
+            subnet_rpm_metrics = rpm_counts_subnet.groupby('subnet').agg(
+                subnet_total_avg_rpm='mean', # Avg RPM of the subnet when active
+                subnet_total_max_rpm='max'   # Max RPM the subnet reached in any minute
+            ).fillna(0)
+            logger.info(f"Calculated total RPM metrics for {len(subnet_rpm_metrics)} subnets.")
+            return subnet_rpm_metrics
+        except Exception as e:
+            logger.error(f"Error calculating subnet RPM metrics: {e}", exc_info=True)
+            return None
 
     def _aggregate_subnet_metrics(self):
         """Aggregates IP metrics to the subnet level."""
@@ -222,9 +252,24 @@ class ThreatAnalyzer:
                   agg_ip_danger = self.ip_metrics_df.groupby('subnet')['ip_danger_score'].sum()
                   self.subnet_metrics_df['aggregated_ip_danger_score'] = agg_ip_danger
 
+        # Calculate the new Subnet Total RPM metrics
+        subnet_total_rpm_df = self._calculate_subnet_rpm_metrics()
+
+        # Join the subnet total RPM metrics with the aggregated IP metrics
+        if subnet_total_rpm_df is not None:
+            logger.debug("Joining aggregated IP metrics with subnet total RPM metrics...")
+            self.subnet_metrics_df = subnet_agg.join(subnet_total_rpm_df, how='left').fillna(0)
+        else:
+            logger.warning("Could not calculate subnet total RPM metrics. Proceeding without them.")
+            self.subnet_metrics_df = subnet_agg
+            # Add placeholder columns if calculation failed
+            self.subnet_metrics_df['subnet_total_avg_rpm'] = 0.0
+            self.subnet_metrics_df['subnet_total_max_rpm'] = 0.0
+
         # Ensure essential columns exist, fill missing with 0 if necessary
         expected_cols = ['total_requests', 'ip_count', 'aggregated_ip_danger_score',
-                         'subnet_avg_ip_rpm', 'subnet_max_ip_rpm', 'subnet_time_span']
+                         'subnet_avg_ip_rpm', 'subnet_max_ip_rpm', 'subnet_time_span',
+                         'subnet_total_avg_rpm', 'subnet_total_max_rpm'] # Added new RPMs
         for col in expected_cols:
              if col not in self.subnet_metrics_df.columns:
                   logger.warning(f"Column '{col}' missing after aggregation. Filling with 0.")
@@ -278,6 +323,8 @@ class ThreatAnalyzer:
                 'aggregated_ip_danger_score': round(metrics.get('aggregated_ip_danger_score', 0), 2),
                 'subnet_avg_ip_rpm': round(metrics.get('subnet_avg_ip_rpm', 0), 2),
                 'subnet_max_ip_rpm': round(metrics.get('subnet_max_ip_rpm', 0), 2),
+                'subnet_total_avg_rpm': round(metrics.get('subnet_total_avg_rpm', 0), 2),
+                'subnet_total_max_rpm': round(metrics.get('subnet_total_max_rpm', 0), 2),
                 'subnet_time_span': round(metrics.get('subnet_time_span', 0), 2),
                 'details': details_list,
                 'strategy_score': 0.0,
@@ -349,10 +396,13 @@ class ThreatAnalyzer:
                           'aggregated_ip_danger_score': threat.get('aggregated_ip_danger_score', 0), # Added
                           'subnet_avg_ip_rpm': threat.get('subnet_avg_ip_rpm', 0),
                           'subnet_max_ip_rpm': threat.get('subnet_max_ip_rpm', 0),
+                          'subnet_total_avg_rpm': threat.get('subnet_total_avg_rpm', 0), # Subnet total avg RPM
+                          'subnet_total_max_rpm': threat.get('subnet_total_max_rpm', 0), # Subnet total max RPM
                           'subnet_time_span': threat.get('subnet_time_span', 0),
                           'top_ip_1': threat['details'][0]['ip'] if len(threat['details']) > 0 else '',
                           'top_ip_1_reqs': threat['details'][0]['total_requests'] if len(threat['details']) > 0 else '',
                           'top_ip_1_score': threat['details'][0]['danger_score'] if len(threat['details']) > 0 else '',
+                          'top_ip_1_max_rpm': threat['details'][0]['max_rpm'] if len(threat['details']) > 0 else '', # Added top IP max RPM
                       }
                       csv_data.append(row)
 
@@ -375,12 +425,14 @@ class ThreatAnalyzer:
                          strat_score_str = f"Score: {threat.get('strategy_score', 0):.2f}"
                          avg_rpm_str = f"~{threat.get('subnet_avg_ip_rpm', 0):.2f} avg_ip_rpm"
                          max_rpm_str = f"{threat.get('subnet_max_ip_rpm', 0):.0f} max_ip_rpm"
+                         subnet_total_avg_rpm_str = f"~{threat.get('subnet_total_avg_rpm', 0):.1f} avg_total_rpm"
+                         subnet_total_max_rpm_str = f"{threat.get('subnet_total_max_rpm', 0):.0f} max_total_rpm"
                          ip_count_str = f"{threat['ip_count']} IPs"
                          req_str = f"{threat['total_requests']} reqs"
                          agg_danger_str = f"AggDanger: {threat.get('aggregated_ip_danger_score', 0):.2f}" # Added
 
                          # Combine metrics for display
-                         metrics_summary = f"{req_str}, {ip_count_str}, {agg_danger_str}, {avg_rpm_str}, {max_rpm_str}"
+                         metrics_summary = f"{req_str}, {ip_count_str}, {agg_danger_str}, {avg_rpm_str}, {max_rpm_str}, {subnet_total_avg_rpm_str}, {subnet_total_max_rpm_str}"
                          # Add block status/reason
                          block_info = ""
                          # Use config if available to check dry_run
