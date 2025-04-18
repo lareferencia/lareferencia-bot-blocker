@@ -15,7 +15,7 @@ import numpy as np
 
 # Import from log_parser
 from log_parser import (
-    load_log_into_dataframe, get_subnet, calculate_danger_score, is_ip_in_whitelist
+    load_log_into_dataframe, get_subnet, is_ip_in_whitelist
 )
 
 # Logger for this module
@@ -26,15 +26,13 @@ class ThreatAnalyzer:
     Analyzes log data using Pandas to detect threats based on IP and subnet activity.
     """
 
-    def __init__(self, rpm_threshold=100, whitelist=None):
+    def __init__(self, whitelist=None):
         """
         Initializes the threat analyzer.
 
         Args:
-            rpm_threshold (float): Requests per minute threshold (used for flagging, not primary score).
             whitelist (list): List of additional IPs or subnets that should never be blocked.
         """
-        self.rpm_threshold = rpm_threshold # Keep for potential future use or simple flagging
         self.whitelist = ['127.0.0.1', '::1']
         if whitelist:
             for item in whitelist:
@@ -115,8 +113,6 @@ class ThreatAnalyzer:
         logger.debug("Calculating total requests, first/last seen per IP...")
         basic_agg = self.log_df.groupby('ip').agg(
             total_requests=('ip', 'count'),
-            first_seen=('ip', 'first'), # This gets the timestamp index value
-            last_seen=('ip', 'last')   # This gets the timestamp index value
         )
         basic_agg['first_seen'] = basic_agg.index.map(lambda ip: self.log_df.loc[self.log_df['ip'] == ip].index.min())
         basic_agg['last_seen'] = basic_agg.index.map(lambda ip: self.log_df.loc[self.log_df['ip'] == ip].index.max())
@@ -149,18 +145,17 @@ class ThreatAnalyzer:
         self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity']] = self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity']].fillna(0)
         logger.debug("Metrics combined.")
 
-        # 4. Calculate Danger Score per IP
-        logger.debug("Calculating danger score per IP...")
-        self.ip_metrics_df['danger_score'] = self.ip_metrics_df.apply(
-            lambda row: calculate_danger_score(
-                row['avg_rpm_activity'],
-                row['total_requests'],
-                row['time_span_seconds']
-                # min_duration_seconds can be passed if needed, defaults to 5 in function
-            ),
+        # 4. Calculate IP Danger Score (using a simple placeholder or basic calculation)
+        # This score is now primarily for ranking IPs *within* a subnet's details,
+        # the main strategy score is calculated later.
+        logger.debug("Calculating basic IP danger score (for detail ranking)...")
+        # Use a simplified score calculation here, maybe similar to the old one
+        # or just use avg_rpm_activity + log(total_requests)
+        self.ip_metrics_df['ip_danger_score'] = self.ip_metrics_df.apply(
+            lambda row: (row['avg_rpm_activity'] / 10.0) + (np.log10(row['total_requests'] + 1) * 5),
             axis=1
         )
-        logger.debug("Danger scores calculated.")
+        logger.debug("IP danger scores calculated.")
 
         # 5. Add Subnet Information
         logger.debug("Adding subnet information...")
@@ -184,11 +179,10 @@ class ThreatAnalyzer:
         # Define aggregations
         agg_funcs = {
             'total_requests': 'sum',
-            'danger_score': ['sum', 'count'], # Sum danger scores AND count IPs using this column
+            'ip_danger_score': ['sum', 'count'], # Calculate sum and count
             'avg_rpm_activity': 'mean',
             'max_rpm_activity': 'max',
             'time_span_seconds': 'max'
-            # Removed 'ip': 'count'
         }
 
         # Perform aggregation
@@ -202,19 +196,21 @@ class ThreatAnalyzer:
              self.subnet_metrics_df = subnet_agg.rename(
                  columns={
                      'total_requests_sum': 'total_requests', # Assuming sum is default if only one agg
-                     'danger_score_sum': 'total_danger_score',
-                     'danger_score_count': 'ip_count',
-                     'avg_rpm_activity_mean': 'avg_rpm_activity',
-                     'max_rpm_activity_max': 'max_rpm_activity',
-                     'time_span_seconds_max': 'time_span_seconds'
+                     'ip_danger_score_sum': 'aggregated_ip_danger_score', # Added sum
+                     'ip_danger_score_count': 'ip_count', # Renamed from danger_score_count
+                     'avg_rpm_activity_mean': 'subnet_avg_ip_rpm', # Renamed for clarity
+                     'max_rpm_activity_max': 'subnet_max_ip_rpm', # Renamed for clarity
+                     'time_span_seconds_max': 'subnet_time_span' # Renamed for clarity
                  }
              )
         else:
              # Handle older Pandas versions or cases without MultiIndex
              self.subnet_metrics_df = subnet_agg.rename(
                  columns={
-                     'danger_score': 'total_danger_score', # Assuming sum was default
-                     # Need to figure out how count was named or recalculate
+                     'ip_danger_score': 'aggregated_ip_danger_score', # Assuming sum if only one agg? Check pandas version behavior
+                     'avg_rpm_activity': 'subnet_avg_ip_rpm',
+                     'max_rpm_activity': 'subnet_max_ip_rpm',
+                     'time_span_seconds': 'subnet_time_span'
                  }
              )
              # If count wasn't automatically named, recalculate ip_count separately
@@ -222,18 +218,20 @@ class ThreatAnalyzer:
                   logger.debug("Recalculating ip_count separately.")
                   ip_counts = self.ip_metrics_df.groupby('subnet').size()
                   self.subnet_metrics_df['ip_count'] = ip_counts
-
+             if 'aggregated_ip_danger_score' not in self.subnet_metrics_df.columns:
+                  agg_ip_danger = self.ip_metrics_df.groupby('subnet')['ip_danger_score'].sum()
+                  self.subnet_metrics_df['aggregated_ip_danger_score'] = agg_ip_danger
 
         # Ensure essential columns exist, fill missing with 0 if necessary
-        expected_cols = ['total_requests', 'total_danger_score', 'ip_count', 'avg_rpm_activity', 'max_rpm_activity', 'time_span_seconds']
+        expected_cols = ['total_requests', 'ip_count', 'aggregated_ip_danger_score',
+                         'subnet_avg_ip_rpm', 'subnet_max_ip_rpm', 'subnet_time_span']
         for col in expected_cols:
              if col not in self.subnet_metrics_df.columns:
                   logger.warning(f"Column '{col}' missing after aggregation. Filling with 0.")
                   self.subnet_metrics_df[col] = 0
 
-
-        # Sort by total_requests descending
-        self.subnet_metrics_df = self.subnet_metrics_df.sort_values('total_requests', ascending=False)
+        # DO NOT sort here - sorting will be done in stats.py based on strategy score
+        # self.subnet_metrics_df = self.subnet_metrics_df.sort_values('total_requests', ascending=False)
 
         logger.info(f"Finished aggregating metrics for {len(self.subnet_metrics_df)} subnets.")
         return True
@@ -245,45 +243,52 @@ class ThreatAnalyzer:
             self.unified_threats = []
             return
 
-        logger.debug("Formatting subnet metrics into final threat list...")
+        logger.debug("Formatting subnet metrics into threat list (without final score/sorting)...")
         self.unified_threats = []
 
-        # Get top IPs per subnet for details (sorted by danger score)
-        top_ips_per_subnet = self.ip_metrics_df.sort_values('danger_score', ascending=False)\
+        # Get top IPs per subnet for details (sorted by the basic ip_danger_score)
+        top_ips_per_subnet = self.ip_metrics_df.sort_values('ip_danger_score', ascending=False)\
                                              .groupby('subnet')
 
         for subnet, metrics in self.subnet_metrics_df.iterrows():
             # Get top IPs for this subnet
-            top_ips = top_ips_per_subnet.get_group(subnet)
             details_list = []
-            # Format IP details similar to previous structure, limit count
-            max_details = 5
-            for ip, ip_metrics in top_ips.head(max_details).iterrows():
-                 details_list.append({
-                     'ip': ip,
-                     'total_requests': int(ip_metrics['total_requests']),
-                     'danger_score': round(ip_metrics['danger_score'], 2),
-                     'avg_rpm': round(ip_metrics['avg_rpm_activity'], 2),
-                     'max_rpm': round(ip_metrics['max_rpm_activity'], 2),
-                     # Add first/last seen if needed
-                 })
+            try:
+                # Use try-except in case a subnet in metrics_df has no IPs in ip_metrics_df (shouldn't happen)
+                top_ips = top_ips_per_subnet.get_group(subnet)
+                max_details = 5
+                for ip, ip_metrics in top_ips.head(max_details).iterrows():
+                     details_list.append({
+                         'ip': ip,
+                         'total_requests': int(ip_metrics['total_requests']),
+                         'danger_score': round(ip_metrics['ip_danger_score'], 2), # Use the IP score
+                         'avg_rpm': round(ip_metrics['avg_rpm_activity'], 2),
+                         'max_rpm': round(ip_metrics['max_rpm_activity'], 2),
+                     })
+            except KeyError:
+                 logger.warning(f"Could not find IPs for subnet {subnet} during detail formatting.")
 
+
+            # Create threat dict with base metrics - score/block status added later
             threat = {
                 'type': 'subnet',
-                'id': subnet, # This is the ipaddress.ip_network object
+                'id': subnet,
                 'total_requests': int(metrics['total_requests']),
                 'ip_count': int(metrics['ip_count']),
-                'danger_score': round(metrics['total_danger_score'], 2), # Renamed from total_danger_score for compatibility
-                'subnet_avg_ip_rpm': round(metrics['avg_rpm_activity'], 2), # Avg of avg RPMs
-                'subnet_max_ip_rpm': round(metrics['max_rpm_activity'], 2), # Max of max RPMs
-                'subnet_time_span': round(metrics['time_span_seconds'], 2), # Max timespan
-                'details': details_list # List of top IPs dicts
+                # Base metrics used by strategies:
+                'aggregated_ip_danger_score': round(metrics.get('aggregated_ip_danger_score', 0), 2), # Added
+                'subnet_avg_ip_rpm': round(metrics.get('subnet_avg_ip_rpm', 0), 2),
+                'subnet_max_ip_rpm': round(metrics.get('subnet_max_ip_rpm', 0), 2),
+                'subnet_time_span': round(metrics.get('subnet_time_span', 0), 2),
+                'details': details_list,
+                # Placeholders for strategy results
+                'strategy_score': 0.0,
+                'should_block': False,
+                'block_reason': None
             }
             self.unified_threats.append(threat)
 
-        # Ensure final list is sorted by total_requests (should already be from DataFrame sort)
-        # self.unified_threats = sorted(self.unified_threats, key=lambda x: x['total_requests'], reverse=True)
-        logger.debug(f"Formatted {len(self.unified_threats)} threats.")
+        logger.debug(f"Formatted {len(self.unified_threats)} threats (pre-strategy).")
 
 
     def identify_threats(self):
@@ -304,13 +309,13 @@ class ThreatAnalyzer:
         logger.info(f"Threat identification complete. Found {len(self.unified_threats)} subnet threats.")
         return self.unified_threats
 
-    def get_top_threats(self, top=10):
-        """Gets the top N threats from the identified list."""
-        if not self.unified_threats:
-             self.identify_threats()
-        return self.unified_threats[:top]
+    # --- REMOVE get_top_threats method ---
+    # def get_top_threats(self, top=10):
+    #     # ... (method removed) ...
+    #     pass
+    # --- END REMOVAL ---
 
-    def export_results(self, format_type, output_file):
+    def export_results(self, format_type, output_file, config=None):
         """Exports the results (unified_threats list) to a file."""
         if not self.unified_threats:
             self.identify_threats()
@@ -338,17 +343,18 @@ class ThreatAnalyzer:
                       row = {
                           'type': threat['type'],
                           'id': str(threat['id']),
+                          'strategy_score': threat.get('strategy_score', 0), # Add strategy score
+                          'should_block': threat.get('should_block', False), # Add block decision
+                          'block_reason': threat.get('block_reason', ''), # Add reason
                           'total_requests': threat['total_requests'],
                           'ip_count': threat['ip_count'],
-                          'danger_score': threat['danger_score'],
+                          'aggregated_ip_danger_score': threat.get('aggregated_ip_danger_score', 0), # Added
                           'subnet_avg_ip_rpm': threat.get('subnet_avg_ip_rpm', 0),
                           'subnet_max_ip_rpm': threat.get('subnet_max_ip_rpm', 0),
                           'subnet_time_span': threat.get('subnet_time_span', 0),
-                          # Optionally add first few IPs from details
                           'top_ip_1': threat['details'][0]['ip'] if len(threat['details']) > 0 else '',
                           'top_ip_1_reqs': threat['details'][0]['total_requests'] if len(threat['details']) > 0 else '',
-                          'top_ip_2': threat['details'][1]['ip'] if len(threat['details']) > 1 else '',
-                          'top_ip_2_reqs': threat['details'][1]['total_requests'] if len(threat['details']) > 1 else '',
+                          'top_ip_1_score': threat['details'][0]['danger_score'] if len(threat['details']) > 0 else '',
                       }
                       csv_data.append(row)
 
@@ -364,23 +370,35 @@ class ThreatAnalyzer:
 
             elif format_type.lower() == 'text':
                  with open(output_file, 'w') as f:
-                     f.write(f"=== {len(self.unified_threats)} SUBNET THREATS DETECTED (Sorted by Total Requests) ===\n")
+                     f.write(f"=== {len(self.unified_threats)} SUBNET THREATS DETECTED (Sorted by Strategy Score) ===\n")
                      for i, threat in enumerate(self.unified_threats, 1):
                          target_id_str = str(threat['id'])
-                         danger_str = f"Danger: {threat['danger_score']:.2f}"
-                         # Use the new RPM metrics if available
+                         # Display strategy score
+                         strat_score_str = f"Score: {threat.get('strategy_score', 0):.2f}"
                          avg_rpm_str = f"~{threat.get('subnet_avg_ip_rpm', 0):.2f} avg_ip_rpm"
                          max_rpm_str = f"{threat.get('subnet_max_ip_rpm', 0):.0f} max_ip_rpm"
-                         rpm_info = f"{avg_rpm_str}, {max_rpm_str}"
-                         ip_count_str = f"{threat['ip_count']} IP" if threat['ip_count'] == 1 else f"{threat['ip_count']} IPs"
+                         ip_count_str = f"{threat['ip_count']} IPs"
+                         req_str = f"{threat['total_requests']} reqs"
+                         agg_danger_str = f"AggDanger: {threat.get('aggregated_ip_danger_score', 0):.2f}" # Added
 
-                         f.write(f"\n#{i} Subnet: {target_id_str} - Requests: {threat['total_requests']} ({ip_count_str}, {danger_str}, {rpm_info})\n")
+                         # Combine metrics for display
+                         metrics_summary = f"{req_str}, {ip_count_str}, {agg_danger_str}, {avg_rpm_str}, {max_rpm_str}"
+                         # Add block status/reason
+                         block_info = ""
+                         # Use config if available to check dry_run
+                         is_dry_run = config.dry_run if config else False # Default to False if config not passed
+                         if threat.get('should_block'):
+                              block_status = "[BLOCKED]" if not is_dry_run else "[DRY RUN - BLOCKED]" # Need config here! Pass config to export?
+                              block_info = f" {block_status} Reason: {threat.get('block_reason', 'N/A')}"
+
+
+                         f.write(f"\n#{i} Subnet: {target_id_str} - {strat_score_str} ({metrics_summary}){block_info}\n")
 
                          # Show details for top IPs within the subnet threat
                          if threat['details']:
-                             f.write("  -> Top IPs (by danger score):\n")
+                             f.write("  -> Top IPs (by basic score):\n")
                              for ip_detail in threat['details']:
-                                 f.write(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, Danger: {ip_detail['danger_score']:.2f}, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})\n")
+                                 f.write(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, Score: {ip_detail['danger_score']:.2f}, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})\n")
                          else:
                               f.write("  -> No IP details available.\n")
             else:

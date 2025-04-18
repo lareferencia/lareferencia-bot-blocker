@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main script for log analysis and bot threat detection using Pandas.
+Main script for log analysis and bot threat detection using Pandas and configurable strategies.
 """
 import argparse
 import re
@@ -10,10 +10,12 @@ import os
 import logging
 import ipaddress
 import pandas as pd
+import importlib # For dynamic strategy loading
 
 # Import own modules
-from log_parser import get_subnet, is_ip_in_whitelist
-from ufw_handler import UFWManager
+from log_parser import get_subnet, is_ip_in_whitelist # Keep imports minimal
+# Import UFWManager and COMMENT_PREFIX directly if needed
+import ufw_handler
 from threat_analyzer import ThreatAnalyzer
 
 # Logging configuration
@@ -72,122 +74,125 @@ def calculate_start_date(time_window):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Analyzes a log file using Pandas, generates statistics and optionally blocks threats with UFW.'
+        description='Analyzes logs using Pandas and configurable strategies, optionally blocks threats with UFW.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter # Show defaults in help
     )
-    # Make --file not required initially
+    # --- File/Time Args ---
     parser.add_argument(
         '--file', '-f', required=False,
         help='Path of the log file to analyze (required unless --clean-rules is used).'
     )
     parser.add_argument(
         '--start-date', '-s', required=False, default=None,
-        help='Date from which to analyze the log. Format: dd/mmm/yyyy:HH:MM:SS (e.g. 16/Apr/2025:13:16:50). If not provided, analyzes all records.'
+        help='Analyze logs from this date. Format: dd/mmm/yyyy:HH:MM:SS.'
     )
     parser.add_argument(
         '--time-window', '-tw', required=False,
         choices=['hour', 'day', 'week'],
-        help='Analyze only entries from the last hour, day or week.'
+        help='Analyze logs from the last hour, day, or week (overrides --start-date).'
     )
-    parser.add_argument(
-        '--threshold', '-t', type=float, default=100,
-        help='Requests per minute (RPM) threshold to consider an IP suspicious (default: 100).'
-    )
+    # --- Analysis Args ---
     parser.add_argument(
         '--top', '-n', type=int, default=10,
-        help='Number of most dangerous threats to display (default: 10).'
+        help='Number of top threats to display/consider for blocking.'
     )
+    parser.add_argument(
+        '--whitelist', '-w',
+        help='File with IPs/subnets to exclude from analysis.'
+    )
+    # --- Blocking Strategy Args ---
     parser.add_argument(
         '--block', action='store_true',
         help='Enable blocking of detected threats using UFW.'
     )
     parser.add_argument(
-        '--block-threshold', type=int, default=10,
-        help='Threshold of *total requests* in the analyzed period to activate UFW blocking (default: 10).'
+        '--block-strategy', default='volume_danger',
+        choices=['volume_danger', 'volume_coordination', 'volume_peak_rpm', 'combined'],
+        help='Strategy used to score threats and decide on blocking.'
+    )
+    parser.add_argument(
+        '--block-threshold', type=int, default=50, # Increased default
+        help='Base threshold: Minimum total requests for a subnet to be considered for blocking.'
+    )
+    parser.add_argument(
+        '--block-danger-threshold', type=float, default=20.0, # Default for volume_danger, combined
+        help='Strategy threshold: Minimum aggregated IP danger score (used by volume_danger, combined).'
+    )
+    parser.add_argument(
+        '--block-ip-count-threshold', type=int, default=5, # Default for volume_coordination, combined
+        help='Strategy threshold: Minimum number of unique IPs (used by volume_coordination, combined).'
+    )
+    parser.add_argument(
+        '--block-max-rpm-threshold', type=float, default=300.0, # Default for volume_peak_rpm
+        help='Strategy threshold: Minimum peak RPM from any IP (used by volume_peak_rpm).'
     )
     parser.add_argument(
         '--block-duration', type=int, default=60,
-        help='Duration of the UFW block in minutes (default: 60).'
+        help='Duration of the UFW block in minutes.'
     )
     parser.add_argument(
         '--dry-run', action='store_true',
-        help='Show the UFW commands that would be executed, but don\'t execute them.'
+        help='Show UFW commands without executing them.'
     )
-    parser.add_argument(
-        '--whitelist', '-w',
-        help='File with list of IPs or subnets that should never be blocked (one per line).'
-    )
+    # --- Output Args ---
     parser.add_argument(
         '--output', '-o',
         help='File to save the analysis results.'
     )
     parser.add_argument(
-        '--format',
-        choices=['json', 'csv', 'text'],
-        default='text',
-        help='Output format when using --output (default: text).'
+        '--format', choices=['json', 'csv', 'text'], default='text',
+        help='Output format for the results file.'
     )
     parser.add_argument(
-        '--log-file',
-        help='File to save execution logs.'
+        '--log-file', help='File to save execution logs.'
     )
     parser.add_argument(
-        '--log-level',
-        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-        default='INFO',
-        help='Log detail level (default: INFO).'
+        '--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='INFO',
+        help='Log detail level.'
     )
+    # --- Utility Args ---
     parser.add_argument(
         '--clean-rules', action='store_true',
         help='Run cleanup of expired UFW rules and exit.'
     )
     args = parser.parse_args()
 
-    # Configure logging early
+    # --- Logging Setup ---
     log_level = getattr(logging, args.log_level)
     setup_logging(args.log_file, log_level)
     logger = logging.getLogger('botstats.main')
 
-    # If we only want to clean rules, do it and exit (check this BEFORE checking --file)
+    # --- Clean Rules Mode ---
     if args.clean_rules:
         logger.info("Starting cleanup of expired UFW rules...")
-        ufw = UFWManager(args.dry_run) # Dry run still applies if specified
+        ufw = ufw_handler.UFWManager(args.dry_run)
         count = ufw.clean_expired_rules()
-        # --- TEMPORARY CHANGE FOR DEBUGGING ---
-        # Replace the f-string with a simpler format call:
-        logger.info("Cleanup completed. Rules deleted: %d", count)
-        # --- END TEMPORARY CHANGE ---
-        # Ensure this return is correctly indented (same level as logger.info above)
+        # Use original f-string if Python version >= 3.6
+        # logger.info(f"Cleanup completed. {count} rules deleted.")
+        logger.info("Cleanup completed. Rules deleted: %d", count) # Safer for compatibility
         return
 
-    # Now, if not cleaning rules, --file becomes mandatory
-    # Ensure this block starts at the correct indentation level (same as the 'if args.clean_rules:' line)
+    # --- File Validation ---
     if not args.file:
         parser.error("the following arguments are required: --file/-f (unless --clean-rules is used)")
-        # Although parser.error usually exits, adding sys.exit for clarity
         sys.exit(1)
-
-    # Validate log file (only if not cleaning)
     if not os.path.exists(args.file):
         logger.error(f"Error: File not found {args.file}")
         sys.exit(1)
-        
-    # Define start_date (needs to be UTC aware for analyzer)
-    start_date_utc = None
-    now_local = datetime.now() # Get local time once
 
+    # --- Date Calculation ---
+    start_date_utc = None
+    # ... (logic to calculate start_date_utc from args.time_window or args.start_date - unchanged) ...
+    now_local = datetime.now()
     if args.time_window:
-        # calculate_start_date returns naive local time
         start_date_naive_local = calculate_start_date(args.time_window)
         if start_date_naive_local:
-             # Convert to aware local, then to UTC
              start_date_aware_local = start_date_naive_local.astimezone()
              start_date_utc = start_date_aware_local.astimezone(timezone.utc)
              logger.info(f"Using time window: {args.time_window} (from {start_date_utc})")
     elif args.start_date:
         try:
-            # Parse as naive local time
             start_date_naive_local = datetime.strptime(args.start_date, '%d/%b/%Y:%H:%M:%S')
-            # Convert to aware local, then to UTC
             start_date_aware_local = start_date_naive_local.astimezone()
             start_date_utc = start_date_aware_local.astimezone(timezone.utc)
             logger.info(f"Using start date: {start_date_utc}")
@@ -195,119 +200,134 @@ def main():
             logger.error("Error: Invalid date format. Use dd/mmm/yyyy:HH:MM:SS")
             sys.exit(1)
 
-    # Initialize analyzer (pass only rpm_threshold, whitelist is loaded from file)
-    analyzer = ThreatAnalyzer(rpm_threshold=args.threshold)
 
-    # Load whitelist if specified
+    # --- Load Strategy ---
+    strategy_name = args.block_strategy
+    try:
+        strategy_module = importlib.import_module(f"strategies.{strategy_name}")
+        # Assumes each strategy module has a class named 'Strategy'
+        strategy_instance = strategy_module.Strategy()
+        logger.info(f"Using blocking strategy: {strategy_name}")
+        # Optional: Validate required config keys?
+        # required_keys = strategy_instance.get_required_config_keys()
+        # Check if args has all required_keys...
+    except ImportError:
+        logger.error(f"Could not load strategy module: strategies.{strategy_name}.py")
+        sys.exit(1)
+    except AttributeError:
+        logger.error(f"Strategy module strategies.{strategy_name}.py does not contain a 'Strategy' class.")
+        sys.exit(1)
+
+
+    # --- Analysis ---
+    # Pass rpm_threshold? Currently unused by analyzer directly.
+    analyzer = ThreatAnalyzer(whitelist=None) # Whitelist loaded separately
     if args.whitelist:
         analyzer.load_whitelist_from_file(args.whitelist)
-        # Pass the loaded whitelist to the analyzer instance if needed elsewhere,
-        # but load_log_into_dataframe now handles it directly.
 
-    # Analyze log file (loads into DataFrame)
     logger.info(f"Starting analysis of {args.file}...")
     try:
         processed_count = analyzer.analyze_log_file(args.file, start_date_utc)
-        if processed_count < 0:
-             sys.exit(1) # Error occurred during loading
-        elif processed_count == 0:
-             logger.warning("No log entries processed. Exiting.")
-             sys.exit(0)
+        if processed_count <= 0: # Check for < 0 (error) or == 0 (no data)
+             logger.warning("No log entries processed or error during loading. Exiting.")
+             sys.exit(0 if processed_count == 0 else 1)
     except Exception as e:
         logger.error(f"Error analyzing log file: {e}", exc_info=True)
         sys.exit(1)
 
-    # Identify threats (performs pandas calculations)
+    # Identify threats (gets base metrics, pre-strategy)
     threats = analyzer.identify_threats()
+    if not threats:
+         logger.info("No threats identified based on initial aggregation.")
+         sys.exit(0)
+
+    # --- Apply Strategy, Score, and Sort ---
+    logger.info(f"Applying '{strategy_name}' strategy to {len(threats)} potential threats...")
+    for threat in threats:
+        score, should_block, reason = strategy_instance.calculate_threat_score_and_block(threat, args)
+        threat['strategy_score'] = score
+        threat['should_block'] = should_block
+        threat['block_reason'] = reason
+
+    # Sort threats by the calculated strategy score (descending)
+    threats.sort(key=lambda x: x.get('strategy_score', 0), reverse=True)
+    logger.info("Threats scored and sorted.")
 
     # --- Blocking Logic ---
-    blocked_targets_info = {} # Store {target_str: comment} for blocked targets
+    blocked_targets_info = {}
     if args.block:
-        ufw = UFWManager(dry_run=args.dry_run)
-        min_requests_to_block = args.block_threshold
+        ufw = ufw_handler.UFWManager(dry_run=args.dry_run)
         block_duration_minutes = args.block_duration
 
-        logger.info(f"Checking top {args.top} threats for potential blocking (threshold: {min_requests_to_block} requests)...")
-
+        # Consider only top N threats AFTER sorting by strategy score
         threats_to_consider_for_blocking = threats[:args.top]
+        logger.info(f"Checking top {args.top} threats (by strategy score) for blocking...")
 
         for threat in threats_to_consider_for_blocking:
-            target_id = threat['id'] # ipaddress.ip_network object
-            total_requests = threat['total_requests']
+            target_id = threat['id'] # ipaddress object
 
-            if total_requests >= min_requests_to_block:
-                logger.info(f"Threat {str(target_id)} meets block threshold ({total_requests} >= {min_requests_to_block}). Attempting block...")
-
-                # block_target expects ipaddress object and duration
+            # Use the decision made by the strategy
+            if threat.get('should_block'):
+                block_reason = threat.get('block_reason', 'Unknown reason')
+                logger.info(f"Threat {str(target_id)} qualifies for blocking: {block_reason}. Attempting block...")
                 if ufw.block_target(target_id, block_duration_minutes):
-                    # Store info about the block action if successful
-                    expiry_time = datetime.now(timezone.utc) + timedelta(minutes=block_duration_minutes)
-                    expiry_str = expiry_time.strftime('%Y%m%dT%H%M%SZ')
-                    comment = f"blocked_by_stats_py_until_{expiry_str}"
-                    blocked_targets_info[str(target_id)] = comment
-            else:
-                 logger.debug(f"Threat {str(target_id)} does not meet block threshold ({total_requests} < {min_requests_to_block}). Skipping block.")
+                    # Store info about the block action
+                    # Comment is generated inside block_target now
+                    blocked_targets_info[str(target_id)] = block_reason # Store reason for summary
+            # else: # Optional: Log why top threats were not blocked by strategy
+                 # logger.debug(f"Top threat {str(target_id)} did not meet blocking criteria for strategy '{strategy_name}'.")
 
-        # Note: schedule_rule_cleanup is likely not needed if --clean-rules is run periodically via cron
-        # if block_duration_minutes > 0:
-        #     logger.info(f"Scheduling cleanup task for rules older than {block_duration_minutes} minutes.")
-        #     # ufw.schedule_rule_cleanup(...) # This method might be removed or changed
 
     # --- Reporting Logic ---
     top_count = min(args.top, len(threats))
-    print(f"\n=== TOP {top_count} MOST ACTIVE SUBNETS DETECTED (Sorted by Total Requests) ===")
+    # Adjust title to reflect sorting
+    print(f"\n=== TOP {top_count} THREATS DETECTED (Sorted by Strategy Score: '{strategy_name}') ===")
     if args.block:
         action = "Blocked" if not args.dry_run else "[DRY RUN] Marked for blocking"
-        print(f"--- {action} based on --block-threshold={args.block_threshold} total requests and --block-duration={args.block_duration} min (applied to top {args.top} subnets by activity) ---")
+        # Clarify that blocking applies to top N threats that meet strategy criteria
+        print(f"--- {action} based on strategy '{strategy_name}' criteria applied to top {args.top} threats ---")
 
     top_threats_report = threats[:top_count]
 
     for i, threat in enumerate(top_threats_report, 1):
         target_id_str = str(threat['id'])
-        danger_str = f"Danger: {threat['danger_score']:.2f}"
-        # Use the new RPM metrics
+        # Display strategy score and base metrics
+        strat_score_str = f"Score: {threat.get('strategy_score', 0):.2f}"
         avg_rpm_str = f"~{threat.get('subnet_avg_ip_rpm', 0):.2f} avg_ip_rpm"
         max_rpm_str = f"{threat.get('subnet_max_ip_rpm', 0):.0f} max_ip_rpm"
-        rpm_info = f"{avg_rpm_str}, {max_rpm_str}"
-        ip_count_str = f"{threat['ip_count']} IP" if threat['ip_count'] == 1 else f"{threat['ip_count']} IPs"
+        ip_count_str = f"{threat['ip_count']} IPs"
+        req_str = f"{threat['total_requests']} reqs"
+        metrics_summary = f"{req_str}, {ip_count_str}, {avg_rpm_str}, {max_rpm_str}"
 
-        print(f"\n#{i} Subnet: {target_id_str} - Requests: {threat['total_requests']} ({ip_count_str}, {danger_str}, {rpm_info})")
+        # Indicate block status based on strategy decision for this threat
+        block_info = ""
+        if args.block and threat.get('should_block') and i <= args.top: # Check if it was among the top N considered
+             block_status = "[BLOCKED]" if not args.dry_run else "[DRY RUN - BLOCKED]"
+             block_info = f" {block_status}" # Reason is logged during blocking attempt
 
-        # Show details for top IPs using the new structure
+        print(f"\n#{i} Subnet: {target_id_str} - {strat_score_str} ({metrics_summary}){block_info}")
+
+        # Show details for top IPs (unchanged)
         if threat['details']:
-            print("  -> Top IPs (by danger score):")
+            print("  -> Top IPs (by basic score):")
             for ip_detail in threat['details']:
-                 print(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, Danger: {ip_detail['danger_score']:.2f}, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})")
+                 print(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, Score: {ip_detail['danger_score']:.2f}, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})")
         else:
              print("  -> No IP details available.")
 
-
-        # Indicate if this specific threat target was blocked in this run
-        if args.block and target_id_str in blocked_targets_info:
-            block_status = "[BLOCKED]" if not args.dry_run else "[DRY RUN - BLOCKED]"
-            print(f"  {block_status} (Target was in top {args.top} and met threshold)")
-
-    # Export results if specified
+    # --- Export Results ---
     if args.output:
-        if analyzer.export_results(args.format, args.output):
+        # Pass config (args) to export_results
+        if analyzer.export_results(args.format, args.output, config=args):
             logger.info(f"Results exported to {args.output} in {args.format} format")
         else:
             logger.error(f"Error exporting results to {args.output}")
 
-    # Run cleanup of expired rules (Optional, if not using cron for --clean-rules)
-    # Consider removing this if --clean-rules is the primary method for cleanup.
-    # if args.block:
-    #     logger.info("Running cleanup of expired UFW rules post-analysis...")
-    #     if 'ufw' in locals():
-    #         count = ufw.clean_expired_rules()
-    #         if count > 0:
-    #             logger.info(f"Post-analysis cleanup completed. {count} rules deleted.")
-
-    # Show final summary
-    print(f"\nAnalysis completed. {len(blocked_targets_info)} unique targets {'blocked' if not args.dry_run else 'marked for blocking'} in this execution.")
+    # --- Final Summary ---
+    print(f"\nAnalysis completed using strategy '{strategy_name}'. {len(blocked_targets_info)} unique targets {'blocked' if not args.dry_run else 'marked for blocking'} in this execution.")
     print(f"From a total of {len(threats)} detected threats.")
     if args.block:
-        print(f"Use '--clean-rules' periodically (e.g., via cron) to remove expired rules.")
+        print(f"Use '--clean-rules' periodically to remove expired rules.")
 
 if __name__ == '__main__':
     main()

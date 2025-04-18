@@ -189,35 +189,6 @@ def get_subnet(ip_str):
         return None
 
 
-def calculate_danger_score(avg_rpm, total_requests, time_span_seconds=0, min_duration_seconds=5):
-    """
-    Calculates a danger score based on average RPM during activity and total requests.
-
-    Args:
-        avg_rpm (float): Average requests per minute during active minutes.
-        total_requests (int): Total number of requests.
-        time_span_seconds (float): Total duration of activity in seconds.
-        min_duration_seconds (int): Minimum duration in seconds for RPM to be considered significant.
-
-    Returns:
-        float: Calculated danger score.
-    """
-    # ... (Implementation of calculate_danger_score - unchanged logic, using avg_rpm now) ...
-    score = 0
-    if avg_rpm > 0 and time_span_seconds >= min_duration_seconds:
-        if avg_rpm > 500: score += 100
-        elif avg_rpm > 200: score += 50
-        elif avg_rpm > 100: score += 25
-        elif avg_rpm > 50: score += 10
-        else: score += avg_rpm / 10
-    if total_requests > 1:
-        request_score = math.log10(total_requests) * 10
-        score += request_score
-    elif total_requests == 1:
-        score += 0.1
-    return max(0, score)
-
-
 def is_ip_in_whitelist(ip, whitelist):
     """
     Verifies if an IP is in the whitelist. Handles IPs and Subnets.
