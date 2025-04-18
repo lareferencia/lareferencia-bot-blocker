@@ -246,42 +246,40 @@ class ThreatAnalyzer:
         logger.debug("Formatting subnet metrics into threat list (without final score/sorting)...")
         self.unified_threats = []
 
-        # Get top IPs per subnet for details (sorted by the basic ip_danger_score)
-        top_ips_per_subnet = self.ip_metrics_df.sort_values('ip_danger_score', ascending=False)\
+        # Get top IPs per subnet for details - SORT BY MAX RPM ACTIVITY
+        logger.debug("Grouping and sorting IPs by subnet based on max_rpm_activity...")
+        top_ips_per_subnet = self.ip_metrics_df.sort_values('max_rpm_activity', ascending=False)\
                                              .groupby('subnet')
 
         for subnet, metrics in self.subnet_metrics_df.iterrows():
-            # Get top IPs for this subnet
+            # Get top IPs for this subnet (now sorted by max_rpm_activity)
             details_list = []
             try:
-                # Use try-except in case a subnet in metrics_df has no IPs in ip_metrics_df (shouldn't happen)
                 top_ips = top_ips_per_subnet.get_group(subnet)
-                max_details = 5
+                max_details = 5 # Limit the number of IPs shown in details
                 for ip, ip_metrics in top_ips.head(max_details).iterrows():
                      details_list.append({
                          'ip': ip,
                          'total_requests': int(ip_metrics['total_requests']),
-                         'danger_score': round(ip_metrics['ip_danger_score'], 2), # Use the IP score
+                         'danger_score': round(ip_metrics['ip_danger_score'], 2), # Keep basic score for info
                          'avg_rpm': round(ip_metrics['avg_rpm_activity'], 2),
-                         'max_rpm': round(ip_metrics['max_rpm_activity'], 2),
+                         'max_rpm': round(ip_metrics['max_rpm_activity'], 2), # This was the sort key
                      })
             except KeyError:
                  logger.warning(f"Could not find IPs for subnet {subnet} during detail formatting.")
 
 
-            # Create threat dict with base metrics - score/block status added later
+            # Create threat dict (unchanged)
             threat = {
                 'type': 'subnet',
                 'id': subnet,
                 'total_requests': int(metrics['total_requests']),
                 'ip_count': int(metrics['ip_count']),
-                # Base metrics used by strategies:
-                'aggregated_ip_danger_score': round(metrics.get('aggregated_ip_danger_score', 0), 2), # Added
+                'aggregated_ip_danger_score': round(metrics.get('aggregated_ip_danger_score', 0), 2),
                 'subnet_avg_ip_rpm': round(metrics.get('subnet_avg_ip_rpm', 0), 2),
                 'subnet_max_ip_rpm': round(metrics.get('subnet_max_ip_rpm', 0), 2),
                 'subnet_time_span': round(metrics.get('subnet_time_span', 0), 2),
                 'details': details_list,
-                # Placeholders for strategy results
                 'strategy_score': 0.0,
                 'should_block': False,
                 'block_reason': None
@@ -394,10 +392,11 @@ class ThreatAnalyzer:
 
                          f.write(f"\n#{i} Subnet: {target_id_str} - {strat_score_str} ({metrics_summary}){block_info}\n")
 
-                         # Show details for top IPs within the subnet threat
+                         # Update details header
                          if threat['details']:
-                             f.write("  -> Top IPs (by basic score):\n")
+                             f.write("  -> Top IPs (by Max RPM):\n") # Changed header
                              for ip_detail in threat['details']:
+                                 # Display order remains the same, but the IPs listed are now sorted by MaxRPM
                                  f.write(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, Score: {ip_detail['danger_score']:.2f}, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})\n")
                          else:
                               f.write("  -> No IP details available.\n")

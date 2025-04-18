@@ -280,7 +280,6 @@ def main():
 
     # --- Reporting Logic ---
     top_count = min(args.top, len(threats))
-    # Adjust title to reflect sorting
     print(f"\n=== TOP {top_count} THREATS DETECTED (Sorted by Strategy Score: '{strategy_name}') ===")
     if args.block:
         action = "Blocked" if not args.dry_run else "[DRY RUN] Marked for blocking"
@@ -307,10 +306,11 @@ def main():
 
         print(f"\n#{i} Subnet: {target_id_str} - {strat_score_str} ({metrics_summary}){block_info}")
 
-        # Show details for top IPs (unchanged)
+        # Update details header in console output
         if threat['details']:
-            print("  -> Top IPs (by basic score):")
+            print("  -> Top IPs (by Max RPM):") # Changed header
             for ip_detail in threat['details']:
+                 # Display order remains the same, but the IPs listed are now sorted by MaxRPM
                  print(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, Score: {ip_detail['danger_score']:.2f}, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})")
         else:
              print("  -> No IP details available.")
