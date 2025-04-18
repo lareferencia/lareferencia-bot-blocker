@@ -199,86 +199,158 @@ class ThreatAnalyzer:
             return None
 
     def _aggregate_subnet_metrics(self):
-        """Aggregates IP metrics to the subnet level."""
+        """Aggregates IP metrics and adds Subnet RPM metrics using a more robust join approach."""
         if self.ip_metrics_df is None or self.ip_metrics_df.empty:
             logger.warning("IP metrics DataFrame not available. Cannot aggregate subnet metrics.")
             return False
 
         logger.info("Aggregating metrics by subnet...")
+        # Ensure 'subnet' column exists before trying to get unique values
+        if 'subnet' not in self.ip_metrics_df.columns:
+             logger.error("'subnet' column missing from ip_metrics_df. Cannot proceed with aggregation.")
+             return False
+        subnet_index = self.ip_metrics_df['subnet'].unique() # Get unique subnet objects as potential index
+        logger.debug(f"Found {len(subnet_index)} unique subnets in ip_metrics_df.")
 
-        # Define aggregations
-        agg_funcs = {
-            'total_requests': 'sum',
-            'ip_danger_score': ['sum', 'count'], # Calculate sum and count
-            'avg_rpm_activity': 'mean',
-            'max_rpm_activity': 'max',
-            'time_span_seconds': 'max'
-        }
+        # --- 1. Calculate Aggregations from ip_metrics_df ---
+        logger.debug("Calculating sums/counts from ip_metrics_df...")
+        try:
+            # Use observed=True if pandas version supports it and index is categorical, otherwise default is fine
+            grouped_ips = self.ip_metrics_df.groupby('subnet') #, observed=True)
+            agg1 = grouped_ips.agg(
+                total_requests=('total_requests', 'sum'),
+                ip_count=('ip_danger_score', 'count'), # Use any column guaranteed to exist per IP
+                aggregated_ip_danger_score=('ip_danger_score', 'sum')
+            )
+            # Ensure the index is usable, sometimes groupby might drop the subnet object type
+            agg1.index = agg1.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (ip_network)) else x) # Use strict=False for safety
+            logger.debug(f"Aggregation 1 (requests, count, danger):\n{agg1.head()}")
+            if agg1.empty and len(subnet_index) > 0:
+                 logger.warning("Aggregation 1 resulted in an empty DataFrame despite having subnets.")
+                 # Recreate with 0s if empty but should have rows
+                 agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'aggregated_ip_danger_score'])
 
-        # Perform aggregation
-        subnet_agg = self.ip_metrics_df.groupby('subnet').agg(agg_funcs)
+        except Exception as e:
+            logger.error(f"Error during aggregation 1: {e}", exc_info=True)
+            return False
 
-        # Flatten MultiIndex columns if Pandas version creates them (e.g., ('danger_score', 'sum'))
-        if isinstance(subnet_agg.columns, pd.MultiIndex):
-             logger.debug("Flattening MultiIndex columns after aggregation.")
-             subnet_agg.columns = ['_'.join(col).strip() for col in subnet_agg.columns.values]
-             # Rename columns explicitly after flattening
-             self.subnet_metrics_df = subnet_agg.rename(
-                 columns={
-                     'total_requests_sum': 'total_requests', # Assuming sum is default if only one agg
-                     'ip_danger_score_sum': 'aggregated_ip_danger_score', # Added sum
-                     'ip_danger_score_count': 'ip_count', # Renamed from danger_score_count
-                     'avg_rpm_activity_mean': 'subnet_avg_ip_rpm', # Renamed for clarity
-                     'max_rpm_activity_max': 'subnet_max_ip_rpm', # Renamed for clarity
-                     'time_span_seconds_max': 'subnet_time_span' # Renamed for clarity
-                 }
-             )
+        # --- 2. Calculate IP-based RPM Aggregations from ip_metrics_df ---
+        logger.debug("Calculating IP-based RPM means/max from ip_metrics_df...")
+        try:
+            # Use the same grouped object if possible
+            agg2 = grouped_ips.agg(
+                subnet_avg_ip_rpm=('avg_rpm_activity', 'mean'), # Avg of IP avgs
+                subnet_max_ip_rpm=('max_rpm_activity', 'max'),  # Max of IP maxs
+                subnet_time_span=('time_span_seconds', 'max') # Max timespan
+            ).fillna(0) # Fill NaNs here for IPs with single requests
+            agg2.index = agg2.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (ip_network)) else x) # Use strict=False
+            logger.debug(f"Aggregation 2 (IP RPMs, timespan):\n{agg2.head()}")
+            if agg2.empty and len(subnet_index) > 0:
+                 logger.warning("Aggregation 2 resulted in an empty DataFrame.")
+                 agg2 = pd.DataFrame(0.0, index=subnet_index, columns=['subnet_avg_ip_rpm', 'subnet_max_ip_rpm', 'subnet_time_span'])
+
+        except Exception as e:
+            logger.error(f"Error during aggregation 2: {e}", exc_info=True)
+            # Allow proceeding without these metrics if needed
+            agg2 = pd.DataFrame(index=subnet_index) # Create empty DF with correct index
+            agg2[['subnet_avg_ip_rpm', 'subnet_max_ip_rpm', 'subnet_time_span']] = 0.0
+
+
+        # --- 3. Calculate Subnet Total RPM metrics from log_df ---
+        logger.debug("Calculating Subnet Total RPM metrics from log_df...")
+        agg3 = self._calculate_subnet_rpm_metrics() # This already returns a DataFrame indexed by subnet or None
+        if agg3 is None:
+             logger.warning("Subnet total RPM calculation failed. Creating placeholders.")
+             agg3 = pd.DataFrame(index=subnet_index) # Create empty DF with correct index
+             agg3[['subnet_total_avg_rpm', 'subnet_total_max_rpm']] = 0.0
         else:
-             # Handle older Pandas versions or cases without MultiIndex
-             self.subnet_metrics_df = subnet_agg.rename(
-                 columns={
-                     'ip_danger_score': 'aggregated_ip_danger_score', # Assuming sum if only one agg? Check pandas version behavior
-                     'avg_rpm_activity': 'subnet_avg_ip_rpm',
-                     'max_rpm_activity': 'subnet_max_ip_rpm',
-                     'time_span_seconds': 'subnet_time_span'
-                 }
-             )
-             # If count wasn't automatically named, recalculate ip_count separately
-             if 'ip_count' not in self.subnet_metrics_df.columns:
-                  logger.debug("Recalculating ip_count separately.")
-                  ip_counts = self.ip_metrics_df.groupby('subnet').size()
-                  self.subnet_metrics_df['ip_count'] = ip_counts
-             if 'aggregated_ip_danger_score' not in self.subnet_metrics_df.columns:
-                  agg_ip_danger = self.ip_metrics_df.groupby('subnet')['ip_danger_score'].sum()
-                  self.subnet_metrics_df['aggregated_ip_danger_score'] = agg_ip_danger
+             # Ensure index consistency
+             agg3.index = agg3.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (ip_network)) else x) # Use strict=False
+             # Ensure columns exist even if calculation returned empty results for some reason
+             if agg3.empty and len(subnet_index) > 0:
+                  logger.warning("Aggregation 3 resulted in an empty DataFrame.")
+                  # Recreate with 0s if empty but should have rows
+                  agg3 = pd.DataFrame(0.0, index=subnet_index, columns=['subnet_total_avg_rpm', 'subnet_total_max_rpm'])
+             else:
+                  if 'subnet_total_avg_rpm' not in agg3.columns: agg3['subnet_total_avg_rpm'] = 0.0
+                  if 'subnet_total_max_rpm' not in agg3.columns: agg3['subnet_total_max_rpm'] = 0.0
+        logger.debug(f"Aggregation 3 (Subnet Total RPMs):\n{agg3.head()}")
 
-        # Calculate the new Subnet Total RPM metrics
-        subnet_total_rpm_df = self._calculate_subnet_rpm_metrics()
 
-        # Join the subnet total RPM metrics with the aggregated IP metrics
-        if subnet_total_rpm_df is not None:
-            logger.debug("Joining aggregated IP metrics with subnet total RPM metrics...")
-            self.subnet_metrics_df = subnet_agg.join(subnet_total_rpm_df, how='left').fillna(0)
-        else:
-            logger.warning("Could not calculate subnet total RPM metrics. Proceeding without them.")
-            self.subnet_metrics_df = subnet_agg
-            # Add placeholder columns if calculation failed
-            self.subnet_metrics_df['subnet_total_avg_rpm'] = 0.0
-            self.subnet_metrics_df['subnet_total_max_rpm'] = 0.0
+        # --- 4. Combine the aggregations ---
+        logger.debug("Joining aggregated metrics...")
+        try:
+            # Start with the primary aggregation (requests, count, danger)
+            # Ensure agg1 has the correct index before proceeding
+            if not isinstance(agg1.index, pd.Index) or agg1.index.empty:
+                 logger.error("Index for agg1 is invalid or empty before join.")
+                 # Attempt to reindex if possible, otherwise fail
+                 if not agg1.empty:
+                      agg1 = agg1.reindex(subnet_index, fill_value=0)
+                 else: # If agg1 was truly empty, create it with zeros
+                      agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'aggregated_ip_danger_score'])
 
-        # Ensure essential columns exist, fill missing with 0 if necessary
-        expected_cols = ['total_requests', 'ip_count', 'aggregated_ip_danger_score',
-                         'subnet_avg_ip_rpm', 'subnet_max_ip_rpm', 'subnet_time_span',
-                         'subnet_total_avg_rpm', 'subnet_total_max_rpm'] # Added new RPMs
-        for col in expected_cols:
-             if col not in self.subnet_metrics_df.columns:
-                  logger.warning(f"Column '{col}' missing after aggregation. Filling with 0.")
-                  self.subnet_metrics_df[col] = 0
+            self.subnet_metrics_df = agg1
+            logger.debug(f"DF before join 1 (Index: {self.subnet_metrics_df.index.dtype}):\n{self.subnet_metrics_df.head()}")
+            logger.debug(f"agg2 before join 1 (Index: {agg2.index.dtype}):\n{agg2.head()}")
 
-        # DO NOT sort here - sorting will be done in stats.py based on strategy score
-        # self.subnet_metrics_df = self.subnet_metrics_df.sort_values('total_requests', ascending=False)
+            # Join the other aggregations. Use how='left' to keep all subnets from agg1.
+            # Ensure indices are compatible before joining
+            if not self.subnet_metrics_df.index.equals(agg2.index):
+                 logger.warning("Indices of agg1 and agg2 differ. Attempting reindex before join.")
+                 agg2 = agg2.reindex(self.subnet_metrics_df.index, fill_value=0)
+            self.subnet_metrics_df = self.subnet_metrics_df.join(agg2, how='left')
+
+            logger.debug(f"DF before join 2 (Index: {self.subnet_metrics_df.index.dtype}):\n{self.subnet_metrics_df.head()}")
+            logger.debug(f"agg3 before join 2 (Index: {agg3.index.dtype}):\n{agg3.head()}")
+            if not self.subnet_metrics_df.index.equals(agg3.index):
+                 logger.warning("Indices of main DF and agg3 differ. Attempting reindex before join.")
+                 agg3 = agg3.reindex(self.subnet_metrics_df.index, fill_value=0)
+            self.subnet_metrics_df = self.subnet_metrics_df.join(agg3, how='left')
+
+
+            # Fill any NaNs that might have occurred during joins (e.g., if a subnet was in agg1 but not agg2/agg3)
+            self.subnet_metrics_df = self.subnet_metrics_df.fillna(0)
+            logger.debug(f"Final combined subnet metrics (before type conversion):\n{self.subnet_metrics_df.head()}")
+
+        except Exception as e:
+             logger.error(f"Error joining aggregated subnet metrics: {e}", exc_info=True)
+             # Log the state of dataframes just before the error if possible
+             try:
+                 logger.error(f"State before error:\nagg1:\n{agg1.head()}\nagg2:\n{agg2.head()}\nagg3:\n{agg3.head()}")
+             except: pass
+             return False
+
+        # --- 5. Ensure correct data types ---
+        logger.debug("Ensuring correct data types...")
+        try:
+            expected_cols = {
+                'total_requests': int,
+                'ip_count': int,
+                'aggregated_ip_danger_score': float,
+                'subnet_avg_ip_rpm': float,
+                'subnet_max_ip_rpm': float,
+                'subnet_time_span': float,
+                'subnet_total_avg_rpm': float,
+                'subnet_total_max_rpm': float
+            }
+            for col, dtype in expected_cols.items():
+                if col in self.subnet_metrics_df.columns:
+                    # Handle potential non-numeric data before converting
+                    self.subnet_metrics_df[col] = pd.to_numeric(self.subnet_metrics_df[col], errors='coerce').fillna(0)
+                    self.subnet_metrics_df[col] = self.subnet_metrics_df[col].astype(dtype)
+                else:
+                    logger.warning(f"Column '{col}' missing before type conversion. Adding as {dtype}(0).")
+                    if dtype == int:
+                        self.subnet_metrics_df[col] = 0
+                    else:
+                        self.subnet_metrics_df[col] = 0.0
+        except Exception as e:
+             logger.error(f"Error converting data types for subnet metrics: {e}", exc_info=True)
+             # Continue, but data types might be incorrect
 
         logger.info(f"Finished aggregating metrics for {len(self.subnet_metrics_df)} subnets.")
+        logger.debug(f"Final combined subnet metrics (after type conversion):\n{self.subnet_metrics_df.head()}")
         return True
 
     def _format_threat_output(self):
