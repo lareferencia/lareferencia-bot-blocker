@@ -259,28 +259,53 @@ def main():
     logger.info("Threats scored and sorted.")
 
     # --- Blocking Logic ---
-    blocked_targets_info = {}
+    blocked_targets_count = 0
     if args.block:
-        ufw = ufw_handler.UFWManager(dry_run=args.dry_run)
-        block_duration_minutes = args.block_duration
-
-        # Consider only top N threats AFTER sorting by strategy score
-        threats_to_consider_for_blocking = threats[:args.top]
-        logger.info(f"Checking top {args.top} threats (by strategy score) for blocking...")
-
-        for threat in threats_to_consider_for_blocking:
-            target_id = threat['id'] # ipaddress object
-
-            # Use the decision made by the strategy
+        print("-" * 30)
+        logger.info(f"Attempting to block top {args.top} threats meeting criteria (Dry Run: {args.dry_run})...")
+        # Iterate through the top N threats determined by the strategy score
+        top_threats_to_consider = threats[:args.top]
+        for threat in top_threats_to_consider:
             if threat.get('should_block'):
-                block_reason = threat.get('block_reason', 'Unknown reason')
-                logger.info(f"Threat {str(target_id)} qualifies for blocking: {block_reason}. Attempting block...")
-                if ufw.block_target(target_id, block_duration_minutes):
-                    # Store info about the block action
-                    # Comment is generated inside block_target now
-                    blocked_targets_info[str(target_id)] = block_reason # Store reason for summary
-            # else: # Optional: Log why top threats were not blocked by strategy
-                 # logger.debug(f"Top threat {str(target_id)} did not meet blocking criteria for strategy '{strategy_name}'.")
+                target_to_block = threat['id'] # Default to subnet ID
+                target_type = "Subnet"
+
+                # Check if it's a single IP subnet
+                if threat.get('ip_count') == 1 and threat.get('details'):
+                    try:
+                        single_ip = threat['details'][0]['ip']
+                        target_to_block = str(single_ip) # Use the single IP string
+                        target_type = "Single IP"
+                        logger.info(f"Threat {threat['id']} has only 1 IP. Targeting IP {target_to_block} instead of the whole subnet.")
+                    except (IndexError, KeyError) as e:
+                        logger.warning(f"Could not extract single IP from details for subnet {threat['id']} despite ip_count=1: {e}. Blocking subnet instead.")
+                        target_type = "Subnet" # Fallback to subnet
+                        target_to_block = threat['id']
+
+                # Ensure target_to_block is a string for the handler
+                target_to_block_str = str(target_to_block)
+
+                logger.info(f"Processing block for {target_type}: {target_to_block_str}. Reason: {threat.get('block_reason')}")
+                success = ufw_handler.block_target(
+                    target=target_to_block_str,
+                    duration_minutes=args.block_duration,
+                    dry_run=args.dry_run
+                )
+                if success:
+                    blocked_targets_count += 1
+                    action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
+                    print(f" -> {action} {target_type}: {target_to_block_str} for {args.block_duration} minutes.")
+                else:
+                    action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
+                    print(f" -> {action} {target_type}: {target_to_block_str}.")
+            else:
+                # Log why a top threat wasn't blocked (optional)
+                logger.debug(f"Threat {threat['id']} in top {args.top} did not meet blocking criteria for strategy '{strategy_name}'.")
+
+        print(f"Block processing complete. {blocked_targets_count} targets {'would be' if args.dry_run else 'were'} processed for blocking.")
+        print("-" * 30)
+    else:
+        logger.info("Blocking is disabled (--block not specified).")
 
 
     # --- Reporting Logic ---
