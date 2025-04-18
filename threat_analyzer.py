@@ -535,4 +535,3 @@ class ThreatAnalyzer:
         except Exception as e:
             logger.error(f"Error exporting results: {e}", exc_info=True)
             return False
-``` 
