@@ -312,7 +312,7 @@ def main():
         'total_requests', 'ip_count', 'aggregated_ip_danger_score',
         'subnet_avg_ip_rpm', 'subnet_max_ip_rpm',
         'subnet_total_avg_rpm', 'subnet_total_max_rpm',
-        'subnet_time_span'
+        'subnet_time_span', 'subnet_req_per_min' # ADDED new metric
     ]
     metric_names_map = { # For clearer reporting
         'total_requests': 'Total Requests',
@@ -322,7 +322,8 @@ def main():
         'subnet_max_ip_rpm': 'Maximum IP RPM (Subnet Max)',
         'subnet_total_avg_rpm': 'Average Total Subnet RPM',
         'subnet_total_max_rpm': 'Maximum Total Subnet RPM',
-        'subnet_time_span': 'Subnet Activity Timespan (%)' # UPDATED Name
+        'subnet_time_span': 'Subnet Activity Timespan (%)',
+        'subnet_req_per_min': 'Subnet Requests/Min (Overall)' # ADDED new metric name
     }
 
     if threats: # Only calculate if there are threats
@@ -474,6 +475,7 @@ def main():
             f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
             f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
             f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, "
+            f"Req/Min: {threat.get('subnet_req_per_min', 0):.1f}, " # ADDED Req/Min
             f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
         )
         # --- End of detailed metrics summary string ---
@@ -543,9 +545,10 @@ def main():
                     else:
                         # Show raw seconds if no analysis duration is available
                         value_str = f"N/A ({value:.0f}s raw)"
-                # Format other values
+                # Format other float values (including the new req/min)
                 elif isinstance(value, float):
                     value_str = f"{value:.2f}"
+                # Format integer values
                 else:
                     value_str = str(value)
 
