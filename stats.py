@@ -402,10 +402,11 @@ def main():
         strat_score_str = f"Score: {threat.get('strategy_score', 0):.2f}"
         
         # --- Construct detailed metrics summary string ---
+        # Use .get() and explicit format specifiers for robustness
         metrics_summary = (
-            f"{threat['total_requests']} reqs, "
-            f"{threat['ip_count']} IPs, "
-            f"AggDanger: {threat.get('aggregated_ip_danger_score', 0)::.2f}, "
+            f"{threat.get('total_requests', 0):d} reqs, "
+            f"{threat.get('ip_count', 0):d} IPs, "
+            f"AggDanger: {threat.get('aggregated_ip_danger_score', 0):.2f}, "
             f"AvgIPRPM: {threat.get('subnet_avg_ip_rpm', 0):.1f}, "
             f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
             f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
