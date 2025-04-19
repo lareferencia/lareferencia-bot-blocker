@@ -233,17 +233,13 @@ Strategies define how threats are scored and whether they should be blocked. All
     *   **Blocks If:** `total_requests >= effective_min_requests` **AND** `subnet_total_max_rpm >= --block-total-max-rpm-threshold`.
     *   **Tuning:** Adjust the relative request threshold and `--block-total-max-rpm-threshold` to define the peak *total subnet rate* considered abusive. Good for identifying short, intense, coordinated bursts from a subnet.
 
-4.  **`coordinated_sustained` (Modified)**
-    *   **Goal:** Catch subnets showing sustained activity over a significant portion of the analysis window. It differentiates between multi-IP (coordinated) and single-IP subnets.
-    *   **Score:** Weighted sum prioritizing `ip_count`, then `total_requests`, then `subnet_time_span`.
+4.  **`coordinated_sustained` (Modified Again)**
+    *   **Goal:** Catch subnets showing sustained activity over a significant portion of the analysis window, regardless of the number of IPs involved.
+    *   **Score:** Weighted sum prioritizing `subnet_req_per_min` (overall requests per minute for the subnet), then `total_requests`, then `subnet_time_span`. Used for sorting threats.
     *   **Blocks If:**
         *   `total_requests >= effective_min_requests` **AND**
-        *   `subnet_time_span` covers at least 50% of the specified analysis window (check skipped if no window defined) **AND**
-        *   **EITHER:**
-            *   (`ip_count > 1` **AND** `ip_count >= --block-ip-count-threshold`)  *(Multi-IP coordination)*
-            *   **OR:**
-            *   `ip_count == 1` *(Single IP sustained activity)*
-    *   **Tuning:** Requires tuning the relative request threshold and `--block-ip-count-threshold` (for multi-IP cases). The time span threshold is fixed at 50% of the analysis window. This strategy no longer uses RPM thresholds.
+        *   `subnet_time_span` covers at least 50% of the specified analysis window (check skipped if no window defined).
+    *   **Tuning:** Requires tuning the relative request threshold (`--block-relative-threshold-percent`). The time span threshold is fixed at 50% of the analysis window. This strategy no longer uses IP count or RPM thresholds for blocking.
 
 **Note:** The final list of threats is always sorted based on the `strategy_score` calculated by the selected strategy. Blocking actions only apply to the `--top` N threats *that also meet the strategy's specific blocking conditions*.
 
