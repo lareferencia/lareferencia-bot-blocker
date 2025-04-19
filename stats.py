@@ -12,6 +12,7 @@ import ipaddress
 import pandas as pd
 import importlib # For dynamic strategy loading
 from collections import defaultdict # For grouping /16s
+import time # Import time module
 
 # Import own modules
 from log_parser import get_subnet, is_ip_in_whitelist # Keep imports minimal
@@ -131,16 +132,16 @@ def main():
         '--block-total-max-rpm-threshold', type=float, default=62.0,
         help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (max requests per minute for the entire subnet) (used by peak_total_rpm).'
     )
-    # --- Add new arguments for the coordinated_sustained strategy ---
-    parser.add_argument(
-        '--block-subnet-avg-rpm-threshold', type=float, default=60.0,
-        help='Strategy threshold: Minimum average TOTAL SUBNET RPM (used by coordinated_sustained).'
-    )
-    parser.add_argument(
-        '--block-min-timespan-seconds', type=int, default=1800, # Default 30 minutes
-        help='Strategy threshold: Minimum duration (seconds) of subnet activity (first to last request) (used by coordinated_sustained).'
-    )
-    # --- End of new arguments ---
+    # --- Remove arguments for coordinated_sustained strategy ---
+    # parser.add_argument(
+    #     '--block-subnet-avg-rpm-threshold', type=float, default=60.0,
+    #     help='Strategy threshold: Minimum average TOTAL SUBNET RPM (used by coordinated_sustained).'
+    # )
+    # parser.add_argument(
+    #     '--block-min-timespan-seconds', type=int, default=1800, # Default 30 minutes
+    #     help='Strategy threshold: Minimum duration (seconds) of subnet activity (first to last request) (used by coordinated_sustained).'
+    # )
+    # --- End of removed arguments ---
     parser.add_argument(
         '--block-duration', type=int, default=60,
         help='Duration of the UFW block in minutes (used for all blocks).'
@@ -196,23 +197,30 @@ def main():
 
     # --- Date Calculation ---
     start_date_utc = None
-    # ... (logic to calculate start_date_utc from args.time_window or args.start_date - unchanged) ...
-    now_local = datetime.now()
+    analysis_duration_seconds = 0 # Default to 0 if no window specified
+    now_utc = datetime.now(timezone.utc) # Get current time once
+
     if args.time_window:
         start_date_naive_local = calculate_start_date(args.time_window)
         if start_date_naive_local:
              start_date_aware_local = start_date_naive_local.astimezone()
              start_date_utc = start_date_aware_local.astimezone(timezone.utc)
-             logger.info(f"Using time window: {args.time_window} (from {start_date_utc})")
+             analysis_duration_seconds = (now_utc - start_date_utc).total_seconds()
+             logger.info(f"Using time window: {args.time_window} (from {start_date_utc}, duration: {analysis_duration_seconds:.0f}s)")
     elif args.start_date:
         try:
             start_date_naive_local = datetime.strptime(args.start_date, '%d/%b/%Y:%H:%M:%S')
-            start_date_aware_local = start_date_naive_local.astimezone()
-            start_date_utc = start_date_aware_local.astimezone(timezone.utc)
-            logger.info(f"Using start date: {start_date_utc}")
+            # Assume the start date is in the local timezone of the server logs
+            # Convert it to aware local time, then to UTC
+            start_date_aware_local = start_date_naive_local.astimezone() # Make it timezone-aware using local system tz
+            start_date_utc = start_date_aware_local.astimezone(timezone.utc) # Convert to UTC
+            analysis_duration_seconds = (now_utc - start_date_utc).total_seconds()
+            logger.info(f"Using start date: {start_date_utc} (duration until now: {analysis_duration_seconds:.0f}s)")
         except ValueError:
             logger.error("Error: Invalid date format. Use dd/mmm/yyyy:HH:MM:SS")
             sys.exit(1)
+    else:
+        logger.info("No time window or start date specified. Analyzing entire file. Dynamic timespan check in 'coordinated_sustained' will be skipped.")
 
 
     # --- Load Strategy ---
@@ -260,7 +268,10 @@ def main():
     # Keep track of threats marked for blocking
     blockable_threats = []
     for threat in threats:
-        score, should_block, reason = strategy_instance.calculate_threat_score_and_block(threat, args)
+        # Pass analysis_duration_seconds to the strategy
+        score, should_block, reason = strategy_instance.calculate_threat_score_and_block(
+            threat, config=args, analysis_duration_seconds=analysis_duration_seconds
+        )
         threat['strategy_score'] = score
         threat['should_block'] = should_block
         threat['block_reason'] = reason
@@ -394,7 +405,7 @@ def main():
         metrics_summary = (
             f"{threat['total_requests']} reqs, "
             f"{threat['ip_count']} IPs, "
-            f"AggDanger: {threat.get('aggregated_ip_danger_score', 0):.2f}, "
+            f"AggDanger: {threat.get('aggregated_ip_danger_score', 0)::.2f}, "
             f"AvgIPRPM: {threat.get('subnet_avg_ip_rpm', 0):.1f}, "
             f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
             f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
