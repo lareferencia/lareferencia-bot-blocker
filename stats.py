@@ -115,12 +115,8 @@ def main():
         help='Strategy used to score threats and decide on blocking.'
     )
     parser.add_argument(
-        '--block-threshold', type=int, default=100,
-        help='Base threshold: Minimum total requests for a subnet to be considered. Used if --block-relative-threshold-percent is not set.'
-    )
-    parser.add_argument(
-        '--block-relative-threshold-percent', type=float, default=None,
-        help='Alternative base threshold: Minimum percentage of total requests in the analysis window for a subnet to be considered (e.g., 1.0 for 1%%). Overrides --block-threshold if set.'
+        '--block-relative-threshold-percent', type=float, default=0.1, # ADDED default
+        help='Base threshold: Minimum percentage of total requests in the analysis window for a subnet to be considered (e.g., 0.1 for 0.1%%).' # UPDATED help
     )
     parser.add_argument(
         '--block-danger-threshold', type=float, default=50.0,
@@ -272,16 +268,14 @@ def main():
         sys.exit(1)
 
     # --- Determine Effective Request Threshold ---
-    effective_min_requests = args.block_threshold # Default
-    if args.block_relative_threshold_percent is not None:
-        if total_overall_requests > 0:
-            effective_min_requests = max(1, int(total_overall_requests * (args.block_relative_threshold_percent / 100.0)))
-            logger.info(f"Using relative request threshold: {args.block_relative_threshold_percent}% of {total_overall_requests} = {effective_min_requests} requests")
-        else:
-            logger.warning(f"Relative threshold specified ({args.block_relative_threshold_percent}%) but total requests is 0. Falling back to absolute threshold: {args.block_threshold}")
-            effective_min_requests = args.block_threshold
+    effective_min_requests = 1 # Start with a minimum of 1
+    if total_overall_requests > 0:
+        # Always calculate based on the relative threshold
+        effective_min_requests = max(1, int(total_overall_requests * (args.block_relative_threshold_percent / 100.0)))
+        logger.info(f"Using relative request threshold: {args.block_relative_threshold_percent}% of {total_overall_requests} = {effective_min_requests} requests")
     else:
-        logger.info(f"Using absolute request threshold: {effective_min_requests} requests")
+        # If no requests, the threshold remains 1, but analysis likely stops anyway
+        logger.warning(f"Total requests in analysis window is 0. Effective minimum request threshold set to {effective_min_requests}.")
 
 
     # Identify threats (/24 or /64)
