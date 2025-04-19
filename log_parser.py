@@ -91,6 +91,7 @@ def load_log_into_dataframe(log_file, start_date_utc=None, whitelist=None):
 
     log_source = None
     reading_mode = ""
+    first_line_processed_reverse = True # Flag for reverse mode debugging
 
     try:
         if start_date_utc:
@@ -111,6 +112,7 @@ def load_log_into_dataframe(log_file, start_date_utc=None, whitelist=None):
 
             data = match.groupdict()
             ip = data['ip']
+            dt_str = data['datetime'] # Get raw datetime string
 
             # 1. Whitelist Check (early exit)
             if is_ip_in_whitelist(ip, whitelist):
@@ -118,15 +120,24 @@ def load_log_into_dataframe(log_file, start_date_utc=None, whitelist=None):
                 continue
 
             # 2. Date Parsing and Filtering
-            timestamp_utc = parse_datetime_to_utc(data['datetime'])
+            timestamp_utc = parse_datetime_to_utc(dt_str) # Pass raw string
             if timestamp_utc is None:
                 skipped_date += 1
                 continue
+
+            # --- Add Debugging for reverse mode ---
+            if reading_mode == "reverse" and first_line_processed_reverse:
+                logger.debug(f"First line (reverse): Raw='{dt_str}', ParsedUTC='{timestamp_utc}', StartDateUTC='{start_date_utc}'")
+                first_line_processed_reverse = False # Only log once
+            # --- End Debugging ---
 
             # Stop reverse reading if timestamp is before start_date_utc
             if start_date_utc and timestamp_utc < start_date_utc:
                 if reading_mode == "reverse":
                     logger.info(f"Reached entry older than {start_date_utc}. Stopping reverse scan.")
+                    # --- Add Debugging ---
+                    logger.debug(f"Stopping because ParsedUTC ({timestamp_utc}) < StartDateUTC ({start_date_utc})")
+                    # --- End Debugging ---
                     break
                 else: # Forward reading, just skip this line
                     skipped_date += 1
