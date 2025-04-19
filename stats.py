@@ -280,17 +280,31 @@ def main():
          logger.info("No threats identified based on initial aggregation.")
          sys.exit(0)
 
+    # --- Calculate Maximums for Normalization ---
+    max_total_requests = 0
+    max_subnet_time_span = 0
+    if threats:
+        # Use max() with a generator expression for efficiency
+        max_total_requests = max(threat.get('total_requests', 0) for threat in threats)
+        max_subnet_time_span = max(threat.get('subnet_time_span', 0) for threat in threats)
+        logger.debug(f"Calculated maximums for normalization: max_total_requests={max_total_requests}, max_subnet_time_span={max_subnet_time_span}")
+    # --- End Calculate Maximums ---
+
+
     # --- Apply Strategy, Score, and Sort (/24 or /64) ---
     logger.info(f"Applying '{strategy_name}' strategy to {len(threats)} potential threats...")
     # Keep track of threats marked for blocking
     blockable_threats = []
     for threat in threats:
         # Pass analysis_duration_seconds and effective_min_requests to the strategy
+        # Pass the calculated maximums for normalization
         score, should_block, reason = strategy_instance.calculate_threat_score_and_block(
             threat,
             config=args,
             effective_min_requests=effective_min_requests, # Pass the calculated threshold
-            analysis_duration_seconds=analysis_duration_seconds
+            analysis_duration_seconds=analysis_duration_seconds,
+            max_total_requests=max_total_requests, # Pass max requests
+            max_subnet_time_span=max_subnet_time_span # Pass max timespan
         )
         threat['strategy_score'] = score
         threat['should_block'] = should_block

@@ -21,16 +21,20 @@ class Strategy(BaseStrategy):
         # block_threshold is handled by effective_min_requests
         return ['block_duration', 'block_total_max_rpm_threshold']
 
-    def calculate_threat_score_and_block(self, threat_data, config, effective_min_requests, analysis_duration_seconds=None):
+    def calculate_threat_score_and_block(self, threat_data, config, effective_min_requests, analysis_duration_seconds=None, max_total_requests=None, max_subnet_time_span=None):
         """Calculates score and block decision based on multiple factors, including peak RPM and dynamic timespan."""
         total_requests = threat_data.get('total_requests', 0)
         # ip_count = threat_data.get('ip_count', 0) # No longer used for blocking logic
         subnet_time_span = threat_data.get('subnet_time_span', 0)
-        subnet_req_per_min = threat_data.get('subnet_req_per_min', 0) # For scoring
+        # subnet_req_per_min = threat_data.get('subnet_req_per_min', 0) # No longer used for scoring
 
-        # --- Score Calculation (Weighted) ---
-        # Prioritize subnet_req_per_min, then volume, then timespan.
-        score = (subnet_req_per_min * 0.6) + (total_requests * 0.3) + (subnet_time_span * 0.1)
+        # --- Score Calculation (Normalized and Weighted) ---
+        # Normalize requests and timespan relative to the maximums observed in this run
+        normalized_requests = (total_requests / max_total_requests) if max_total_requests and max_total_requests > 0 else 0
+        normalized_timespan = (subnet_time_span / max_subnet_time_span) if max_subnet_time_span and max_subnet_time_span > 0 else 0
+
+        # Prioritize normalized total_requests, then normalized timespan.
+        score = (normalized_requests * 0.9) + (normalized_timespan * 0.1)
         # Adjust weights as needed
 
         # --- Blocking Logic ---

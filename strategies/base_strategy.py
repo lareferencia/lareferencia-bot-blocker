@@ -7,7 +7,7 @@ class BaseStrategy(ABC):
     """Abstract base class for threat scoring and blocking strategies."""
 
     @abstractmethod
-    def calculate_threat_score_and_block(self, threat_data, config, effective_min_requests, analysis_duration_seconds=None):
+    def calculate_threat_score_and_block(self, threat_data, config, effective_min_requests, analysis_duration_seconds=None, max_total_requests=None, max_subnet_time_span=None):
         """
         Calculates a threat score and determines if the threat should be blocked.
 
@@ -19,6 +19,8 @@ class BaseStrategy(ABC):
                                          (e.g., config.block_danger_threshold).
             effective_min_requests (int): The calculated minimum request threshold (absolute or relative).
             analysis_duration_seconds (float, optional): The duration of the analysis window in seconds. Defaults to None.
+            max_total_requests (int, optional): The maximum total_requests observed across all threats in this run.
+            max_subnet_time_span (float, optional): The maximum subnet_time_span observed across all threats in this run.
 
 
         Returns:
