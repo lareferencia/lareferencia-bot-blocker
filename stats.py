@@ -115,7 +115,7 @@ def main():
         help='Strategy used to score threats and decide on blocking.'
     )
     parser.add_argument(
-        '--block-relative-threshold-percent', type=float, default=0.1, # ADDED default
+        '--block-relative-threshold-percent', type=float, default=1, # ADDED default
         help='Base threshold: Minimum percentage of total requests in the analysis window for a subnet to be considered (e.g., 0.1 for 0.1%%).' # UPDATED help
     )
     parser.add_argument(
@@ -306,6 +306,45 @@ def main():
     threats.sort(key=lambda x: x.get('strategy_score', 0), reverse=True)
     logger.info("Threats scored and sorted.")
 
+    # --- Calculate Overall Maximums ---
+    max_metrics = defaultdict(lambda: {'value': -1, 'subnets': []})
+    metrics_to_track = [
+        'total_requests', 'ip_count', 'aggregated_ip_danger_score',
+        'subnet_avg_ip_rpm', 'subnet_max_ip_rpm',
+        'subnet_total_avg_rpm', 'subnet_total_max_rpm',
+        'subnet_time_span'
+    ]
+    metric_names_map = { # For clearer reporting
+        'total_requests': 'Total Requests',
+        'ip_count': 'IP Count',
+        'aggregated_ip_danger_score': 'Aggregated Danger Score',
+        'subnet_avg_ip_rpm': 'Average IP RPM (Subnet Avg)',
+        'subnet_max_ip_rpm': 'Maximum IP RPM (Subnet Max)',
+        'subnet_total_avg_rpm': 'Average Total Subnet RPM',
+        'subnet_total_max_rpm': 'Maximum Total Subnet RPM',
+        'subnet_time_span': 'Subnet Activity Timespan (s)'
+    }
+
+    if threats: # Only calculate if there are threats
+        for threat in threats:
+            subnet_id_str = str(threat['id'])
+            for metric in metrics_to_track:
+                current_value = threat.get(metric, 0)
+                # Handle potential None values just in case
+                if current_value is None:
+                    current_value = 0
+
+                # Use a tolerance for float comparisons if needed, but direct comparison is often fine here
+                if current_value > max_metrics[metric]['value']:
+                    max_metrics[metric]['value'] = current_value
+                    max_metrics[metric]['subnets'] = [subnet_id_str]
+                elif current_value == max_metrics[metric]['value']:
+                    # Avoid adding duplicates if a subnet appears multiple times (shouldn't happen with current logic)
+                    if subnet_id_str not in max_metrics[metric]['subnets']:
+                        max_metrics[metric]['subnets'].append(subnet_id_str)
+    # --- End Calculate Overall Maximums ---
+
+
     # --- Blocking Logic ---
     blocked_targets_count = 0
     blocked_subnets_via_supernet = set() # Keep track of /24s blocked via /16
@@ -482,6 +521,28 @@ def main():
     print(f"From a total of {len(threats)} detected individual threats.")
     if args.block:
         print(f"Use '--clean-rules' periodically to remove expired rules.")
+
+    # --- Report Overall Maximums ---
+    print(f"\n=== OVERALL MAXIMUMS OBSERVED ===")
+    if not max_metrics:
+        print("  No threat data available to determine maximums.")
+    else:
+        for metric_key, data in max_metrics.items():
+            metric_name = metric_names_map.get(metric_key, metric_key)
+            value = data['value']
+            subnets = data['subnets']
+            # Format value based on metric type
+            if isinstance(value, float):
+                value_str = f"{value:.2f}"
+            else:
+                value_str = str(value)
+
+            if value == -1: # Indicates metric was never updated (no threats or metric missing)
+                 print(f"  {metric_name}: N/A")
+            else:
+                 print(f"  {metric_name}: {value_str} (Achieved by: {', '.join(subnets)})")
+    # --- End Report Overall Maximums ---
+
 
 if __name__ == '__main__':
     main()
