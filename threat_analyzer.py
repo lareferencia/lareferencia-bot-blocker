@@ -214,22 +214,33 @@ class ThreatAnalyzer:
         logger.debug(f"Found {len(subnet_index)} unique subnets in ip_metrics_df.")
 
         # --- 1. Calculate Aggregations from ip_metrics_df ---
-        logger.debug("Calculating sums/counts from ip_metrics_df...")
+        logger.debug("Calculating sums/counts/min/max timestamps from ip_metrics_df...")
         try:
             # Use observed=True if pandas version supports it and index is categorical, otherwise default is fine
             grouped_ips = self.ip_metrics_df.groupby('subnet') #, observed=True)
             agg1 = grouped_ips.agg(
                 total_requests=('total_requests', 'sum'),
                 ip_count=('ip_danger_score', 'count'), # Use any column guaranteed to exist per IP
-                aggregated_ip_danger_score=('ip_danger_score', 'sum')
+                aggregated_ip_danger_score=('ip_danger_score', 'sum'),
+                subnet_first_seen=('first_seen', 'min'), # Earliest first seen time in the subnet
+                subnet_last_seen=('last_seen', 'max')    # Latest last seen time in the subnet
             )
+            # Calculate subnet_time_span from the aggregated timestamps
+            agg1['subnet_time_span'] = (agg1['subnet_last_seen'] - agg1['subnet_first_seen']).dt.total_seconds()
+            # Handle cases where first_seen == last_seen (span is 0) or potential NaNs
+            agg1['subnet_time_span'] = agg1['subnet_time_span'].fillna(0).clip(lower=0) # Ensure non-negative
+
             # Ensure the index is usable, sometimes groupby might drop the subnet object type
             agg1.index = agg1.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (IPv4Network, IPv6Network)) else x) # Use strict=False for safety
-            logger.debug(f"Aggregation 1 (requests, count, danger):\n{agg1.head()}")
+            logger.debug(f"Aggregation 1 (requests, count, danger, timespan):\n{agg1.head()}")
             if agg1.empty and len(subnet_index) > 0:
                  logger.warning("Aggregation 1 resulted in an empty DataFrame despite having subnets.")
                  # Recreate with 0s if empty but should have rows
-                 agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'aggregated_ip_danger_score'])
+                 agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'aggregated_ip_danger_score', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span'])
+                 # Ensure correct dtypes for timestamps if recreated
+                 agg1['subnet_first_seen'] = pd.NaT
+                 agg1['subnet_last_seen'] = pd.NaT
+
 
         except Exception as e:
             logger.error(f"Error during aggregation 1: {e}", exc_info=True)
@@ -239,22 +250,23 @@ class ThreatAnalyzer:
         logger.debug("Calculating IP-based RPM means/max from ip_metrics_df...")
         try:
             # Use the same grouped object if possible
+            # Remove subnet_time_span calculation from here
             agg2 = grouped_ips.agg(
                 subnet_avg_ip_rpm=('avg_rpm_activity', 'mean'), # Avg of IP avgs
                 subnet_max_ip_rpm=('max_rpm_activity', 'max'),  # Max of IP maxs
-                subnet_time_span=('time_span_seconds', 'max') # Max timespan
+                # subnet_time_span=('time_span_seconds', 'max') # REMOVED - Calculated in agg1 now
             ).fillna(0) # Fill NaNs here for IPs with single requests
             agg2.index = agg2.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (IPv4Network, IPv6Network)) else x) # Use strict=False
-            logger.debug(f"Aggregation 2 (IP RPMs, timespan):\n{agg2.head()}")
+            logger.debug(f"Aggregation 2 (IP RPMs):\n{agg2.head()}")
             if agg2.empty and len(subnet_index) > 0:
                  logger.warning("Aggregation 2 resulted in an empty DataFrame.")
-                 agg2 = pd.DataFrame(0.0, index=subnet_index, columns=['subnet_avg_ip_rpm', 'subnet_max_ip_rpm', 'subnet_time_span'])
+                 agg2 = pd.DataFrame(0.0, index=subnet_index, columns=['subnet_avg_ip_rpm', 'subnet_max_ip_rpm'])
 
         except Exception as e:
             logger.error(f"Error during aggregation 2: {e}", exc_info=True)
             # Allow proceeding without these metrics if needed
             agg2 = pd.DataFrame(index=subnet_index) # Create empty DF with correct index
-            agg2[['subnet_avg_ip_rpm', 'subnet_max_ip_rpm', 'subnet_time_span']] = 0.0
+            agg2[['subnet_avg_ip_rpm', 'subnet_max_ip_rpm']] = 0.0
 
 
         # --- 3. Calculate Subnet Total RPM metrics from log_df ---
@@ -281,15 +293,20 @@ class ThreatAnalyzer:
         # --- 4. Combine the aggregations ---
         logger.debug("Joining aggregated metrics...")
         try:
-            # Start with the primary aggregation (requests, count, danger)
+            # Start with the primary aggregation (requests, count, danger, timespan)
             # Ensure agg1 has the correct index before proceeding
             if not isinstance(agg1.index, pd.Index) or agg1.index.empty:
                  logger.error("Index for agg1 is invalid or empty before join.")
                  # Attempt to reindex if possible, otherwise fail
                  if not agg1.empty:
                       agg1 = agg1.reindex(subnet_index, fill_value=0)
-                 else: # If agg1 was truly empty, create it with zeros
-                      agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'aggregated_ip_danger_score'])
+                      # Re-apply NaT for timestamps if reindexed
+                      if 'subnet_first_seen' in agg1.columns: agg1['subnet_first_seen'] = pd.NaT
+                      if 'subnet_last_seen' in agg1.columns: agg1['subnet_last_seen'] = pd.NaT
+                 else: # If agg1 was truly empty, create it with zeros/NaT
+                      agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'aggregated_ip_danger_score', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span'])
+                      agg1['subnet_first_seen'] = pd.NaT
+                      agg1['subnet_last_seen'] = pd.NaT
 
             self.subnet_metrics_df = agg1
             logger.debug(f"DF before join 1 (Index: {self.subnet_metrics_df.index.dtype}):\n{self.subnet_metrics_df.head()}")
@@ -311,7 +328,9 @@ class ThreatAnalyzer:
 
 
             # Fill any NaNs that might have occurred during joins (e.g., if a subnet was in agg1 but not agg2/agg3)
-            self.subnet_metrics_df = self.subnet_metrics_df.fillna(0)
+            # Exclude timestamp columns from general fillna
+            cols_to_fill = self.subnet_metrics_df.columns.difference(['subnet_first_seen', 'subnet_last_seen'])
+            self.subnet_metrics_df[cols_to_fill] = self.subnet_metrics_df[cols_to_fill].fillna(0)
             logger.debug(f"Final combined subnet metrics (before type conversion):\n{self.subnet_metrics_df.head()}")
 
         except Exception as e:
@@ -325,13 +344,14 @@ class ThreatAnalyzer:
         # --- 5. Ensure correct data types ---
         logger.debug("Ensuring correct data types...")
         try:
+            # Keep timestamp columns separate
             expected_cols = {
                 'total_requests': int,
                 'ip_count': int,
                 'aggregated_ip_danger_score': float,
                 'subnet_avg_ip_rpm': float,
                 'subnet_max_ip_rpm': float,
-                'subnet_time_span': float,
+                'subnet_time_span': float, # Already calculated as float seconds
                 'subnet_total_avg_rpm': float,
                 'subnet_total_max_rpm': float
             }
@@ -346,8 +366,15 @@ class ThreatAnalyzer:
                         self.subnet_metrics_df[col] = 0
                     else:
                         self.subnet_metrics_df[col] = 0.0
+            # Optionally convert timestamp columns if needed, but they might be fine as is
+            # self.subnet_metrics_df['subnet_first_seen'] = pd.to_datetime(self.subnet_metrics_df['subnet_first_seen'], errors='coerce', utc=True)
+            # self.subnet_metrics_df['subnet_last_seen'] = pd.to_datetime(self.subnet_metrics_df['subnet_last_seen'], errors='coerce', utc=True)
+
+            # Drop the intermediate timestamp columns if no longer needed
+            self.subnet_metrics_df = self.subnet_metrics_df.drop(columns=['subnet_first_seen', 'subnet_last_seen'], errors='ignore')
+
         except Exception as e:
-             logger.error(f"Error converting data types for subnet metrics: {e}", exc_info=True)
+             logger.error(f"Error converting data types or dropping columns for subnet metrics: {e}", exc_info=True)
              # Continue, but data types might be incorrect
 
         logger.info(f"Finished aggregating metrics for {len(self.subnet_metrics_df)} subnets.")
@@ -366,39 +393,59 @@ class ThreatAnalyzer:
 
         # Get top IPs per subnet for details - SORT BY MAX RPM ACTIVITY
         logger.debug("Grouping and sorting IPs by subnet based on max_rpm_activity...")
-        top_ips_per_subnet = self.ip_metrics_df.sort_values('max_rpm_activity', ascending=False)\
-                                             .groupby('subnet')
+        # Ensure ip_metrics_df exists and has the necessary columns
+        if self.ip_metrics_df is None or 'max_rpm_activity' not in self.ip_metrics_df.columns or 'subnet' not in self.ip_metrics_df.columns:
+             logger.error("ip_metrics_df is missing or incomplete for formatting details.")
+             top_ips_per_subnet = None
+        else:
+             top_ips_per_subnet = self.ip_metrics_df.sort_values('max_rpm_activity', ascending=False)\
+                                                  .groupby('subnet')
 
         for subnet, metrics in self.subnet_metrics_df.iterrows():
             # Get top IPs for this subnet (now sorted by max_rpm_activity)
             details_list = []
-            try:
-                top_ips = top_ips_per_subnet.get_group(subnet)
-                max_details = 5 # Limit the number of IPs shown in details
-                for ip, ip_metrics in top_ips.head(max_details).iterrows():
-                     details_list.append({
-                         'ip': ip,
-                         'total_requests': int(ip_metrics['total_requests']),
-                         'danger_score': round(ip_metrics['ip_danger_score'], 2), # Keep basic score for info
-                         'avg_rpm': round(ip_metrics['avg_rpm_activity'], 2),
-                         'max_rpm': round(ip_metrics['max_rpm_activity'], 2), # This was the sort key
-                     })
-            except KeyError:
-                 logger.warning(f"Could not find IPs for subnet {subnet} during detail formatting.")
+            if top_ips_per_subnet:
+                try:
+                    # Ensure the subnet key exists in the grouped object
+                    if subnet in top_ips_per_subnet.groups:
+                        top_ips = top_ips_per_subnet.get_group(subnet)
+                        max_details = 5 # Limit the number of IPs shown in details
+                        for ip, ip_metrics in top_ips.head(max_details).iterrows():
+                             # Check if ip_metrics is a valid Series/dict
+                             if isinstance(ip_metrics, pd.Series):
+                                 details_list.append({
+                                     'ip': ip,
+                                     'total_requests': int(ip_metrics.get('total_requests', 0)),
+                                     'danger_score': round(ip_metrics.get('ip_danger_score', 0), 2),
+                                     'avg_rpm': round(ip_metrics.get('avg_rpm_activity', 0), 2),
+                                     'max_rpm': round(ip_metrics.get('max_rpm_activity', 0), 2),
+                                 })
+                             else:
+                                 logger.warning(f"Unexpected type for ip_metrics for IP {ip} in subnet {subnet}: {type(ip_metrics)}")
+                    else:
+                        logger.warning(f"Subnet key {subnet} not found in top_ips_per_subnet groups.")
+
+                except KeyError:
+                     # This specific KeyError might be less likely now with the check above, but keep for safety
+                     logger.warning(f"Could not find IPs for subnet {subnet} during detail formatting (KeyError).")
+                except Exception as e:
+                     logger.error(f"Unexpected error formatting details for subnet {subnet}: {e}", exc_info=True)
+            else:
+                 logger.warning(f"Skipping details for subnet {subnet} due to missing ip_metrics_df.")
 
 
-            # Create threat dict (unchanged)
+            # Create threat dict (ensure all keys exist using .get())
             threat = {
                 'type': 'subnet',
                 'id': subnet,
-                'total_requests': int(metrics['total_requests']),
-                'ip_count': int(metrics['ip_count']),
+                'total_requests': int(metrics.get('total_requests', 0)),
+                'ip_count': int(metrics.get('ip_count', 0)),
                 'aggregated_ip_danger_score': round(metrics.get('aggregated_ip_danger_score', 0), 2),
                 'subnet_avg_ip_rpm': round(metrics.get('subnet_avg_ip_rpm', 0), 2),
                 'subnet_max_ip_rpm': round(metrics.get('subnet_max_ip_rpm', 0), 2),
                 'subnet_total_avg_rpm': round(metrics.get('subnet_total_avg_rpm', 0), 2),
                 'subnet_total_max_rpm': round(metrics.get('subnet_total_max_rpm', 0), 2),
-                'subnet_time_span': round(metrics.get('subnet_time_span', 0), 2),
+                'subnet_time_span': round(metrics.get('subnet_time_span', 0), 2), # Use the correctly calculated span
                 'details': details_list,
                 'strategy_score': 0.0,
                 'should_block': False,
@@ -419,7 +466,7 @@ class ThreatAnalyzer:
         """
         if not self._calculate_ip_metrics():
             return []
-        if not self._aggregate_subnet_metrics():
+        if not self._aggregate_subnet_metrics(): # This now calculates the correct timespan
             return []
 
         self._format_threat_output()
@@ -453,6 +500,13 @@ class ThreatAnalyzer:
                      threat_copy[key] = value.isoformat()
                  elif isinstance(value, (ipaddress.IPv4Network, ipaddress.IPv6Network, ipaddress.IPv4Address, ipaddress.IPv6Address)):
                       threat_copy[key] = str(value) # Catch any other potential IP objects
+                 # Ensure details list is serializable (IPs should be strings)
+                 elif key == 'details' and isinstance(value, list):
+                      threat_copy[key] = [
+                          {k: str(v) if isinstance(v, (ipaddress.IPv4Address, ipaddress.IPv6Address)) else v for k, v in detail.items()}
+                          for detail in value
+                      ]
+
 
              export_data.append(threat_copy)
 
@@ -460,10 +514,25 @@ class ThreatAnalyzer:
         try:
             df_export = pd.DataFrame(export_data)
             # Reorder columns for clarity if needed
-            # cols = ['id', 'strategy_score', 'should_block', 'block_reason', 'total_requests', ...]
-            # df_export = df_export[cols]
+            # Define desired column order, including the corrected timespan
+            cols_order = [
+                'id', 'strategy_score', 'should_block', 'block_reason',
+                'total_requests', 'ip_count', 'aggregated_ip_danger_score',
+                'subnet_avg_ip_rpm', 'subnet_max_ip_rpm',
+                'subnet_total_avg_rpm', 'subnet_total_max_rpm',
+                'subnet_time_span', # Ensure this is included
+                'details'
+            ]
+            # Get columns present in the DataFrame, maintaining the desired order
+            cols_present = [col for col in cols_order if col in df_export.columns]
+            # Add any remaining columns not in the desired order list
+            remaining_cols = [col for col in df_export.columns if col not in cols_present]
+            df_export = df_export[cols_present + remaining_cols]
+
 
             if format_type == 'csv':
+                # Handle list in 'details' column for CSV export
+                df_export['details'] = df_export['details'].apply(lambda x: json.dumps(x) if isinstance(x, list) else x)
                 df_export.to_csv(output_file, index=False)
             elif format_type == 'json':
                 # Use records orientation for a list of JSON objects
