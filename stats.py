@@ -110,17 +110,13 @@ def main():
         help='Enable blocking of detected threats using UFW.'
     )
     parser.add_argument(
-        '--block-strategy', default='volume_danger',
-        choices=['volume_danger', 'volume_coordination', 'volume_peak_rpm', 'combined', 'peak_total_rpm', 'coordinated_sustained'], # Add new strategy
+        '--block-strategy', default='volume_coordination', # UPDATED default
+        choices=['volume_coordination', 'volume_peak_rpm', 'peak_total_rpm', 'coordinated_sustained'], # REMOVED volume_danger, combined
         help='Strategy used to score threats and decide on blocking.'
     )
     parser.add_argument(
         '--block-relative-threshold-percent', type=float, default=1, # ADDED default
         help='Base threshold: Minimum percentage of total requests in the analysis window for a subnet to be considered (e.g., 0.1 for 0.1%%).' # UPDATED help
-    )
-    parser.add_argument(
-        '--block-danger-threshold', type=float, default=50.0,
-        help='Strategy threshold: Minimum aggregated IP danger score (used by volume_danger, combined).'
     )
     parser.add_argument(
         '--block-ip-count-threshold', type=int, default=10,
@@ -309,15 +305,14 @@ def main():
     # --- Calculate Overall Maximums ---
     max_metrics = defaultdict(lambda: {'value': -1, 'subnets': []})
     metrics_to_track = [
-        'total_requests', 'ip_count', 'aggregated_ip_danger_score',
+        'total_requests', 'ip_count', 
         'subnet_avg_ip_rpm', 'subnet_max_ip_rpm',
         'subnet_total_avg_rpm', 'subnet_total_max_rpm',
-        'subnet_time_span', 'subnet_req_per_min' # ADDED new metric
+        'subnet_time_span', 'subnet_req_per_min'
     ]
     metric_names_map = { # For clearer reporting
         'total_requests': 'Total Requests',
         'ip_count': 'IP Count',
-        'aggregated_ip_danger_score': 'Aggregated Danger Score',
         'subnet_avg_ip_rpm': 'Average IP RPM (Subnet Avg)',
         'subnet_max_ip_rpm': 'Maximum IP RPM (Subnet Max)',
         'subnet_total_avg_rpm': 'Average Total Subnet RPM',
@@ -470,8 +465,7 @@ def main():
         bot_name_str = threat.get('dominant_bot_name', 'Unknown') # Get bot name
         metrics_summary = (
             f"{threat.get('total_requests', 0):d} reqs, "
-            f"{threat.get('ip_count', 0):d} IPs ({bot_name_str}), " # ADDED bot name here
-            f"AggDanger: {threat.get('aggregated_ip_danger_score', 0):.2f}, "
+            f"{threat.get('ip_count', 0):d} IPs ({bot_name_str}), "
             f"AvgIPRPM: {threat.get('subnet_avg_ip_rpm', 0):.1f}, "
             f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
             f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
@@ -506,7 +500,7 @@ def main():
         if threat['details']:
             print("  -> Top IPs (by Max RPM):")
             for ip_detail in threat['details']:
-                 print(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, Score: {ip_detail['danger_score']:.2f}, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})")
+                 print(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})")
         else:
              print("  -> No IP details available.")
 

@@ -153,19 +153,7 @@ class ThreatAnalyzer:
         self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity']] = self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity']].fillna(0)
         logger.debug("Metrics combined.")
 
-        # 4. Calculate IP Danger Score (using a simple placeholder or basic calculation)
-        # This score is now primarily for ranking IPs *within* a subnet's details,
-        # the main strategy score is calculated later.
-        logger.debug("Calculating basic IP danger score (for detail ranking)...")
-        # Use a simplified score calculation here, maybe similar to the old one
-        # or just use avg_rpm_activity + log(total_requests)
-        self.ip_metrics_df['ip_danger_score'] = self.ip_metrics_df.apply(
-            lambda row: (row['avg_rpm_activity'] / 10.0) + (np.log10(row['total_requests'] + 1) * 5),
-            axis=1
-        )
-        logger.debug("IP danger scores calculated.")
-
-        # 5. Add Subnet Information
+        # 4. Add Subnet Information
         logger.debug("Adding subnet information...")
         self.ip_metrics_df['subnet'] = self.ip_metrics_df.index.map(get_subnet)
         # Drop rows where subnet could not be determined (invalid IPs somehow?)
@@ -221,7 +209,6 @@ class ThreatAnalyzer:
             agg1 = grouped_ips.agg(
                 total_requests=('total_requests', 'sum'),
                 ip_count=('ip_danger_score', 'count'), # Use any column guaranteed to exist per IP
-                aggregated_ip_danger_score=('ip_danger_score', 'sum'),
                 subnet_first_seen=('first_seen', 'min'), # Earliest first seen time in the subnet
                 subnet_last_seen=('last_seen', 'max')    # Latest last seen time in the subnet
             )
@@ -244,7 +231,7 @@ class ThreatAnalyzer:
             if agg1.empty and len(subnet_index) > 0:
                  logger.warning("Aggregation 1 resulted in an empty DataFrame despite having subnets.")
                  # Recreate with 0s if empty but should have rows
-                 agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'aggregated_ip_danger_score', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span', 'subnet_req_per_min']) # ADDED column
+                 agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span', 'subnet_req_per_min']) # ADDED column
                  # Ensure correct dtypes for timestamps if recreated
                  agg1['subnet_first_seen'] = pd.NaT
                  agg1['subnet_last_seen'] = pd.NaT
@@ -312,7 +299,7 @@ class ThreatAnalyzer:
                       if 'subnet_first_seen' in agg1.columns: agg1['subnet_first_seen'] = pd.NaT
                       if 'subnet_last_seen' in agg1.columns: agg1['subnet_last_seen'] = pd.NaT
                  else: # If agg1 was truly empty, create it with zeros/NaT
-                      agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'aggregated_ip_danger_score', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span', 'subnet_req_per_min'])
+                      agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span', 'subnet_req_per_min'])
                       agg1['subnet_first_seen'] = pd.NaT
                       agg1['subnet_last_seen'] = pd.NaT
 
@@ -356,7 +343,6 @@ class ThreatAnalyzer:
             expected_cols = {
                 'total_requests': int,
                 'ip_count': int,
-                'aggregated_ip_danger_score': float,
                 'subnet_avg_ip_rpm': float,
                 'subnet_max_ip_rpm': float,
                 'subnet_time_span': float, # Already calculated as float seconds
@@ -418,7 +404,6 @@ class ThreatAnalyzer:
                                  details_list.append({
                                      'ip': ip,
                                      'total_requests': int(ip_metrics.get('total_requests', 0)),
-                                     'danger_score': round(ip_metrics.get('ip_danger_score', 0), 2),
                                      'avg_rpm': round(ip_metrics.get('avg_rpm_activity', 0), 2),
                                      'max_rpm': round(ip_metrics.get('max_rpm_activity', 0), 2),
                                  })
@@ -442,7 +427,6 @@ class ThreatAnalyzer:
                 'id': subnet,
                 'total_requests': int(metrics.get('total_requests', 0)),
                 'ip_count': int(metrics.get('ip_count', 0)),
-                'aggregated_ip_danger_score': round(metrics.get('aggregated_ip_danger_score', 0), 2),
                 'subnet_avg_ip_rpm': round(metrics.get('subnet_avg_ip_rpm', 0), 2),
                 'subnet_max_ip_rpm': round(metrics.get('subnet_max_ip_rpm', 0), 2),
                 'subnet_total_avg_rpm': round(metrics.get('subnet_total_avg_rpm', 0), 2),
@@ -521,7 +505,7 @@ class ThreatAnalyzer:
             # Define desired column order, including the corrected timespan and req/min
             cols_order = [
                 'id', 'strategy_score', 'should_block', 'block_reason',
-                'total_requests', 'ip_count', 'aggregated_ip_danger_score',
+                'total_requests', 'ip_count',
                 'dominant_bot_name', # ADDED bot name
                 'subnet_avg_ip_rpm', 'subnet_max_ip_rpm',
                 'subnet_total_avg_rpm', 'subnet_total_max_rpm',
