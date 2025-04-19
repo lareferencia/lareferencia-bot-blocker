@@ -565,6 +565,66 @@ def main():
 
     # --- End Report Overall Maximums ---
 
+    # --- Report Details for Subnets Achieving Maximums ---
+    print(f"\n=== DETAILS FOR SUBNETS ACHIEVING MAXIMUMS ===")
+    if not max_metrics or not threats:
+        print("  No data available to report maximum-achieving subnets.")
+    else:
+        # Create a lookup dictionary for faster access to threat data
+        threat_lookup = {str(threat['id']): threat for threat in threats}
+        
+        # Collect unique subnet IDs that achieved any maximum
+        max_achieving_subnet_ids = set()
+        for metric_key, data in max_metrics.items():
+            if data['value'] != -1: # Only consider metrics where a max was found
+                max_achieving_subnet_ids.update(data['subnets'])
+
+        if not max_achieving_subnet_ids:
+            print("  No subnets achieved any maximum values.")
+        else:
+            logger.info(f"Reporting details for {len(max_achieving_subnet_ids)} subnets that achieved at least one maximum.")
+            # Sort the IDs for consistent reporting order
+            sorted_max_subnet_ids = sorted(list(max_achieving_subnet_ids))
+
+            for subnet_id_str in sorted_max_subnet_ids:
+                threat = threat_lookup.get(subnet_id_str)
+                if not threat:
+                    logger.warning(f"Could not find threat data for max-achieving subnet ID: {subnet_id_str}")
+                    continue
+
+                # Find which maximums this subnet achieved
+                achieved_max_metrics = []
+                for metric_key, data in max_metrics.items():
+                    if subnet_id_str in data['subnets']:
+                        achieved_max_metrics.append(metric_names_map.get(metric_key, metric_key))
+                
+                achieved_max_str = f" [Achieved Max: {', '.join(achieved_max_metrics)}]"
+
+                # Reuse the metrics summary string generation
+                bot_name_str = threat.get('dominant_bot_name', 'Unknown')
+                metrics_summary = (
+                    f"{threat.get('total_requests', 0):d} reqs, "
+                    f"{threat.get('ip_count', 0):d} IPs ({bot_name_str}), "
+                    f"AvgIPRPM: {threat.get('subnet_avg_ip_rpm', 0):.1f}, "
+                    f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
+                    f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
+                    f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, "
+                    f"Req/Min: {threat.get('subnet_req_per_min', 0):.1f}, "
+                    f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
+                )
+
+                print(f"\nSubnet: {subnet_id_str}{achieved_max_str}")
+                print(f"  Metrics: {metrics_summary}")
+                # Optionally print top IPs again if desired
+                # if threat['details']:
+                #     print("  -> Top IPs (by Max RPM):")
+                #     for ip_detail in threat['details']:
+                #          print(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})")
+                # else:
+                #      print("  -> No IP details available.")
+
+    # --- End Report Details for Subnets Achieving Maximums ---
+
 
 if __name__ == '__main__':
     main()
