@@ -14,12 +14,10 @@ class Strategy(BaseStrategy):
 
     def get_required_config_keys(self):
         # Requires keys from both danger and coordination strategies
-        return super().get_required_config_keys() + [
-            'block_danger_threshold',
-            'block_ip_count_threshold'
-        ]
+        # block_threshold is handled by effective_min_requests
+        return ['block_duration', 'block_danger_threshold', 'block_ip_count_threshold']
 
-    def calculate_threat_score_and_block(self, threat_data, config):
+    def calculate_threat_score_and_block(self, threat_data, config, effective_min_requests, analysis_duration_seconds=None):
         """Calculates score and block decision."""
         total_requests = threat_data.get('total_requests', 0)
         ip_count = threat_data.get('ip_count', 0)
@@ -33,11 +31,12 @@ class Strategy(BaseStrategy):
         reason = None
 
         # Check blocking criteria
-        min_req = getattr(config, 'block_threshold', 10)
+        min_req = effective_min_requests # Use the passed effective threshold
         min_danger = getattr(config, 'block_danger_threshold', 0)
         min_ips = getattr(config, 'block_ip_count_threshold', 0)
 
         if total_requests >= min_req:
+            meets_req_threshold = True
             if aggregated_ip_danger_score >= min_danger:
                 should_block = True
                 reason = (f"meets request threshold ({total_requests}>={min_req}) "
@@ -49,8 +48,11 @@ class Strategy(BaseStrategy):
 
             if should_block:
                  logger.debug(f"Threat {threat_data.get('id', 'N/A')} qualifies: {reason}")
-            else:
-                 logger.debug(f"Threat {threat_data.get('id', 'N/A')} meets request threshold but not secondary criteria "
+            else: # Meets request threshold but not secondary criteria
+                 logger.debug(f"Threat {threat_data.get('id', 'N/A')} meets request threshold ({total_requests}>={min_req}) but not secondary criteria "
                               f"(Danger: {aggregated_ip_danger_score:.2f}<{min_danger}, IPs: {ip_count}<{min_ips})")
+        else: # Below request threshold
+             logger.debug(f"Threat {threat_data.get('id', 'N/A')} below request threshold ({total_requests} < {min_req})")
+
 
         return score, should_block, reason

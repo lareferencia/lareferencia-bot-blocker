@@ -116,7 +116,11 @@ def main():
     )
     parser.add_argument(
         '--block-threshold', type=int, default=100,
-        help='Base threshold: Minimum total requests for a subnet to be considered for blocking.'
+        help='Base threshold: Minimum total requests for a subnet to be considered. Used if --block-relative-threshold-percent is not set.'
+    )
+    parser.add_argument(
+        '--block-relative-threshold-percent', type=float, default=None,
+        help='Alternative base threshold: Minimum percentage of total requests in the analysis window for a subnet to be considered (e.g., 1.0 for 1%%). Overrides --block-threshold if set.'
     )
     parser.add_argument(
         '--block-danger-threshold', type=float, default=50.0,
@@ -250,14 +254,35 @@ def main():
         analyzer.load_whitelist_from_file(args.whitelist)
 
     logger.info(f"Starting analysis of {args.file}...")
+    total_overall_requests = 0 # Initialize
     try:
         processed_count = analyzer.analyze_log_file(args.file, start_date_utc)
         if processed_count <= 0: # Check for < 0 (error) or == 0 (no data)
              logger.warning("No log entries processed or error during loading. Exiting.")
              sys.exit(0 if processed_count == 0 else 1)
+        # Get total requests for relative threshold calculation
+        if analyzer.log_df is not None and not analyzer.log_df.empty:
+             total_overall_requests = len(analyzer.log_df)
+             logger.info(f"Total requests in analysis window: {total_overall_requests}")
+        else:
+             logger.warning("Log DataFrame is empty or None after analysis, cannot calculate relative threshold.")
+
     except Exception as e:
         logger.error(f"Error analyzing log file: {e}", exc_info=True)
         sys.exit(1)
+
+    # --- Determine Effective Request Threshold ---
+    effective_min_requests = args.block_threshold # Default
+    if args.block_relative_threshold_percent is not None:
+        if total_overall_requests > 0:
+            effective_min_requests = max(1, int(total_overall_requests * (args.block_relative_threshold_percent / 100.0)))
+            logger.info(f"Using relative request threshold: {args.block_relative_threshold_percent}% of {total_overall_requests} = {effective_min_requests} requests")
+        else:
+            logger.warning(f"Relative threshold specified ({args.block_relative_threshold_percent}%) but total requests is 0. Falling back to absolute threshold: {args.block_threshold}")
+            effective_min_requests = args.block_threshold
+    else:
+        logger.info(f"Using absolute request threshold: {effective_min_requests} requests")
+
 
     # Identify threats (/24 or /64)
     threats = analyzer.identify_threats()
@@ -270,9 +295,12 @@ def main():
     # Keep track of threats marked for blocking
     blockable_threats = []
     for threat in threats:
-        # Pass analysis_duration_seconds to the strategy
+        # Pass analysis_duration_seconds and effective_min_requests to the strategy
         score, should_block, reason = strategy_instance.calculate_threat_score_and_block(
-            threat, config=args, analysis_duration_seconds=analysis_duration_seconds
+            threat,
+            config=args,
+            effective_min_requests=effective_min_requests, # Pass the calculated threshold
+            analysis_duration_seconds=analysis_duration_seconds
         )
         threat['strategy_score'] = score
         threat['should_block'] = should_block

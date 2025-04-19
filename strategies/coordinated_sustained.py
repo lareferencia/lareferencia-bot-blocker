@@ -18,12 +18,10 @@ class Strategy(BaseStrategy):
 
     def get_required_config_keys(self):
         # Requires keys for coordination and peak total subnet RPM
-        return super().get_required_config_keys() + [
-            'block_ip_count_threshold',
-            'block_total_max_rpm_threshold', # Add dependency on this threshold
-        ]
+        # block_threshold is handled by effective_min_requests
+        return ['block_duration', 'block_ip_count_threshold', 'block_total_max_rpm_threshold']
 
-    def calculate_threat_score_and_block(self, threat_data, config, analysis_duration_seconds=None):
+    def calculate_threat_score_and_block(self, threat_data, config, effective_min_requests, analysis_duration_seconds=None):
         """Calculates score and block decision based on multiple factors, including peak RPM and dynamic timespan."""
         total_requests = threat_data.get('total_requests', 0)
         ip_count = threat_data.get('ip_count', 0)
@@ -46,7 +44,7 @@ class Strategy(BaseStrategy):
         reason_parts = []
 
         # --- Get thresholds ---
-        min_req = getattr(config, 'block_threshold', 100)
+        min_req = effective_min_requests # Use the passed effective threshold
         min_ips = getattr(config, 'block_ip_count_threshold', 5)
 
         # Use the threshold for PEAK total subnet RPM

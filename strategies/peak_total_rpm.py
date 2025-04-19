@@ -15,9 +15,10 @@ class Strategy(BaseStrategy):
 
     def get_required_config_keys(self):
         # Define a new threshold key specific to this strategy
-        return super().get_required_config_keys() + ['block_total_max_rpm_threshold']
+        # block_threshold is handled by effective_min_requests
+        return ['block_duration', 'block_total_max_rpm_threshold']
 
-    def calculate_threat_score_and_block(self, threat_data, config):
+    def calculate_threat_score_and_block(self, threat_data, config, effective_min_requests, analysis_duration_seconds=None):
         """Calculates score and block decision based on subnet total maximum RPM."""
         total_requests = threat_data.get('total_requests', 0)
         # Use the metric for subnet total maximum RPM
@@ -30,7 +31,7 @@ class Strategy(BaseStrategy):
         reason = None
 
         # Check blocking criteria
-        min_req = getattr(config, 'block_threshold', 50)
+        min_req = effective_min_requests # Use the passed effective threshold
         # Use the new threshold defined for total maximum RPM
         min_total_max_rpm = getattr(config, 'block_total_max_rpm_threshold', 300) # Default higher, like individual peak
 
@@ -40,7 +41,9 @@ class Strategy(BaseStrategy):
                       f"and subnet total maximum RPM threshold ({max_total_rpm:.0f}>={min_total_max_rpm})") # Use .0f for integer RPM
             logger.debug(f"Threat {threat_data.get('id', 'N/A')} qualifies: {reason}")
         elif total_requests >= min_req:
-             logger.debug(f"Threat {threat_data.get('id', 'N/A')} meets request threshold but not subnet total maximum RPM "
+             logger.debug(f"Threat {threat_data.get('id', 'N/A')} meets request threshold ({total_requests}>={min_req}) but not subnet total maximum RPM "
                           f"({max_total_rpm:.0f} < {min_total_max_rpm})")
+        else: # Log if below request threshold
+             logger.debug(f"Threat {threat_data.get('id', 'N/A')} below request threshold ({total_requests} < {min_req})")
 
         return score, should_block, reason

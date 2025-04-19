@@ -7,7 +7,7 @@ class BaseStrategy(ABC):
     """Abstract base class for threat scoring and blocking strategies."""
 
     @abstractmethod
-    def calculate_threat_score_and_block(self, threat_data, config):
+    def calculate_threat_score_and_block(self, threat_data, config, effective_min_requests, analysis_duration_seconds=None):
         """
         Calculates a threat score and determines if the threat should be blocked.
 
@@ -15,8 +15,11 @@ class BaseStrategy(ABC):
             threat_data (dict): Dictionary containing aggregated metrics for the threat (subnet).
                                 Expected keys: 'total_requests', 'ip_count',
                                 'subnet_avg_ip_rpm', 'subnet_max_ip_rpm', 'details' (list of top IP dicts), etc.
-            config (argparse.Namespace): Parsed command-line arguments containing thresholds
-                                         (e.g., config.block_threshold, config.block_danger_threshold).
+            config (argparse.Namespace): Parsed command-line arguments containing strategy-specific thresholds
+                                         (e.g., config.block_danger_threshold).
+            effective_min_requests (int): The calculated minimum request threshold (absolute or relative).
+            analysis_duration_seconds (float, optional): The duration of the analysis window in seconds. Defaults to None.
+
 
         Returns:
             tuple: (score, should_block, reason)
@@ -31,4 +34,5 @@ class BaseStrategy(ABC):
         Returns a list of config keys (argparse args) expected by this strategy.
         Used for validation or help messages.
         """
-        return ['block_threshold', 'block_duration'] # Base requirements
+        # block_threshold is no longer a direct dependency for the strategy logic itself
+        return ['block_duration'] # Base requirements
