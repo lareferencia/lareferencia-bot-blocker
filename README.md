@@ -191,7 +191,7 @@ sudo python3 stats.py --clean-rules --dry-run
 | :--------------------------- | :--------------------------------------------------------------------------------------------------------- | :-------------- |
 | `--file, -f`                 | Path to the log file to analyze (required unless `--clean-rules`).                                         | `None`          |
 | `--start-date, -s`           | Analyze logs from this date/time (Format: `dd/Mmm/YYYY:HH:MM:SS`, e.g., `16/Apr/2024:10:00:00`).             | `None`          |
-| `--time-window, -tw`         | Analyze logs from the `hour`, `day`, or `week` (overrides `--start-date`).                                   | `None`          |
+| `--time-window, -tw`         | Analyze logs from the `hour`, `6hour`, `day`, or `week` (overrides `--start-date`).                          | `None`          |
 | `--top, -n`                  | Number of top *individual* threats (/24 or /64 by strategy score) to display and consider for blocking.    | `10`            |
 | `--whitelist, -w`            | Path to a file containing IPs/subnets to exclude (one per line, `#` for comments).                         | `None`          |
 | `--block`                    | Enable blocking of threats using UFW. Requires appropriate permissions.                                    | `False`         |

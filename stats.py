@@ -60,7 +60,7 @@ def calculate_start_date(time_window):
     Calculate the start date according to the specified time window.
     
     Args:
-        time_window (str): 'hour', 'day', or 'week'
+        time_window (str): 'hour', '6hour', 'day', or 'week'
     
     Returns:
         datetime: Datetime object corresponding to the start date
@@ -68,6 +68,8 @@ def calculate_start_date(time_window):
     now = datetime.now()
     if time_window == 'hour':
         return now - timedelta(hours=1)
+    elif time_window == '6hour': # Add new option
+        return now - timedelta(hours=6)
     elif time_window == 'day':
         return now - timedelta(days=1)
     elif time_window == 'week':
@@ -90,8 +92,8 @@ def main():
     )
     parser.add_argument(
         '--time-window', '-tw', required=False,
-        choices=['hour', 'day', 'week'],
-        help='Analyze logs from the last hour, day, or week (overrides --start-date).'
+        choices=['hour', '6hour', 'day', 'week'], # Add '6hour' choice
+        help='Analyze logs from the last hour, 6 hours, day, or week (overrides --start-date).'
     )
     # --- Analysis Args ---
     parser.add_argument(
