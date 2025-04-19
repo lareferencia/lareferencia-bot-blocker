@@ -116,7 +116,7 @@ def main():
     )
     parser.add_argument(
         '--block-relative-threshold-percent', type=float, default=1, # ADDED default
-        help='Base threshold: Minimum percentage of total requests in the analysis window for a subnet to be considered (e.g., 0.1 for 0.1%%).' # UPDATED help
+        help='Base threshold: Minimum percentage of total requests in the analysis window for a subnet to be considered a potential threat (e.g., 0.1 for 0.1%%). Acts as an initial filter before strategy-specific thresholds are applied.' # UPDATED help
     )
     parser.add_argument(
         '--block-ip-count-threshold', type=int, default=10,

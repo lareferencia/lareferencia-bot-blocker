@@ -197,10 +197,10 @@ sudo python3 stats.py --clean-rules --dry-run
 | `--whitelist, -w`                    | Path to a file containing IPs/subnets to exclude (one per line, `#` for comments).                                                           | `None`               |
 | `--block`                            | Enable blocking of threats using UFW. Requires appropriate permissions.                                                                      | `False`              |
 | `--block-strategy`                   | Strategy for scoring *individual* threats (`volume_coordination`, `volume_peak_rpm`, `peak_total_rpm`, `coordinated_sustained`).                | `volume_coordination` | # UPDATED default
-| `--block-relative-threshold-percent` | Base: Minimum percentage of total requests in the window for a subnet to be considered (e.g., 0.1 for 0.1%).                                  | `0.1`                |
-| `--block-ip-count-threshold`         | Strategy: Minimum number of unique IPs (used by `volume_coordination`, `combined`, `coordinated_sustained`).                                   | `10`                 |
-| `--block-max-rpm-threshold`          | Strategy: Minimum peak RPM from any *individual* IP (used by `volume_peak_rpm`).                                                             | `10.0`               |
-| `--block-total-max-rpm-threshold`    | Strategy: Minimum peak **TOTAL SUBNET RPM** (max requests per minute for the entire subnet) (used by `peak_total_rpm`, `coordinated_sustained`). | `20.0`               |
+| `--block-relative-threshold-percent` | Base Filter: Minimum percentage of total requests in the window for a subnet to be considered a potential threat (e.g., 0.1 for 0.1%). Applied *before* strategy thresholds. | `0.1`                | # UPDATED description
+| `--block-ip-count-threshold`         | Strategy Threshold (Absolute): Minimum number of unique IPs (used by `volume_coordination`).                                                   | `10`                 | # UPDATED description
+| `--block-max-rpm-threshold`          | Strategy Threshold (Absolute): Minimum peak RPM from any *individual* IP (used by `volume_peak_rpm`).                                          | `10.0`               | # UPDATED description
+| `--block-total-max-rpm-threshold`    | Strategy Threshold (Absolute): Minimum peak **TOTAL SUBNET RPM** (max requests per minute for the entire subnet) (used by `peak_total_rpm`). | `20.0`               | # UPDATED description
 | `--block-duration`                   | Duration of the UFW block in minutes (used for individual blocks and automatic /16 blocks).                                                | `60`                 |
 | `--dry-run`                          | Show UFW commands that would be executed, but do not execute them.                                                                           | `False`              |
 | `--output, -o`                       | File path to save the analysis results (currently exports individual threats).                                                               | `None`               |
@@ -211,37 +211,51 @@ sudo python3 stats.py --clean-rules --dry-run
 
 ## Blocking Strategies (`--block-strategy`)
 
-Strategies define how threats are scored and whether they should be blocked. All strategies first check if the subnet's `total_requests` meet the **effective minimum request threshold** (determined by `--block-relative-threshold-percent`).
+Strategies define how threats are scored and whether they should be blocked. All strategies first check if the subnet's `total_requests` meet the **effective minimum request threshold** (determined by `--block-relative-threshold-percent`). This acts as a **base filter** based on relative volume.
 
-**Important:** Each strategy calculates a `strategy_score` using its own formula, prioritizing different metrics. This score's primary purpose is to **sort** the detected threats for reporting (displaying the top N). The decision to actually block (`should_block`) depends on whether the threat meets the specific **thresholds** defined for that strategy *in addition to* the effective minimum request threshold.
+**Important:** Each strategy calculates a `strategy_score` using its own formula, prioritizing different metrics. This score's primary purpose is to **sort** the detected threats for reporting (displaying the top N). The decision to actually block (`should_block`) depends on whether the threat meets the specific **absolute thresholds** defined for that strategy (e.g., `--block-ip-count-threshold`, `--block-max-rpm-threshold`) *in addition to* the effective minimum request threshold.
+
+### Tuning Thresholds
+
+-   **`--block-relative-threshold-percent` (Relative Base Filter):**
+    -   **Higher value (e.g., 1%, 5%):** Focuses only on subnets contributing significantly to the total traffic. Reduces noise but might miss smaller attacks. Good for high-traffic sites.
+    -   **Lower value (e.g., 0.1%, 0.01%):** More sensitive, considers subnets with a smaller traffic share. Might increase potential false positives if absolute thresholds are too low.
+-   **Strategy-Specific Thresholds (Absolute):** (`--block-ip-count-threshold`, `--block-max-rpm-threshold`, `--block-total-max-rpm-threshold`)
+    -   These define absolute levels of "badness" (e.g., "more than 10 IPs", "peak RPM over 60").
+    -   **Recommendation:** Use the **"OVERALL MAXIMUMS OBSERVED"** section in the script's output after a run to guide adjustments.
+        -   If your current absolute threshold (e.g., `--block-max-rpm-threshold=10`) is much lower than the observed maximum (e.g., "Maximum IP RPM: 500.00"), you might be blocking too aggressively or catching legitimate spikes. Consider raising the threshold.
+        -   Conversely, if observed maximums are consistently just above your threshold, it might be set appropriately.
+        -   Start with conservative (higher) absolute thresholds and lower them cautiously based on observed malicious activity that isn't being caught.
+
+### Available Strategies
 
 1.  **`volume_coordination` (Default)**
     *   **Goal:** Catch potentially distributed attacks or widespread scanning from multiple IPs within the same network range.
     *   **Score:** Primarily based on `ip_count`, secondarily on `total_requests`.
     *   **Blocks If:** `total_requests >= effective_min_requests` **AND** `ip_count >= --block-ip-count-threshold`.
-    *   **Tuning:** Adjust `--block-relative-threshold-percent` and `--block-ip-count-threshold`. Useful for high IP count scenarios.
+    *   **Tuning:** Adjust `--block-relative-threshold-percent` (relative filter) and `--block-ip-count-threshold` (absolute minimum IPs).
 
 2.  **`volume_peak_rpm`**
     *   **Goal:** Catch subnets containing at least one *highly* aggressive *individual* IP (bursts).
     *   **Score:** Primarily based on `subnet_max_ip_rpm` (max RPM of any single IP), secondarily on `total_requests`.
     *   **Blocks If:** `total_requests >= effective_min_requests` **AND** `subnet_max_ip_rpm >= --block-max-rpm-threshold`.
-    *   **Tuning:** Adjust `--block-relative-threshold-percent` and `--block-max-rpm-threshold`. Useful for stopping brute-force bursts from single IPs.
+    *   **Tuning:** Adjust `--block-relative-threshold-percent` (relative filter) and `--block-max-rpm-threshold` (absolute peak RPM for one IP).
 
 3.  **`peak_total_rpm`**
     *   **Goal:** Catch subnets exhibiting high *peak* request rates **considering all requests from the subnet combined in any single minute**.
     *   **Score:** Primarily based on `subnet_total_max_rpm`, secondarily on `total_requests`.
     *   **Blocks If:** `total_requests >= effective_min_requests` **AND** `subnet_total_max_rpm >= --block-total-max-rpm-threshold`.
-    *   **Tuning:** Adjust the relative request threshold and `--block-total-max-rpm-threshold` to define the peak *total subnet rate* considered abusive. Good for identifying short, intense, coordinated bursts from a subnet.
+    *   **Tuning:** Adjust `--block-relative-threshold-percent` (relative filter) and `--block-total-max-rpm-threshold` (absolute peak combined RPM for the subnet).
 
 4.  **`coordinated_sustained` (Modified Again)**
     *   **Goal:** Catch subnets showing sustained activity over a significant portion of the analysis window, regardless of the number of IPs involved.
-    *   **Score:** Weighted sum prioritizing `subnet_req_per_min` (overall requests per minute for the subnet), then `total_requests`, then `subnet_time_span`. Used for sorting threats.
+    *   **Score:** Weighted sum prioritizing normalized `total_requests`, then normalized `subnet_time_span`. Used for sorting threats. # UPDATED score description
     *   **Blocks If:**
         *   `total_requests >= effective_min_requests` **AND**
         *   `subnet_time_span` covers at least 50% of the specified analysis window (check skipped if no window defined).
-    *   **Tuning:** Requires tuning the relative request threshold (`--block-relative-threshold-percent`). The time span threshold is fixed at 50% of the analysis window. This strategy no longer uses IP count or RPM thresholds for blocking.
+    *   **Tuning:** Primarily adjust the relative request threshold (`--block-relative-threshold-percent`). The time span threshold is fixed internally at 50% of the analysis window. This strategy does not use separate absolute thresholds for IP count or RPM for blocking.
 
-**Note:** The final list of threats is always sorted based on the `strategy_score` calculated by the selected strategy. Blocking actions only apply to the `--top` N threats *that also meet the strategy's specific blocking conditions*.
+**Note:** The final list of threats is always sorted based on the `strategy_score` calculated by the selected strategy. Blocking actions only apply to the `--top` N threats *that also meet the strategy's specific blocking conditions* (relative volume filter + absolute strategy thresholds, if applicable).
 
 ## Whitelist Format
 

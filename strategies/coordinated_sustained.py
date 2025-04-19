@@ -34,7 +34,7 @@ class Strategy(BaseStrategy):
         normalized_timespan = (subnet_time_span / max_subnet_time_span) if max_subnet_time_span and max_subnet_time_span > 0 else 0
 
         # Prioritize normalized total_requests, then normalized timespan.
-        score = (normalized_requests * 0.9) + (normalized_timespan * 0.1)
+        score = (normalized_requests * 0.5) + (normalized_timespan * 0.5)
         # Adjust weights as needed
 
         # --- Blocking Logic ---
