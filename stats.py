@@ -389,13 +389,19 @@ def main():
         target_id_obj = threat['id']
         target_id_str = str(target_id_obj)
         strat_score_str = f"Score: {threat.get('strategy_score', 0):.2f}"
-        req_str = f"{threat['total_requests']} reqs"
-        ip_count_str = f"{threat['ip_count']} IPs"
-        agg_danger_str = f"AggDanger: {threat.get('aggregated_ip_danger_score', 0):.2f}"
-        subnet_total_avg_rpm_str = f"~{threat.get('subnet_total_avg_rpm', 0):.1f} avg_total_rpm"
-        subnet_total_max_rpm_str = f"{threat.get('subnet_total_max_rpm', 0):.0f} max_total_rpm"
-
-        metrics_summary = f"{req_str}, {ip_count_str}, {agg_danger_str}, {subnet_total_avg_rpm_str}, {subnet_total_max_rpm_str}"
+        
+        # --- Construct detailed metrics summary string ---
+        metrics_summary = (
+            f"{threat['total_requests']} reqs, "
+            f"{threat['ip_count']} IPs, "
+            f"AggDanger: {threat.get('aggregated_ip_danger_score', 0):.2f}, "
+            f"AvgIPRPM: {threat.get('subnet_avg_ip_rpm', 0):.1f}, "
+            f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
+            f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
+            f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, "
+            f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
+        )
+        # --- End of detailed metrics summary string ---
 
         block_info = ""
         # Determine block status for reporting
@@ -410,10 +416,14 @@ def main():
             elif is_blockable and is_top_n:
                 # Show BLOCKED status only if it was blockable, in top N, and NOT covered by /16
                 block_status = "[BLOCKED]" if not args.dry_run else "[DRY RUN - BLOCKED]"
-                block_info = f" {block_status}"
+                block_reason_str = f" ({threat.get('block_reason', 'No reason')})" if threat.get('block_reason') else ""
+                block_info = f" {block_status}{block_reason_str}"
             # No special indicator if it wasn't blockable or wasn't in top N (and not covered by /16)
 
-        print(f"\n#{i} Subnet: {target_id_str} - {strat_score_str} ({metrics_summary}){block_info}")
+        # --- Updated print statement with all metrics ---
+        print(f"\n#{i} Subnet: {target_id_str} - {strat_score_str}{block_info}")
+        print(f"  Metrics: {metrics_summary}")
+        # --- End of updated print statement ---
 
         if threat['details']:
             print("  -> Top IPs (by Max RPM):")
