@@ -208,7 +208,7 @@ class ThreatAnalyzer:
             grouped_ips = self.ip_metrics_df.groupby('subnet') #, observed=True)
             agg1 = grouped_ips.agg(
                 total_requests=('total_requests', 'sum'),
-                ip_count=('ip_danger_score', 'count'), # Use any column guaranteed to exist per IP
+                ip_count=('ip', 'count'), # Use any column guaranteed to exist per IP
                 subnet_first_seen=('first_seen', 'min'), # Earliest first seen time in the subnet
                 subnet_last_seen=('last_seen', 'max')    # Latest last seen time in the subnet
             )
