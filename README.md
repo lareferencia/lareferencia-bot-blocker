@@ -195,12 +195,14 @@ sudo python3 stats.py --clean-rules --dry-run
 | `--top, -n`                  | Number of top *individual* threats (/24 or /64 by strategy score) to display and consider for blocking.    | `10`            |
 | `--whitelist, -w`            | Path to a file containing IPs/subnets to exclude (one per line, `#` for comments).                         | `None`          |
 | `--block`                    | Enable blocking of threats using UFW. Requires appropriate permissions.                                    | `False`         |
-| `--block-strategy`           | Strategy for scoring *individual* threats (`volume_danger`, `volume_coordination`, `volume_peak_rpm`, `combined`, `peak_total_rpm`). | `volume_danger` |
+| `--block-strategy`           | Strategy for scoring *individual* threats (`volume_danger`, `volume_coordination`, `volume_peak_rpm`, `combined`, `peak_total_rpm`, `coordinated_sustained`). | `volume_danger` |
 | `--block-threshold`          | Base: Minimum total requests for an individual subnet to be considered by any strategy.                    | `100`           |
 | `--block-danger-threshold`   | Strategy: Minimum aggregated IP danger score (used by `volume_danger`, `combined`).                        | `50.0`          |
-| `--block-ip-count-threshold` | Strategy: Minimum number of unique IPs (used by `volume_coordination`, `combined`).                        | `10`            |
+| `--block-ip-count-threshold` | Strategy: Minimum number of unique IPs (used by `volume_coordination`, `combined`, `coordinated_sustained`). | `10`            |
 | `--block-max-rpm-threshold`  | Strategy: Minimum peak RPM from any *individual* IP (used by `volume_peak_rpm`).                           | `62.0`          |
 | `--block-total-max-rpm-threshold` | Strategy: Minimum peak **TOTAL SUBNET RPM** (max requests per minute for the entire subnet) (used by `peak_total_rpm`). | `62.0`          |
+| `--block-subnet-avg-rpm-threshold` | Strategy: Minimum average **TOTAL SUBNET RPM** (average requests per minute for the entire subnet when active) (used by `coordinated_sustained`). | `60.0`          |
+| `--block-min-timespan-seconds` | Strategy: Minimum duration in seconds of subnet activity (first to last request) (used by `coordinated_sustained`). | `1800`          |
 | `--block-duration`           | Duration of the UFW block in minutes (used for individual blocks and automatic /16 blocks).              | `60`            |
 | `--dry-run`                  | Show UFW commands that would be executed, but do not execute them.                                         | `False`         |
 | `--output, -o`               | File path to save the analysis results (currently exports individual threats).                             | `None`          |
@@ -242,6 +244,12 @@ Strategies define how threats are scored and whether they should be blocked. All
     *   **Score:** Primarily based on `subnet_total_max_rpm`, secondarily on `total_requests`.
     *   **Blocks If:** `total_requests >= --block-threshold` **AND** `subnet_total_max_rpm >= --block-total-max-rpm-threshold`.
     *   **Tuning:** Adjust `--block-threshold` for volume and `--block-total-max-rpm-threshold` to define the peak *total subnet rate* considered abusive. Good for identifying short, intense, coordinated bursts from a subnet.
+
+6.  **`coordinated_sustained` (NEW)**
+    *   **Goal:** Catch subnets showing strong signs of coordinated, sustained, and high-rate activity. Designed to target persistent, distributed bots.
+    *   **Score:** Weighted sum prioritizing `ip_count`, then `total_requests`, then `subnet_total_avg_rpm`, then `subnet_time_span`.
+    *   **Blocks If:** `total_requests >= --block-threshold` **AND** `ip_count >= --block-ip-count-threshold` **AND** `subnet_total_avg_rpm >= --block-subnet-avg-rpm-threshold` **AND** `subnet_time_span >= --block-min-timespan-seconds`.
+    *   **Tuning:** Requires tuning four thresholds (`--block-threshold`, `--block-ip-count-threshold`, `--block-subnet-avg-rpm-threshold`, `--block-min-timespan-seconds`). More specific targeting, potentially fewer blocks than broader strategies.
 
 **Note:** The final list of threats is always sorted based on the `strategy_score` calculated by the selected strategy. Blocking actions only apply to the `--top` N threats *that also meet the strategy's specific blocking conditions*.
 

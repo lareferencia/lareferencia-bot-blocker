@@ -108,7 +108,7 @@ def main():
     )
     parser.add_argument(
         '--block-strategy', default='volume_danger',
-        choices=['volume_danger', 'volume_coordination', 'volume_peak_rpm', 'combined', 'peak_total_rpm'],
+        choices=['volume_danger', 'volume_coordination', 'volume_peak_rpm', 'combined', 'peak_total_rpm', 'coordinated_sustained'], # Add new strategy
         help='Strategy used to score threats and decide on blocking.'
     )
     parser.add_argument(
@@ -131,6 +131,16 @@ def main():
         '--block-total-max-rpm-threshold', type=float, default=62.0,
         help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (max requests per minute for the entire subnet) (used by peak_total_rpm).'
     )
+    # --- Add new arguments for the coordinated_sustained strategy ---
+    parser.add_argument(
+        '--block-subnet-avg-rpm-threshold', type=float, default=60.0,
+        help='Strategy threshold: Minimum average TOTAL SUBNET RPM (used by coordinated_sustained).'
+    )
+    parser.add_argument(
+        '--block-min-timespan-seconds', type=int, default=1800, # Default 30 minutes
+        help='Strategy threshold: Minimum duration (seconds) of subnet activity (first to last request) (used by coordinated_sustained).'
+    )
+    # --- End of new arguments ---
     parser.add_argument(
         '--block-duration', type=int, default=60,
         help='Duration of the UFW block in minutes (used for all blocks).'
