@@ -200,7 +200,7 @@ sudo python3 stats.py --clean-rules --dry-run
 | `--block-danger-threshold`   | Strategy: Minimum aggregated IP danger score (used by `volume_danger`, `combined`).                        | `50.0`          |
 | `--block-ip-count-threshold` | Strategy: Minimum number of unique IPs (used by `volume_coordination`, `combined`, `coordinated_sustained`). | `10`            |
 | `--block-max-rpm-threshold`  | Strategy: Minimum peak RPM from any *individual* IP (used by `volume_peak_rpm`).                           | `62.0`          |
-| `--block-total-max-rpm-threshold` | Strategy: Minimum peak **TOTAL SUBNET RPM** (max requests per minute for the entire subnet) (used by `peak_total_rpm`). | `62.0`          |
+| `--block-total-max-rpm-threshold` | Strategy: Minimum peak **TOTAL SUBNET RPM** (max requests per minute for the entire subnet) (used by `peak_total_rpm`, `coordinated_sustained`). | `62.0`          |
 | ~~`--block-subnet-avg-rpm-threshold`~~ | ~~(Removed - Internal to `coordinated_sustained`)~~                                                | `N/A`           |
 | ~~`--block-min-timespan-seconds`~~ | ~~(Removed - Calculated dynamically by `coordinated_sustained`)~~                                      | `N/A`           |
 | `--block-duration`           | Duration of the UFW block in minutes (used for individual blocks and automatic /16 blocks).              | `60`            |
@@ -247,15 +247,15 @@ Strategies define how threats are scored and whether they should be blocked. All
     *   **Blocks If:** `total_requests >= --block-threshold` **AND** `subnet_total_max_rpm >= --block-total-max-rpm-threshold`.
     *   **Tuning:** Adjust `--block-threshold` for volume and `--block-total-max-rpm-threshold` to define the peak *total subnet rate* considered abusive. Good for identifying short, intense, coordinated bursts from a subnet.
 
-6.  **`coordinated_sustained` (NEW - Simplified)**
-    *   **Goal:** Catch subnets showing strong signs of coordinated, sustained, and high-rate activity. Designed to target persistent, distributed bots. Less sensitive to parameter tuning.
-    *   **Score:** Weighted sum prioritizing `ip_count`, then `total_requests`, then `subnet_total_avg_rpm`, then `subnet_time_span`.
+6.  **`coordinated_sustained` (NEW - Simplified, uses Peak RPM)**
+    *   **Goal:** Catch subnets showing strong signs of coordinated, sustained activity with at least one significant **peak** in total request rate. Designed to target persistent, distributed bots that might have bursts. Less sensitive to parameter tuning than original concept.
+    *   **Score:** Weighted sum prioritizing `ip_count`, then `total_requests`, then `subnet_total_avg_rpm` (average still used for scoring), then `subnet_time_span`.
     *   **Blocks If:**
         *   `total_requests >= --block-threshold` **AND**
         *   `ip_count >= --block-ip-count-threshold` **AND**
-        *   `subnet_total_avg_rpm >= 60.0` (Internal threshold) **AND**
+        *   `subnet_total_max_rpm >= --block-total-max-rpm-threshold` (Uses the peak RPM threshold) **AND**
         *   `subnet_time_span` covers at least 50% of the specified analysis window (`--time-window` or `--start-date`). (This check is skipped if analyzing the entire log file without a time window).
-    *   **Tuning:** Requires tuning only `--block-threshold` and `--block-ip-count-threshold`. The RPM and time span thresholds are now internal or dynamic. More specific targeting.
+    *   **Tuning:** Requires tuning `--block-threshold`, `--block-ip-count-threshold`, and `--block-total-max-rpm-threshold`. The time span threshold is dynamic.
 
 **Note:** The final list of threats is always sorted based on the `strategy_score` calculated by the selected strategy. Blocking actions only apply to the `--top` N threats *that also meet the strategy's specific blocking conditions*.
 
