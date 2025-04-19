@@ -19,6 +19,37 @@ LOG_PATTERN = re.compile(
     r'(?P<status>\d{3}) (?P<size>\S+) "(?P<referer>[^"]+)" "(?P<useragent>[^"]+)"'
 )
 
+# Regex for common bots/crawlers (simplified)
+# Order matters if a UA contains multiple keywords (e.g., Googlebot-Image)
+BOT_REGEX = re.compile(
+    r"(?i)"  # Case-insensitive search
+    r"("
+    # Specific known bots first
+    r"Googlebot(?:-Image|-Video)?|"
+    r"AdsBot-Google|"
+    r"Mediapartners-Google|"
+    r"bingbot|"
+    r"Slurp|"  # Yahoo
+    r"DuckDuckBot|"
+    r"Baiduspider|"
+    r"YandexBot|"
+    r"Sogou(?: web spider)?|"
+    r"Exabot|"
+    r"facebookexternalhit|"
+    r"facebot|"
+    r"ia_archiver|" # Alexa
+    r"SemrushBot|"
+    r"AhrefsBot|"
+    r"MJ12bot|" # Majestic
+    r"DotBot|" # Moz
+    r"PetalBot|" # Huawei
+    # Generic terms (lower priority)
+    r"crawl|"
+    r"spider|"
+    r"bot"
+    r")"
+)
+
 # Helper function for efficient reverse reading (copied from threat_analyzer)
 def _read_lines_reverse(filename, buf_size=8192):
     """Read a file line by line backwards, memory efficiently."""
@@ -68,6 +99,19 @@ def parse_datetime_to_utc(dt_str):
         except ValueError:
             logger.warning(f"Skipping line due to malformed date: {dt_str}")
             return None
+
+def extract_bot_name(user_agent):
+    """
+    Extracts a known bot/crawler name from the User-Agent string.
+    Returns 'Unknown' if no known bot pattern is found.
+    """
+    if not user_agent or user_agent == '-':
+        return 'Unknown'
+    match = BOT_REGEX.search(user_agent)
+    if match:
+        # Return the matched group, potentially normalize casing if needed
+        return match.group(1).lower().capitalize() # e.g., Googlebot, Bingbot
+    return 'Unknown'
 
 def load_log_into_dataframe(log_file, start_date_utc=None, whitelist=None):
     """

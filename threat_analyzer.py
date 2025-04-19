@@ -362,7 +362,8 @@ class ThreatAnalyzer:
                 'subnet_time_span': float, # Already calculated as float seconds
                 'subnet_total_avg_rpm': float,
                 'subnet_total_max_rpm': float,
-                'subnet_req_per_min': float # ADDED new metric type
+                'subnet_req_per_min': float, # ADDED new metric type
+                'dominant_bot_name': str # ADDED bot name type
             }
             for col, dtype in expected_cols.items():
                 if col in self.subnet_metrics_df.columns:
@@ -446,7 +447,8 @@ class ThreatAnalyzer:
                 'subnet_total_avg_rpm': round(metrics.get('subnet_total_avg_rpm', 0), 2),
                 'subnet_total_max_rpm': round(metrics.get('subnet_total_max_rpm', 0), 2),
                 'subnet_time_span': round(metrics.get('subnet_time_span', 0), 2), # Use the correctly calculated span
-                'subnet_req_per_min': round(metrics.get('subnet_req_per_min', 0), 2), # ADDED new metric
+                'subnet_req_per_min': round(metrics.get('subnet_req_per_min', 0), 2),
+                'dominant_bot_name': metrics.get('dominant_bot_name', 'Unknown'), # ADDED bot name
                 'details': details_list,
                 'strategy_score': 0.0,
                 'should_block': False,
@@ -519,6 +521,7 @@ class ThreatAnalyzer:
             cols_order = [
                 'id', 'strategy_score', 'should_block', 'block_reason',
                 'total_requests', 'ip_count', 'aggregated_ip_danger_score',
+                'dominant_bot_name', # ADDED bot name
                 'subnet_avg_ip_rpm', 'subnet_max_ip_rpm',
                 'subnet_total_avg_rpm', 'subnet_total_max_rpm',
                 'subnet_req_per_min', # ADDED new metric
