@@ -206,12 +206,24 @@ class ThreatAnalyzer:
         try:
             # Use observed=True if pandas version supports it and index is categorical, otherwise default is fine
             grouped_ips = self.ip_metrics_df.groupby('subnet') #, observed=True)
-            agg1 = grouped_ips.agg(
+
+            # Calculate ip_count separately using size()
+            ip_counts = grouped_ips.size().rename('ip_count')
+
+            # Perform other aggregations
+            agg1_main = grouped_ips.agg(
                 total_requests=('total_requests', 'sum'),
-                ip_count=('ip', 'count'), # Use any column guaranteed to exist per IP
+                # ip_count=('ip', 'count'), # REMOVED - Use size() instead
                 subnet_first_seen=('first_seen', 'min'), # Earliest first seen time in the subnet
                 subnet_last_seen=('last_seen', 'max')    # Latest last seen time in the subnet
             )
+
+            # Join ip_counts with the main aggregation results
+            agg1 = agg1_main.join(ip_counts, how='left')
+            # Fill NaN in ip_count if any subnets somehow didn't get counted (shouldn't happen with left join)
+            agg1['ip_count'] = agg1['ip_count'].fillna(0).astype(int)
+
+
             # Calculate subnet_time_span from the aggregated timestamps
             agg1['subnet_time_span'] = (agg1['subnet_last_seen'] - agg1['subnet_first_seen']).dt.total_seconds()
             # Handle cases where first_seen == last_seen (span is 0) or potential NaNs
