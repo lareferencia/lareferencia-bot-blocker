@@ -131,7 +131,7 @@ def main():
         help='Strategy threshold: Minimum peak RPM from any IP (used by volume_peak_rpm).'
     )
     parser.add_argument(
-        '--block-total-max-rpm-threshold', type=float, default=20
+        '--block-total-max-rpm-threshold', type=float, default=20,
         help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (max requests per minute for the entire subnet) (used by peak_total_rpm).'
     )
     # --- Remove arguments for coordinated_sustained strategy ---
