@@ -127,11 +127,11 @@ def main():
         help='Strategy threshold: Minimum number of unique IPs (used by volume_coordination, combined).'
     )
     parser.add_argument(
-        '--block-max-rpm-threshold', type=float, default=62.0,
+        '--block-max-rpm-threshold', type=float, default=10,
         help='Strategy threshold: Minimum peak RPM from any IP (used by volume_peak_rpm).'
     )
     parser.add_argument(
-        '--block-total-max-rpm-threshold', type=float, default=62.0,
+        '--block-total-max-rpm-threshold', type=float, default=20
         help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (max requests per minute for the entire subnet) (used by peak_total_rpm).'
     )
     # --- Remove arguments for coordinated_sustained strategy ---
@@ -322,7 +322,7 @@ def main():
         'subnet_max_ip_rpm': 'Maximum IP RPM (Subnet Max)',
         'subnet_total_avg_rpm': 'Average Total Subnet RPM',
         'subnet_total_max_rpm': 'Maximum Total Subnet RPM',
-        'subnet_time_span': 'Subnet Activity Timespan (s)'
+        'subnet_time_span': 'Subnet Activity Timespan (%)' # UPDATED Name
     }
 
     if threats: # Only calculate if there are threats
@@ -531,16 +531,26 @@ def main():
             metric_name = metric_names_map.get(metric_key, metric_key)
             value = data['value']
             subnets = data['subnets']
-            # Format value based on metric type
-            if isinstance(value, float):
-                value_str = f"{value:.2f}"
-            else:
-                value_str = str(value)
+            value_str = "N/A" # Default value string
 
-            if value == -1: # Indicates metric was never updated (no threats or metric missing)
-                 print(f"  {metric_name}: N/A")
-            else:
-                 print(f"  {metric_name}: {value_str} (Achieved by: {', '.join(subnets)})")
+            if value != -1: # Check if metric was found
+                # Special handling for timespan percentage
+                if metric_key == 'subnet_time_span':
+                    if analysis_duration_seconds > 0:
+                        percentage = (value / analysis_duration_seconds) * 100
+                        # Show percentage with one decimal place
+                        value_str = f"{percentage:.1f}% ({value:.0f}s raw)"
+                    else:
+                        # Show raw seconds if no analysis duration is available
+                        value_str = f"N/A ({value:.0f}s raw)"
+                # Format other values
+                elif isinstance(value, float):
+                    value_str = f"{value:.2f}"
+                else:
+                    value_str = str(value)
+
+            print(f"  {metric_name}: {value_str} (Achieved by: {', '.join(subnets)})")
+
     # --- End Report Overall Maximums ---
 
 
