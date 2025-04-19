@@ -400,6 +400,7 @@ class ThreatAnalyzer:
 
         logger.debug("Formatting subnet metrics into threat list (without final score/sorting)...")
         self.unified_threats = []
+        top_ips_per_subnet = self.ip_metrics_df.sort_values(by='max_rpm_activity', ascending=False)\
                                                   .groupby('subnet')
 
         for subnet, metrics in self.subnet_metrics_df.iterrows():
