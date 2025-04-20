@@ -116,26 +116,26 @@ def main():
     )
     parser.add_argument(
         '--block-relative-threshold-percent', type=float, default=1, # Default might need adjustment based on typical max requests
-        help='Base threshold: Minimum percentage of total requests in the window for initial consideration. '
-             'For "combined" strategy, also used as the threshold percentage against MAX total requests for blocking condition.' # UPDATED help
+        help='Base threshold for initial consideration (most strategies). '
+             'For "combined" strategy, used ONLY as the threshold percentage against MAX total requests for one of the blocking conditions.' # UPDATED help
     )
     parser.add_argument(
         '--block-ip-count-threshold', type=int, default=10,
-        help='Strategy threshold: Minimum unique IPs (used by volume_coordination, combined score).' # Clarified usage
+        help='Strategy threshold: Minimum unique IPs (used by volume_coordination). Ignored by "combined" blocking logic.' # Clarified usage
     )
     parser.add_argument(
         '--block-max-rpm-threshold', type=float, default=10,
-        help='Strategy threshold: Minimum peak RPM from any IP (used by volume_peak_rpm, combined score).' # Clarified usage
+        help='Strategy threshold: Minimum peak RPM from any IP (used by volume_peak_rpm). Ignored by "combined" blocking logic.' # Clarified usage
     )
     parser.add_argument(
         '--block-total-max-rpm-threshold', type=float, default=20, # Default might need adjustment
-        help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (used by peak_total_rpm, combined score). '
-             'For "combined" strategy, also used as the threshold for average Req/Min(Win) for blocking condition.' # UPDATED help
+        help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (used by peak_total_rpm). '
+             'For "combined" strategy, used ONLY as the threshold for average Req/Min(Win) for one of the blocking conditions.' # UPDATED help
     )
     # --- Add argument for combined strategy ---
     parser.add_argument(
         '--block-trigger-count', type=int, default=2,
-        help='Strategy threshold (Combined Score): Minimum number of original triggers (IP count, Max IP RPM, Peak Subnet RPM) met for scoring.' # Clarified usage for scoring only
+        help='Strategy threshold: Minimum number of original triggers met. Ignored by "combined" blocking logic.' # Clarified usage for scoring only
     )
     # --- End of removed arguments ---
     parser.add_argument(
@@ -264,9 +264,9 @@ def main():
     # --- Determine Effective Request Threshold ---
     effective_min_requests = 1 # Start with a minimum of 1
     if total_overall_requests > 0:
-        # Always calculate based on the relative threshold
+        # Calculate based on the relative threshold - This is now primarily for strategies OTHER than 'combined'
         effective_min_requests = max(1, int(total_overall_requests * (args.block_relative_threshold_percent / 100.0)))
-        logger.info(f"Using relative request threshold: {args.block_relative_threshold_percent}% of {total_overall_requests} = {effective_min_requests} requests")
+        logger.info(f"Calculated effective_min_requests = {effective_min_requests} (based on {args.block_relative_threshold_percent}% of {total_overall_requests}). Note: 'combined' strategy ignores this as an initial filter.") # UPDATED log message
     else:
         # If no requests, the threshold remains 1, but analysis likely stops anyway
         logger.warning(f"Total requests in analysis window is 0. Effective minimum request threshold set to {effective_min_requests}.")
