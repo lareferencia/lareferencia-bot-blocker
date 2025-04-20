@@ -274,11 +274,19 @@ def main():
 
 
     # Identify threats (/24 or /64)
-    # Pass analysis duration for window-averaged metrics
-    threats = analyzer.identify_threats(analysis_duration_seconds=analysis_duration_seconds, total_overall_requests=total_overall_requests)
-    if not threats:
-         logger.info("No threats identified based on initial aggregation.")
-         sys.exit(0)
+    threat_analyzer = ThreatAnalyzer(config=args, log_df=log_df)
+    # Ensure all required arguments are passed to identify_threats
+    threat_analyzer.identify_threats(
+        strategy_name=args.block_strategy,             # Pass strategy name
+        effective_min_requests=effective_min_requests, # Pass calculated min requests
+        analysis_duration_seconds=analysis_duration_seconds, # Pass duration
+        total_overall_requests=total_overall_requests      # Pass overall total
+    )
+    threats_df = threat_analyzer.get_threats_df()
+
+    if threats_df is None or threats_df.empty:
+        logger.info("No threats identified or DataFrame is empty after analysis.")
+        sys.exit(0)
 
     # --- Calculate Maximums for Normalization ---
     max_total_requests = 0
