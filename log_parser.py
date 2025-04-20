@@ -306,7 +306,8 @@ def load_log_into_dataframe(log_file, start_date_utc=None, whitelist=None):
                  df['bot_name'] = 'Unknown' # Add placeholder if error occurred
             return df
         finally:
-            if log_source_ua and hasattr(log_source_ua, 'close') and not log_source_ua.closed:
+            # Only close if it's a file object (not a generator) and it's open
+            if log_source_ua and hasattr(log_source_ua, 'close') and callable(log_source_ua.close) and not getattr(log_source_ua, 'closed', True):
                 log_source_ua.close()
         # --- End Add Bot Name Extraction ---
 
@@ -320,7 +321,8 @@ def load_log_into_dataframe(log_file, start_date_utc=None, whitelist=None):
         logger.error(f"Error processing log file {log_file}: {e}", exc_info=True)
         return None
     finally:
-        if reading_mode == "forward" and log_source and not log_source.closed:
+        # Only close if it's a file object (not a generator) and it's open
+        if log_source and hasattr(log_source, 'close') and callable(log_source.close) and not getattr(log_source, 'closed', True):
             log_source.close()
 
 
