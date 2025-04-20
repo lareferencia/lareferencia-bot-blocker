@@ -476,7 +476,7 @@ class ThreatAnalyzer:
         logger.debug(f"Formatted {len(self.unified_threats)} threats (pre-strategy).")
 
 
-    def identify_threats(self, analysis_duration_seconds=None):
+    def identify_threats(self, analysis_duration_seconds=None, total_overall_requests=None):
         """
         Orchestrates the calculation of IP metrics, aggregation by subnet,
         and formatting the final threat list.
@@ -488,6 +488,8 @@ class ThreatAnalyzer:
             return []
         if not self._aggregate_subnet_metrics(analysis_duration_seconds=analysis_duration_seconds): # Pass duration
             return []
+
+        self.total_overall_requests = total_overall_requests # Store it
 
         self._format_threat_output()
 

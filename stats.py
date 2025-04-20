@@ -117,7 +117,7 @@ def main():
     parser.add_argument(
         '--block-relative-threshold-percent', type=float, default=1, # Default might need adjustment based on typical max requests
         help='Base threshold for initial consideration (most strategies). '
-             'For "combined" strategy, used as the MANDATORY threshold percentage against MAX total requests (Condition 2).' # Correcto
+             'For "combined" strategy, used as the MANDATORY threshold percentage against the SUM of ALL requests in the window (Condition 2).' # UPDATED help
     )
     parser.add_argument(
         '--block-ip-count-threshold', type=int, default=10,
@@ -266,7 +266,7 @@ def main():
     if total_overall_requests > 0:
         # Calculate based on the relative threshold - This is now primarily for strategies OTHER than 'combined'
         effective_min_requests = max(1, int(total_overall_requests * (args.block_relative_threshold_percent / 100.0)))
-        # UPDATED log message (restored note about combined ignoring it)
+        # UPDATED log message (restored note about combined ignoring it for Cond 2)
         logger.info(f"Calculated effective_min_requests = {effective_min_requests} (based on {args.block_relative_threshold_percent}% of {total_overall_requests}). Note: 'combined' strategy ignores this for its Condition 2.")
     else:
         # If no requests, the threshold remains 1, but analysis likely stops anyway
@@ -275,7 +275,7 @@ def main():
 
     # Identify threats (/24 or /64)
     # Pass analysis duration for window-averaged metrics
-    threats = analyzer.identify_threats(analysis_duration_seconds=analysis_duration_seconds)
+    threats = analyzer.identify_threats(analysis_duration_seconds=analysis_duration_seconds, total_overall_requests=total_overall_requests)
     if not threats:
          logger.info("No threats identified based on initial aggregation.")
          sys.exit(0)
@@ -625,7 +625,7 @@ def main():
                     f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
                     f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, "
                     f"Req/Min(Span): {threat.get('subnet_req_per_min', 0):.1f}, " 
-                    f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0)::.1f}, " 
+                    f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, " 
                     f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s" # Corrected format specifier
                 )
 
