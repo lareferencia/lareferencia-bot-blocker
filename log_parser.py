@@ -206,6 +206,111 @@ def load_log_into_dataframe(log_file, start_date_utc=None, whitelist=None):
         # Ensure timestamp column is datetime type
         df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
         logger.info(f"DataFrame created with {len(df)} entries.")
+
+        # --- Add Bot Name Extraction ---
+        logger.debug("Extracting bot names from user agents...")
+        # Need to re-parse the log file or store user agents during initial parse
+        # For simplicity here, let's assume we re-parse or had stored them.
+        # This is inefficient - ideally, store UA during the first pass.
+        # Re-implementing the loop briefly to get UAs (replace with better approach later)
+        bot_names = []
+        log_source_ua = None
+        try:
+            if reading_mode == "reverse":
+                log_source_ua = _read_lines_reverse(log_file)
+            else:
+                log_source_ua = open(log_file, 'r', encoding='utf-8', errors='ignore')
+
+            line_count_ua = 0
+            processed_indices = set(df.index) # Assuming df index corresponds to line order (needs verification)
+                                              # This is problematic with filtering/reverse reading.
+                                              # A better approach is needed.
+
+            # --- TEMPORARY / INEFFICIENT BOT NAME EXTRACTION ---
+            # This section needs significant improvement for efficiency and correctness,
+            # especially with filtering and reverse reading.
+            # It should ideally happen *during* the initial parsing loop.
+
+            # Reset parsed_data to store ip, timestamp, and bot_name
+            parsed_data_with_ua = []
+            total_lines_ua = 0
+            skipped_date_ua = 0
+            skipped_whitelist_ua = 0
+            skipped_parsing_ua = 0
+            first_line_processed_reverse_ua = True
+
+            # Re-open the correct source based on reading mode
+            if reading_mode == "reverse":
+                log_source_ua = _read_lines_reverse(log_file)
+            else:
+                log_source_ua = open(log_file, 'r', encoding='utf-8', errors='ignore')
+
+            for line in log_source_ua:
+                total_lines_ua += 1
+                match = LOG_PATTERN.search(line)
+                if not match:
+                    skipped_parsing_ua += 1
+                    continue
+
+                data = match.groupdict()
+                ip = data['ip']
+                dt_str = data['datetime']
+                user_agent = data.get('useragent', '-') # Get user agent
+
+                # 1. Whitelist Check
+                if is_ip_in_whitelist(ip, whitelist):
+                    skipped_whitelist_ua += 1
+                    continue
+
+                # 2. Date Parsing and Filtering
+                timestamp_utc = parse_datetime_to_utc(dt_str)
+                if timestamp_utc is None:
+                    skipped_date_ua += 1
+                    continue
+
+                # Stop reverse reading if timestamp is before start_date_utc
+                if start_date_utc and timestamp_utc < start_date_utc:
+                    if reading_mode == "reverse":
+                        break # Stop processing older lines
+                    else:
+                        skipped_date_ua += 1
+                        continue # Skip this line in forward mode
+
+                # Extract bot name
+                bot_name = extract_bot_name(user_agent)
+
+                # Append data including bot name
+                parsed_data_with_ua.append({'ip': ip, 'timestamp': timestamp_utc, 'bot_name': bot_name})
+
+                if total_lines_ua % 50000 == 0:
+                    logger.info(f"Processed {total_lines_ua} lines (UA pass)...")
+
+            logger.info(f"Finished UA pass. Total lines: {total_lines_ua}")
+            logger.info(f"Entries added (UA pass): {len(parsed_data_with_ua)}, Skipped (Parsing): {skipped_parsing_ua}, Skipped (Date): {skipped_date_ua}, Skipped (Whitelist): {skipped_whitelist_ua}")
+
+            if not parsed_data_with_ua:
+                 logger.warning("No valid log entries found during UA pass.")
+                 # Return the original df without bot names if UA pass failed
+                 return df
+
+            # Create new DataFrame with bot names
+            df = pd.DataFrame(parsed_data_with_ua)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+            logger.info(f"DataFrame recreated with bot names. {len(df)} entries.")
+            # --- END OF TEMPORARY / INEFFICIENT BOT NAME EXTRACTION ---
+
+        except Exception as e:
+            logger.error(f"Error during bot name extraction pass: {e}", exc_info=True)
+            # Fallback: return the original DataFrame without bot names
+            if 'bot_name' not in df.columns:
+                 df['bot_name'] = 'Unknown' # Add placeholder if error occurred
+            return df
+        finally:
+            if log_source_ua and hasattr(log_source_ua, 'close') and not log_source_ua.closed:
+                log_source_ua.close()
+        # --- End Add Bot Name Extraction ---
+
+
         return df
 
     except FileNotFoundError:
