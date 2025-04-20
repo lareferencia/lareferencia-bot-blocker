@@ -273,14 +273,33 @@ def main():
         logger.warning(f"Total requests in analysis window is 0. Effective minimum request threshold set to {effective_min_requests}.")
 
 
+    # --- Load and Parse Log Data ---
+    parser = LogParser(
+        log_file_path=args.log_file,
+        start_time=start_time,
+        end_time=end_time,
+        whitelist_path=args.whitelist_file
+    )
+    # Ensure the returned DataFrame is assigned to log_df
+    log_df = parser.load_log_data() # Make sure this line exists and assigns to log_df
+
+    if log_df is None or log_df.empty:
+        logger.error("Failed to load or parse log data, or DataFrame is empty. Exiting.")
+        sys.exit(1) # Exit if log loading failed
+
+    total_overall_requests = len(log_df)
+    logger.info(f"Total requests in analysis window: {total_overall_requests}")
+    # ... (Calculate analysis_duration_seconds) ...
+    # ... (Calculate effective_min_requests) ...
+
     # Identify threats (/24 or /64)
+    # Ensure log_df exists before this line
     threat_analyzer = ThreatAnalyzer(config=args, log_df=log_df)
-    # Ensure all required arguments are passed to identify_threats
     threat_analyzer.identify_threats(
-        strategy_name=args.block_strategy,             # Pass strategy name
-        effective_min_requests=effective_min_requests, # Pass calculated min requests
-        analysis_duration_seconds=analysis_duration_seconds, # Pass duration
-        total_overall_requests=total_overall_requests      # Pass overall total
+        strategy_name=args.block_strategy,
+        effective_min_requests=effective_min_requests,
+        analysis_duration_seconds=analysis_duration_seconds,
+        total_overall_requests=total_overall_requests
     )
     threats_df = threat_analyzer.get_threats_df()
 
