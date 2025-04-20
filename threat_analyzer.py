@@ -121,126 +121,106 @@ class ThreatAnalyzer:
 
         logger.info("Calculating metrics per IP...")
 
+        # --- Ensure index is datetime BEFORE any calculations ---
+        if not pd.api.types.is_datetime64_any_dtype(self.log_df.index):
+             logger.error("Log DataFrame index is not datetime. Attempting conversion.")
+             try:
+                 # Assuming the index contains timestamp strings or objects convertible to datetime
+                 self.log_df.index = pd.to_datetime(self.log_df.index, utc=True)
+                 # Verify conversion
+                 if not pd.api.types.is_datetime64_any_dtype(self.log_df.index):
+                      raise ValueError("Index conversion to datetime failed.")
+                 logger.warning("Successfully converted log_df index to datetime.")
+             except Exception as e:
+                 logger.error(f"Failed to convert log_df index to datetime: {e}. Cannot calculate metrics accurately.", exc_info=True)
+                 return False # Cannot proceed without datetime index
+        # --- End index check ---
+
+
         # 1. Basic Aggregations (Total Requests, First/Last Seen)
         logger.debug("Calculating total requests, first/last seen per IP...")
-
-        # Ensure the index is datetime before grouping
-        # The index should have been set in analyze_log_file
-        if not pd.api.types.is_datetime64_any_dtype(self.log_df.index):
-             logger.error("Log DataFrame index is not datetime. Cannot calculate first/last seen accurately.")
-             # Attempt to convert index if possible, otherwise fail
-             try:
-                 self.log_df.index = pd.to_datetime(self.log_df.index, utc=True)
-                 logger.warning("Converted log_df index to datetime.")
-             except Exception as e:
-                 logger.error(f"Failed to convert log_df index to datetime: {e}")
-                 return False # Cannot proceed without datetime index
-
         # Get the name of the index (should be 'timestamp')
         index_name = self.log_df.index.name if self.log_df.index.name else 'timestamp'
 
-        # Aggregate directly using the datetime index
         try:
             basic_agg = self.log_df.groupby('ip').agg(
-                total_requests=('ip', 'count'), # Count occurrences of the IP
-                first_seen=(index_name, 'min'), # Get min timestamp from index for this IP
-                last_seen=(index_name, 'max')   # Get max timestamp from index for this IP
+                total_requests=('ip', 'count'),
+                first_seen=(index_name, 'min'),
+                last_seen=(index_name, 'max')
             )
         except Exception as e:
              logger.error(f"Error during basic aggregation (min/max timestamp): {e}", exc_info=True)
              return False
 
-        # Now first_seen and last_seen should be datetime objects
-
-        # Calculate time span in seconds - this should now work
+        # Calculate time span in seconds
         try:
-            # Ensure columns exist and are datetime before subtraction
+            # Validation of types should be less necessary now, but kept for safety
             if 'first_seen' not in basic_agg.columns or 'last_seen' not in basic_agg.columns:
                  logger.error("first_seen or last_seen column missing after aggregation.")
                  return False
             if not pd.api.types.is_datetime64_any_dtype(basic_agg['first_seen']) or \
                not pd.api.types.is_datetime64_any_dtype(basic_agg['last_seen']):
                  logger.error("first_seen or last_seen columns are not datetime type after aggregation.")
-                 # Attempt conversion if possible, otherwise fail
-                 try:
-                      basic_agg['first_seen'] = pd.to_datetime(basic_agg['first_seen'], utc=True)
-                      basic_agg['last_seen'] = pd.to_datetime(basic_agg['last_seen'], utc=True)
-                      logger.warning("Converted first_seen/last_seen columns to datetime.")
-                 except Exception as conv_e:
-                      logger.error(f"Failed to convert first_seen/last_seen to datetime: {conv_e}")
-                      return False
+                 return False # Fail if types are wrong after agg
 
-            # Perform subtraction and access .dt
             time_diff = basic_agg['last_seen'] - basic_agg['first_seen']
             basic_agg['time_span_seconds'] = time_diff.dt.total_seconds()
 
         except AttributeError as ae:
              logger.error(f"AttributeError calculating time_span_seconds. Likely first/last seen are not datetime: {ae}", exc_info=True)
-             logger.error(f"Data types: first_seen={basic_agg['first_seen'].dtype}, last_seen={basic_agg['last_seen'].dtype}")
              return False
         except Exception as e:
              logger.error(f"Unexpected error calculating time_span_seconds: {e}", exc_info=True)
              return False
 
-
         logger.debug(f"Calculated basic aggregations for {len(basic_agg)} IPs.")
+
 
         # 2. RPM Metrics (Average and Max during active minutes)
         logger.debug("Calculating RPM metrics (avg/max during activity)...")
+        rpm_metrics = pd.DataFrame(columns=['avg_rpm_activity', 'max_rpm_activity']) # Initialize empty
         try:
-            # Resample to get counts per IP per minute
-            # Ensure the index is datetime before resampling
-            if not pd.api.types.is_datetime64_any_dtype(self.log_df.index):
-                 logger.error("Cannot resample for RPM: log_df index is not datetime.")
-                 return False
-
-            rpm_counts = self.log_df.groupby('ip').resample('T').size() # 'T' or 'min' for minute frequency
-            # Filter out minutes with zero requests (only consider active minutes)
+            # Resample (index is guaranteed to be datetime here)
+            rpm_counts = self.log_df.groupby('ip').resample('T').size()
             rpm_counts = rpm_counts[rpm_counts > 0]
 
-            # Calculate avg and max RPM based on active minutes
-            # Group the Series by the 'ip' level of the MultiIndex
-            grouped_rpm = rpm_counts.groupby(level='ip')
+            if not rpm_counts.empty:
+                grouped_rpm = rpm_counts.groupby(level='ip')
+                avg_rpm = grouped_rpm.mean()
+                max_rpm = grouped_rpm.max()
 
-            # Calculate mean and max separately
-            avg_rpm = grouped_rpm.mean()
-            max_rpm = grouped_rpm.max()
-
-            # Combine the results into a DataFrame
-            rpm_metrics = pd.DataFrame({
-                'avg_rpm_activity': avg_rpm,
-                'max_rpm_activity': max_rpm
-            })
-
-            # Fill NaNs with 0 for IPs with only one request (or activity within a single minute)
-            rpm_metrics = rpm_metrics.fillna(0)
-            logger.debug(f"Calculated RPM metrics for {len(rpm_metrics)} IPs.")
+                # Combine the results into a DataFrame
+                rpm_metrics = pd.DataFrame({
+                    'avg_rpm_activity': avg_rpm,
+                    'max_rpm_activity': max_rpm
+                })
+                rpm_metrics = rpm_metrics.fillna(0) # Fill NaNs (e.g., single-minute activity)
+                logger.debug(f"Calculated RPM metrics for {len(rpm_metrics)} IPs.")
+            else:
+                 logger.debug("No RPM counts found after resampling and filtering.")
+                 # rpm_metrics remains empty DataFrame
 
         except Exception as e:
             logger.error(f"Error calculating RPM metrics: {e}", exc_info=True)
-            # Create an empty DataFrame or return False if RPM is critical
-            rpm_metrics = pd.DataFrame(columns=['avg_rpm_activity', 'max_rpm_activity']) # Allow continuation
-            # return False # Uncomment if RPM metrics are essential
+            # Allow continuation with empty rpm_metrics
+
 
         # 3. Combine Metrics
         logger.debug("Combining basic and RPM metrics...")
-        # Ensure rpm_metrics exists, even if empty from error handling
-        if 'rpm_metrics' not in locals():
-             rpm_metrics = pd.DataFrame(columns=['avg_rpm_activity', 'max_rpm_activity'])
-
         self.ip_metrics_df = basic_agg.join(rpm_metrics, how='left')
-        # Fill NaNs in RPM metrics again (for IPs present in basic_agg but not rpm_metrics)
+        # Fill NaNs in RPM metrics for IPs present in basic_agg but not rpm_metrics (or if rpm_metrics is empty)
         self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity']] = self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity']].fillna(0)
         logger.debug("Metrics combined.")
 
         # 4. Add Subnet Information
         logger.debug("Adding subnet information...")
-        self.ip_metrics_df['subnet'] = self.ip_metrics_df.index.map(get_subnet)
-        # Drop rows where subnet could not be determined (invalid IPs somehow?)
-        self.ip_metrics_df = self.ip_metrics_df.dropna(subset=['subnet'])
-        logger.debug("Subnet information added.")
-
-        # --- REMOVED Bot Name Information section ---
+        try:
+            self.ip_metrics_df['subnet'] = self.ip_metrics_df.index.map(get_subnet)
+            self.ip_metrics_df = self.ip_metrics_df.dropna(subset=['subnet'])
+            logger.debug("Subnet information added.")
+        except Exception as e:
+             logger.error(f"Error adding subnet information to ip_metrics_df: {e}", exc_info=True)
+             return False # Subnet info is crucial for aggregation
 
         logger.info(f"Finished calculating metrics for {len(self.ip_metrics_df)} IPs.")
         return True
