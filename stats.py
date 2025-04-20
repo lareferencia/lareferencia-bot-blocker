@@ -115,25 +115,27 @@ def main():
         help='Strategy used to score threats and decide on blocking.'
     )
     parser.add_argument(
-        '--block-relative-threshold-percent', type=float, default=1, # ADDED default
-        help='Base threshold: Minimum percentage of total requests in the analysis window for a subnet to be considered a potential threat (e.g., 0.1 for 0.1%%). Acts as an initial filter before strategy-specific thresholds are applied.' # UPDATED help
+        '--block-relative-threshold-percent', type=float, default=1, # Default might need adjustment based on typical max requests
+        help='Base threshold: Minimum percentage of total requests in the window for initial consideration. '
+             'For "combined" strategy, also used as the threshold percentage against MAX total requests for blocking condition.' # UPDATED help
     )
     parser.add_argument(
         '--block-ip-count-threshold', type=int, default=10,
-        help='Strategy threshold: Minimum number of unique IPs (used by volume_coordination, combined).'
+        help='Strategy threshold: Minimum unique IPs (used by volume_coordination, combined score).' # Clarified usage
     )
     parser.add_argument(
         '--block-max-rpm-threshold', type=float, default=10,
-        help='Strategy threshold: Minimum peak RPM from any IP (used by volume_peak_rpm, combined).'
+        help='Strategy threshold: Minimum peak RPM from any IP (used by volume_peak_rpm, combined score).' # Clarified usage
     )
     parser.add_argument(
-        '--block-total-max-rpm-threshold', type=float, default=20,
-        help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (max requests per minute for the entire subnet) (used by peak_total_rpm, combined).'
+        '--block-total-max-rpm-threshold', type=float, default=20, # Default might need adjustment
+        help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (used by peak_total_rpm, combined score). '
+             'For "combined" strategy, also used as the threshold for average Req/Min(Win) for blocking condition.' # UPDATED help
     )
     # --- Add argument for combined strategy ---
     parser.add_argument(
         '--block-trigger-count', type=int, default=2,
-        help='Strategy threshold: Minimum number of triggers (IP count, Max IP RPM, Peak Subnet RPM, Timespan) that must be met for the combined strategy to block.'
+        help='Strategy threshold (Combined Score): Minimum number of original triggers (IP count, Max IP RPM, Peak Subnet RPM) met for scoring.' # Clarified usage for scoring only
     )
     # --- End of removed arguments ---
     parser.add_argument(
@@ -301,16 +303,15 @@ def main():
     blockable_threats = []
     for threat in threats:
         # Pass analysis_duration_seconds and effective_min_requests to the strategy
-        # Pass the calculated maximums for normalization
+        # Pass the calculated maximums for normalization and thresholding
         score, should_block, reason = strategy_instance.calculate_threat_score_and_block(
             threat,
-            config=args,
-            effective_min_requests=effective_min_requests, # Pass the calculated threshold
+            config=args, # Pass all args
+            effective_min_requests=effective_min_requests,
             analysis_duration_seconds=analysis_duration_seconds,
-            max_total_requests=max_total_requests, # Pass max requests
-            max_subnet_time_span=max_subnet_time_span # Pass max timespan
-            # Pass the new max as well, although currently unused by strategies for normalization
-            # max_subnet_req_per_min_window=max_subnet_req_per_min_window
+            max_total_requests=max_total_requests,
+            max_subnet_time_span=max_subnet_time_span, # Still needed if used elsewhere or for context
+            max_subnet_req_per_min_window=max_subnet_req_per_min_window # Pass the max for comparison
         )
         threat['strategy_score'] = score
         threat['should_block'] = should_block
@@ -623,7 +624,7 @@ def main():
                     f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, " # Corrected ::.0f to :.0f
                     f"Req/Min(Span): {threat.get('subnet_req_per_min', 0):.1f}, " 
                     f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, " 
-                    f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s" # Corrected ::.0f to :.0f
+                    f"TimeSpan: {threat.get('subnet_time_span', 0)::.0f}s" # Corrected ::.0f to :.0f
                 )
 
                 print(f"\nSubnet: {subnet_id_str}{achieved_max_str}")
