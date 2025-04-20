@@ -15,7 +15,8 @@ from collections import defaultdict # For grouping /16s
 import time # Import time module
 
 # Import own modules
-from parser import LogParser, get_subnet, is_ip_in_whitelist # Revert to parser
+# Remove LogParser from import, keep functions
+from parser import get_subnet, is_ip_in_whitelist, load_log_into_dataframe
 # Import UFWManager and COMMENT_PREFIX directly if needed
 import ufw_handler
 from threat_analyzer import ThreatAnalyzer
@@ -245,20 +246,31 @@ def main():
 
     logger.info(f"Starting analysis of {args.file}...")
     total_overall_requests = 0 # Initialize
+    log_df = None # Initialize log_df
+
     try:
-        processed_count = analyzer.analyze_log_file(args.file, start_date_utc)
-        if processed_count <= 0: # Check for < 0 (error) or == 0 (no data)
-             logger.warning("No log entries processed or error during loading. Exiting.")
-             sys.exit(0 if processed_count == 0 else 1)
-        # Get total requests for relative threshold calculation
-        if analyzer.log_df is not None and not analyzer.log_df.empty:
-             total_overall_requests = len(analyzer.log_df)
-             logger.info(f"Total requests in analysis window: {total_overall_requests}")
-        else:
-             logger.warning("Log DataFrame is empty or None after analysis, cannot calculate relative threshold.")
+        # --- Load and Parse Log Data using the function ---
+        logger.info(f"Loading and parsing log file: {args.file}")
+        # Call the function directly instead of using a class
+        log_df = load_log_into_dataframe(
+            log_file=args.file,
+            start_date_utc=start_date_utc,
+            whitelist=analyzer.whitelist # Pass the loaded whitelist from analyzer
+        )
+
+        if log_df is None or log_df.empty:
+             logger.error("Failed to load or parse log data, or DataFrame is empty. Exiting.")
+             sys.exit(1) # Exit if log loading failed
+
+        # Assign the loaded DataFrame to the analyzer instance
+        analyzer.log_df = log_df
+        logger.info(f"Successfully loaded {len(log_df)} log entries into DataFrame for analyzer.")
+
+        total_overall_requests = len(log_df)
+        logger.info(f"Total requests in analysis window: {total_overall_requests}")
 
     except Exception as e:
-        logger.error(f"Error analyzing log file: {e}", exc_info=True)
+        logger.error(f"Error loading/parsing log file: {e}", exc_info=True)
         sys.exit(1)
 
     # --- Determine Effective Request Threshold ---
@@ -273,39 +285,28 @@ def main():
         logger.warning(f"Total requests in analysis window is 0. Effective minimum request threshold set to {effective_min_requests}.")
 
 
-    # --- Load and Parse Log Data ---
-    parser = LogParser(
-        log_file_path=args.log_file,
-        start_time=start_time,
-        end_time=end_time,
-        whitelist_path=args.whitelist_file
-    )
-    # Ensure the returned DataFrame is assigned to log_df
-    log_df = parser.load_log_data() # Make sure this line exists and assigns to log_df
+    # --- Identify Threats ---
+    # The analyzer now has the log_df assigned
+    # Remove the instantiation of ThreatAnalyzer here, it was done earlier
+    # threat_analyzer = ThreatAnalyzer(config=args, log_df=log_df) # REMOVE THIS LINE
 
-    if log_df is None or log_df.empty:
-        logger.error("Failed to load or parse log data, or DataFrame is empty. Exiting.")
-        sys.exit(1) # Exit if log loading failed
-
-    total_overall_requests = len(log_df)
-    logger.info(f"Total requests in analysis window: {total_overall_requests}")
-    # ... (Calculate analysis_duration_seconds) ...
-    # ... (Calculate effective_min_requests) ...
-
-    # Identify threats (/24 or /64)
-    # Ensure log_df exists before this line
-    threat_analyzer = ThreatAnalyzer(config=args, log_df=log_df)
-    threat_analyzer.identify_threats(
+    # Call identify_threats on the existing analyzer instance
+    threats = analyzer.identify_threats( # Changed from threat_analyzer to analyzer
         strategy_name=args.block_strategy,
         effective_min_requests=effective_min_requests,
         analysis_duration_seconds=analysis_duration_seconds,
         total_overall_requests=total_overall_requests
     )
-    threats_df = threat_analyzer.get_threats_df()
+    # threats_df = analyzer.get_threats_df() # Assuming get_threats_df exists or is not needed
 
-    if threats_df is None or threats_df.empty:
-        logger.info("No threats identified or DataFrame is empty after analysis.")
-        sys.exit(0)
+    # Check if threats list is valid
+    if threats is None: # identify_threats returns a list or None on error
+        logger.error("Threat identification failed.")
+        sys.exit(1)
+    if not threats:
+        logger.info("No threats identified after analysis.")
+        # Decide if exiting here is correct, maybe just report and continue?
+        # sys.exit(0) # Exit cleanly if no threats found
 
     # --- Calculate Maximums for Normalization ---
     max_total_requests = 0
