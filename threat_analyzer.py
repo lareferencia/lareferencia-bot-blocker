@@ -476,7 +476,11 @@ class ThreatAnalyzer:
         logger.debug(f"Formatted {len(self.unified_threats)} threats (pre-strategy).")
 
 
-    def identify_threats(self, analysis_duration_seconds=None, total_overall_requests=None):
+    def identify_threats(self,
+                         strategy_name,
+                         effective_min_requests,
+                         analysis_duration_seconds,
+                         total_overall_requests): # Parameter should exist
         """
         Orchestrates the calculation of IP metrics, aggregation by subnet,
         and formatting the final threat list.
@@ -490,6 +494,34 @@ class ThreatAnalyzer:
             return []
 
         self.total_overall_requests = total_overall_requests # Store it
+
+        # ... (Calculate max values as before) ...
+        max_total_requests = self.subnet_metrics_df['total_requests'].max() if not self.subnet_metrics_df.empty else 0
+        max_subnet_time_span = self.subnet_metrics_df['subnet_time_span'].max() if not self.subnet_metrics_df.empty else 0
+        max_subnet_req_per_min_window = self.subnet_metrics_df['subnet_req_per_min_window'].max() if not self.subnet_metrics_df.empty else 0
+
+        # ... (Load strategy) ...
+
+        # Apply strategy to each potential threat (subnet)
+        results = []
+        for index, threat_data_series in self.subnet_metrics_df.iterrows():
+            # ... (Convert Series to dict) ...
+
+            # Calculate score and block decision using the strategy
+            # Ensure 'total_overall_requests' is passed here
+            score, should_block, reason = strategy_instance.calculate_threat_score_and_block(
+                threat_data=threat_data,
+                config=self.config,
+                effective_min_requests=effective_min_requests,
+                analysis_duration_seconds=analysis_duration_seconds,
+                total_overall_requests=self.total_overall_requests, # Pass overall total
+                max_total_requests=max_total_requests,
+                max_subnet_time_span=max_subnet_time_span,
+                max_subnet_req_per_min_window=max_subnet_req_per_min_window
+            )
+
+            # ... (Store results) ...
+        # ... (Rest of the method) ...
 
         self._format_threat_output()
 
