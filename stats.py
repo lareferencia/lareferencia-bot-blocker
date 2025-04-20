@@ -110,8 +110,8 @@ def main():
         help='Enable blocking of detected threats using UFW.'
     )
     parser.add_argument(
-        '--block-strategy', default='volume_coordination', # UPDATED default
-        choices=['volume_coordination', 'volume_peak_rpm', 'peak_total_rpm', 'coordinated_sustained'], # REMOVED volume_danger, combined
+        '--block-strategy', default='combined', # UPDATED default
+        choices=['volume_coordination', 'volume_peak_rpm', 'peak_total_rpm', 'coordinated_sustained', 'combined'], # ADDED combined
         help='Strategy used to score threats and decide on blocking.'
     )
     parser.add_argument(
@@ -124,21 +124,17 @@ def main():
     )
     parser.add_argument(
         '--block-max-rpm-threshold', type=float, default=10,
-        help='Strategy threshold: Minimum peak RPM from any IP (used by volume_peak_rpm).'
+        help='Strategy threshold: Minimum peak RPM from any IP (used by volume_peak_rpm, combined).'
     )
     parser.add_argument(
         '--block-total-max-rpm-threshold', type=float, default=20,
-        help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (max requests per minute for the entire subnet) (used by peak_total_rpm).'
+        help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (max requests per minute for the entire subnet) (used by peak_total_rpm, combined).'
     )
-    # --- Remove arguments for coordinated_sustained strategy ---
-    # parser.add_argument(
-    #     '--block-subnet-avg-rpm-threshold', type=float, default=60.0,
-    #     help='Strategy threshold: Minimum average TOTAL SUBNET RPM (used by coordinated_sustained).'
-    # )
-    # parser.add_argument(
-    #     '--block-min-timespan-seconds', type=int, default=1800, # Default 30 minutes
-    #     help='Strategy threshold: Minimum duration (seconds) of subnet activity (first to last request) (used by coordinated_sustained).'
-    # )
+    # --- Add argument for combined strategy ---
+    parser.add_argument(
+        '--block-trigger-count', type=int, default=2,
+        help='Strategy threshold: Minimum number of triggers (IP count, Max IP RPM, Peak Subnet RPM, Timespan) that must be met for the combined strategy to block.'
+    )
     # --- End of removed arguments ---
     parser.add_argument(
         '--block-duration', type=int, default=60,
