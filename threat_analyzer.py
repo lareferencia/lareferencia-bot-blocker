@@ -94,7 +94,10 @@ class ThreatAnalyzer:
         logger.info(f"Successfully loaded {len(self.log_df)} log entries into DataFrame.")
         # Ensure timestamp is the index for resampling
         if 'timestamp' in self.log_df.columns:
-             self.log_df = self.log_df.set_index('timestamp')
+             # Convert index to datetime if it's not already (might happen if loaded differently)
+             if not pd.api.types.is_datetime64_any_dtype(self.log_df.index):
+                 self.log_df['timestamp'] = pd.to_datetime(self.log_df['timestamp'], utc=True)
+                 self.log_df = self.log_df.set_index('timestamp')
              logger.debug("Timestamp column set as DataFrame index.")
         else:
              logger.error("Timestamp column not found after loading log data.")
@@ -160,22 +163,7 @@ class ThreatAnalyzer:
         self.ip_metrics_df = self.ip_metrics_df.dropna(subset=['subnet'])
         logger.debug("Subnet information added.")
 
-        # 5. Add Bot Name Information (from original log_df)
-        # This needs to be done before aggregation if we want dominant bot per subnet
-        logger.debug("Adding bot name information to ip_metrics_df...")
-        # Check if 'bot_name' column exists in log_df (it should be added during loading)
-        if 'bot_name' in self.log_df.columns:
-            # Create a mapping from IP to its most frequent bot name
-            # Group log_df by IP, then find the mode (most frequent) bot_name for each IP
-            # Using .agg(lambda x: x.mode()[0] if not x.mode().empty else 'Unknown') handles cases with no mode or empty groups
-            ip_bot_map = self.log_df.groupby('ip')['bot_name'].agg(lambda x: x.mode()[0] if not x.mode().empty else 'Unknown')
-            self.ip_metrics_df['bot_name'] = self.ip_metrics_df.index.map(ip_bot_map).fillna('Unknown')
-            logger.debug("Bot name information added to ip_metrics_df.")
-        else:
-            logger.warning("'bot_name' column not found in log_df. Cannot determine dominant bot per IP/subnet.")
-            # Add a placeholder column to ip_metrics_df to avoid later errors
-            self.ip_metrics_df['bot_name'] = 'Unknown'
-
+        # --- REMOVED Bot Name Information section ---
 
         logger.info(f"Finished calculating metrics for {len(self.ip_metrics_df)} IPs.")
         return True
@@ -254,41 +242,19 @@ class ThreatAnalyzer:
             )
 
 
-            # --- Calculate Dominant Bot Name per Subnet ---
-            # Group ip_metrics_df by subnet and find the most frequent bot_name
-            # Only consider non-'Unknown' bot names if possible, otherwise take the most frequent overall
-            def get_dominant_bot(series):
-                # Filter out 'Unknown' unless it's the only option
-                known_bots = series[series != 'Unknown']
-                if not known_bots.empty:
-                    # Return the most frequent known bot
-                    return known_bots.mode()[0] if not known_bots.mode().empty else 'Unknown'
-                else:
-                    # If only 'Unknown' exists, return that (or the mode if multiple unknowns somehow)
-                    return series.mode()[0] if not series.mode().empty else 'Unknown'
-
-            if 'bot_name' in self.ip_metrics_df.columns:
-                 dominant_bots = grouped_ips['bot_name'].agg(get_dominant_bot).rename('dominant_bot_name')
-                 # Join dominant_bots into agg1
-                 agg1 = agg1.join(dominant_bots, how='left')
-                 agg1['dominant_bot_name'] = agg1['dominant_bot_name'].fillna('Unknown') # Fill potential NaNs from join
-            else:
-                 logger.warning("Cannot calculate dominant bot per subnet, 'bot_name' missing in ip_metrics_df.")
-                 agg1['dominant_bot_name'] = 'Unknown' # Add placeholder column
-            # --- End Calculate Dominant Bot Name ---
+            # --- REMOVED Calculate Dominant Bot Name ---
 
 
             # Ensure the index is usable, sometimes groupby might drop the subnet object type
             agg1.index = agg1.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (IPv4Network, IPv6Network)) else x) # Use strict=False for safety
-            logger.debug(f"Aggregation 1 (requests, count, timespan, req/min, bot):\n{agg1.head()}") # UPDATED log message
+            logger.debug(f"Aggregation 1 (requests, count, timespan, req/min):\n{agg1.head()}") # UPDATED log message
             if agg1.empty and len(subnet_index) > 0:
                  logger.warning("Aggregation 1 resulted in an empty DataFrame despite having subnets.")
                  # Recreate with 0s if empty but should have rows
-                 agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span', 'subnet_req_per_min', 'dominant_bot_name']) # ADDED columns
+                 agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span', 'subnet_req_per_min']) # REMOVED dominant_bot_name
                  # Ensure correct dtypes for timestamps if recreated
                  agg1['subnet_first_seen'] = pd.NaT
                  agg1['subnet_last_seen'] = pd.NaT
-                 agg1['dominant_bot_name'] = 'Unknown'
 
 
         except Exception as e:
@@ -352,13 +318,11 @@ class ThreatAnalyzer:
                       # Re-apply NaT for timestamps if reindexed
                       if 'subnet_first_seen' in agg1.columns: agg1['subnet_first_seen'] = pd.NaT
                       if 'subnet_last_seen' in agg1.columns: agg1['subnet_last_seen'] = pd.NaT
-                      # Add dominant_bot_name if missing after reindex
-                      if 'dominant_bot_name' not in agg1.columns: agg1['dominant_bot_name'] = 'Unknown'
+                      # --- REMOVED dominant_bot_name re-add ---
                  else: # If agg1 was truly empty, create it with zeros/NaT
-                      agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span', 'subnet_req_per_min', 'dominant_bot_name'])
+                      agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span', 'subnet_req_per_min']) # REMOVED dominant_bot_name
                       agg1['subnet_first_seen'] = pd.NaT
                       agg1['subnet_last_seen'] = pd.NaT
-                      agg1['dominant_bot_name'] = 'Unknown'
 
             self.subnet_metrics_df = agg1
             logger.debug(f"DF before join 1 (Index: {self.subnet_metrics_df.index.dtype}):\n{self.subnet_metrics_df.head()}")
@@ -406,7 +370,7 @@ class ThreatAnalyzer:
                 'subnet_total_avg_rpm': float,
                 'subnet_total_max_rpm': float,
                 'subnet_req_per_min': float, # ADDED new metric
-                'dominant_bot_name': str # ADDED bot name type
+                # --- REMOVED dominant_bot_name ---
             }
             for col, dtype in expected_cols.items():
                 if col in self.subnet_metrics_df.columns:
@@ -414,13 +378,11 @@ class ThreatAnalyzer:
                     self.subnet_metrics_df[col] = pd.to_numeric(self.subnet_metrics_df[col], errors='coerce').fillna(0)
                     self.subnet_metrics_df[col] = self.subnet_metrics_df[col].astype(dtype)
                 else:
-                    # Only log warning if the column wasn't 'dominant_bot_name' which might be legitimately missing if calculation failed
-                    if col != 'dominant_bot_name':
-                        logger.warning(f"Column '{col}' missing before type conversion. Adding as {dtype}(0).")
+                    # --- REMOVED special handling for dominant_bot_name ---
+                    logger.warning(f"Column '{col}' missing before type conversion. Adding as {dtype}(0).")
                     if dtype == int:
                         self.subnet_metrics_df[col] = 0
-                    elif dtype == str:
-                        self.subnet_metrics_df[col] = 'Unknown' # Default for string type
+                    # --- REMOVED str handling ---
                     else:
                         self.subnet_metrics_df[col] = 0.0
             # Optionally convert timestamp columns if needed, but they might be fine as is
@@ -494,7 +456,7 @@ class ThreatAnalyzer:
                 'subnet_total_max_rpm': round(metrics.get('subnet_total_max_rpm', 0), 2),
                 'subnet_time_span': round(metrics.get('subnet_time_span', 0), 2), # Use the correctly calculated span
                 'subnet_req_per_min': round(metrics.get('subnet_req_per_min', 0), 2),
-                'dominant_bot_name': metrics.get('dominant_bot_name', 'Unknown'), # ADDED bot name
+                # --- REMOVED dominant_bot_name ---
                 'details': details_list,
                 'strategy_score': 0.0,
                 'should_block': False,
@@ -567,7 +529,7 @@ class ThreatAnalyzer:
             cols_order = [
                 'id', 'strategy_score', 'should_block', 'block_reason',
                 'total_requests', 'ip_count',
-                'dominant_bot_name', # ADDED bot name
+                # --- REMOVED dominant_bot_name ---
                 'subnet_avg_ip_rpm', 'subnet_max_ip_rpm',
                 'subnet_total_avg_rpm', 'subnet_total_max_rpm',
                 'subnet_req_per_min', # ADDED new metric

@@ -12,7 +12,7 @@ This tool analyzes web server logs (e.g., Apache, Nginx) using Pandas to identif
 -   ✅ **Pandas Integration:** Leverages Pandas DataFrames for efficient metric calculation (RPM, request counts, time spans).
 -   ✅ **Threat Grouping:** Aggregates IP-level metrics by subnet (/24 for IPv4, /64 for IPv6) to identify coordinated activity.
 -   ✅ **Simplified Supernet Blocking (NEW):** Automatically blocks the encompassing /16 supernet (IPv4) if it contains multiple /24 subnets where at least one meets the blocking criteria, preventing redundant individual blocks.
--   ✅ **Configurable Strategies:** Uses selectable strategies to score threats (/24 or /64) and determine blocking actions based on different criteria (volume, danger score, IP count, peak RPM).
+-   ✅ **Configurable Strategies:** Uses selectable strategies to score threats (/24 or /64) and determine blocking actions based on different criteria (volume, IP count, peak RPM).
 -   ✅ **Automated Blocking:** Integrates with UFW to insert temporary `deny` rules with comments indicating expiration time (ISO 8601 UTC). Supports blocking individual IPs, /24 or /64 subnets, and /16 supernets based on the simplified logic.
 -   ✅ **Rule Cleanup:** Includes a mode to automatically remove expired UFW rules added by this script.
 -   ✅ **Whitelisting:** Supports excluding specific IPs or subnets from analysis and blocking.
@@ -26,15 +26,15 @@ While Fail2Ban is an excellent general-purpose intrusion prevention tool, this s
 
 -   **Focus on Request Patterns:** Analyzes request rates (RPM) and volumes over time, rather than just matching specific log lines (like failed logins).
 -   **Subnet Aggregation:** Automatically groups related IPs by network to detect broader, potentially distributed activity from a single source network.
--   **Strategy-Based Scoring:** Offers flexible, configurable strategies to define what constitutes a "threat" based on combinations of metrics (volume, danger, coordination, peak activity).
+-   **Strategy-Based Scoring:** Offers flexible, configurable strategies to define what constitutes a "threat" based on combinations of metrics (volume, coordination, peak activity).
 -   **Retrospective Analysis:** Easily analyze historical logs for specific time windows (e.g., "last day," "last hour").
 -   **Pandas Efficiency:** Uses Pandas for potentially faster and more memory-efficient calculation of metrics on large datasets compared to iterative line-by-line processing for complex stats.
 
-This tool can complement Fail2Ban by focusing specifically on abusive web crawling/scraping patterns.
+This tool can complement Fail2Ban by focusing specifically on abusive web crawling/scraping patterns based on request metrics.
 
 ## How Analysis Works
 
-1.  **Log Parsing:** Reads the specified log file (forwards or backwards). Each line matching the common log format is parsed to extract IP, timestamp, and other details.
+1.  **Log Parsing:** Reads the specified log file (forwards or backwards). Each line matching the common log format is parsed to extract IP and timestamp.
 2.  **Filtering:**
     *   Lines with malformed dates are skipped.
     *   IPs/subnets present in the whitelist file are ignored.
@@ -44,11 +44,11 @@ This tool can complement Fail2Ban by focusing specifically on abusive web crawli
     *   For each unique IP address, the script calculates various metrics like request counts, RPM, etc.
 4.  **Subnet Aggregation (Pandas):**
     *   IPs are grouped by their calculated subnet (/24 for IPv4, /64 for IPv6).
-    *   For each subnet, the script aggregates metrics from the IPs within it (total requests, IP count, danger score, average/max IP RPM, total subnet RPM, etc.).
+    *   For each subnet, the script aggregates metrics from the IPs within it (total requests, IP count, average/max IP RPM, total subnet RPM, etc.).
 5.  **Strategy Application (/24 or /64):**
     *   The script determines the **effective minimum request threshold** by calculating `--block-relative-threshold-percent` of the total requests found in the analysis window (minimum 1 request).
     *   The script loads the selected `--block-strategy`.
-    *   For each subnet, the strategy calculates a `strategy_score` and determines if it `should_block` based on the strategy's criteria, using the **effective minimum request threshold** and other strategy-specific thresholds (e.g., `--block-danger-threshold`). A list of 'blockable' threats is maintained.
+    *   For each subnet, the strategy calculates a `strategy_score` and determines if it `should_block` based on the strategy's criteria, using the **effective minimum request threshold** and other strategy-specific thresholds (e.g., `--block-ip-count-threshold`). A list of 'blockable' threats is maintained.
 6.  **Sorting & Filtering:** All threats (/24 or /64) are sorted in descending order based on the `strategy_score` for reporting purposes.
 7.  **Blocking (Optional):** If `--block` is enabled:
     *   **Supernet /16 Blocking Check:** The script groups all 'blockable' IPv4 /24 threats by their /16 supernet. If any /16 supernet contains **two or more** such /24 threats, the entire /16 supernet is blocked using the standard `--block-duration`. Subnets contained within a blocked /16 are marked to avoid redundant blocking.
@@ -90,22 +90,24 @@ sudo crontab -e
     --time-window hour \
     --block \
     --block-strategy combined \
-    --block-threshold 100 \
-    --block-danger-threshold 50 \
+    --block-relative-threshold-percent 0.5 \
     --block-ip-count-threshold 10 \
+    --block-max-rpm-threshold 15 \
+    --block-total-max-rpm-threshold 30 \
+    --block-trigger-count 2 \
     --block-duration 120 \
     --whitelist /etc/lareferencia-bot-blocker/whitelist.txt \
     --log-file /var/log/lareferencia-bot-blocker.log \
     >> /var/log/lareferencia-bot-blocker-cron.log 2>&1
 
-# --- Example 2: Analyze last day's logs once daily at 1 AM ---
+# --- Example 2: Analyze last day's logs once daily at 1 AM using volume_peak_rpm ---
 0 1 * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/stats.py \
     -f /var/log/nginx/access.log \
     --time-window day \
     --block \
-    --block-strategy volume_danger \
-    --block-threshold 200 \
-    --block-danger-threshold 100 \
+    --block-strategy volume_peak_rpm \
+    --block-relative-threshold-percent 0.2 \
+    --block-max-rpm-threshold 25 \
     --block-duration 1440 \
     --whitelist /etc/lareferencia-bot-blocker/whitelist.txt \
     --log-file /var/log/lareferencia-bot-blocker.log \
@@ -129,7 +131,7 @@ sudo crontab -e
 ### Basic Analysis (No Blocking)
 
 ```bash
-# Analyze entire log, show top 10 threats sorted by default strategy ('volume_danger')
+# Analyze entire log, show top 10 threats sorted by default strategy ('combined')
 python3 stats.py -f /var/log/apache2/access.log
 
 # Analyze last hour, show top 20 threats
@@ -144,24 +146,25 @@ python3 stats.py -f /var/log/apache2/access.log --block-strategy volume_coordina
 **Requires `sudo` or appropriate permissions.**
 
 ```bash
-# Analyze last day, block top 10 threats meeting 'volume_danger' criteria
+# Analyze last day, block top 10 threats meeting 'combined' criteria
 # Automatically blocks /16 if >=2 contained /24s are blockable
 sudo python3 stats.py -f /var/log/apache2/access.log --time-window day --block \
-    --block-strategy volume_danger \
-    --block-threshold 100 \
-    --block-danger-threshold 50 \
+    --block-strategy combined \
+    --block-relative-threshold-percent 0.5 \
+    --block-ip-count-threshold 10 \
+    --block-max-rpm-threshold 15 \
+    --block-total-max-rpm-threshold 30 \
+    --block-trigger-count 2 \
     --block-duration 120 # Block for 2 hours
 
 # Analyze last hour, block top 5 threats meeting 'volume_coordination' criteria (Dry Run)
-# Uses default relative threshold (0.1%) and default IP count threshold (10)
+# Uses default relative threshold (1%) and default IP count threshold (10)
 # Also shows potential /16 blocks in dry run output
 sudo python3 stats.py -f /var/log/nginx/access.log --time-window hour --block --top 5 --dry-run \
     --block-strategy volume_coordination \
     --block-ip-count-threshold 8 \
     --block-duration 60
 ```
-
-### ~~Analysis with Supernet Evaluation~~ (Removed - Now Automatic)
 
 ### Exporting Results
 
@@ -196,11 +199,12 @@ sudo python3 stats.py --clean-rules --dry-run
 | `--top, -n`                          | Number of top *individual* threats (/24 or /64 by strategy score) to display and consider for blocking.                                      | `10`                 |
 | `--whitelist, -w`                    | Path to a file containing IPs/subnets to exclude (one per line, `#` for comments).                                                           | `None`               |
 | `--block`                            | Enable blocking of threats using UFW. Requires appropriate permissions.                                                                      | `False`              |
-| `--block-strategy`                   | Strategy for scoring *individual* threats (`volume_coordination`, `volume_peak_rpm`, `peak_total_rpm`, `coordinated_sustained`).                | `volume_coordination` | # UPDATED default
-| `--block-relative-threshold-percent` | Base Filter: Minimum percentage of total requests in the window for a subnet to be considered a potential threat (e.g., 0.1 for 0.1%). Applied *before* strategy thresholds. | `0.1`                | # UPDATED description
-| `--block-ip-count-threshold`         | Strategy Threshold (Absolute): Minimum number of unique IPs (used by `volume_coordination`).                                                   | `10`                 | # UPDATED description
-| `--block-max-rpm-threshold`          | Strategy Threshold (Absolute): Minimum peak RPM from any *individual* IP (used by `volume_peak_rpm`).                                          | `10.0`               | # UPDATED description
-| `--block-total-max-rpm-threshold`    | Strategy Threshold (Absolute): Minimum peak **TOTAL SUBNET RPM** (max requests per minute for the entire subnet) (used by `peak_total_rpm`). | `20.0`               | # UPDATED description
+| `--block-strategy`                   | Strategy for scoring *individual* threats (`volume_coordination`, `volume_peak_rpm`, `peak_total_rpm`, `coordinated_sustained`, `combined`). | `combined`           |
+| `--block-relative-threshold-percent` | Base Filter: Minimum percentage of total requests in the window for a subnet to be considered a potential threat (e.g., 0.1 for 0.1%). Applied *before* strategy thresholds. | `1.0`                |
+| `--block-ip-count-threshold`         | Strategy Threshold (Absolute): Minimum number of unique IPs (used by `volume_coordination`, `combined`).                                       | `10`                 |
+| `--block-max-rpm-threshold`          | Strategy Threshold (Absolute): Minimum peak RPM from any *individual* IP (used by `volume_peak_rpm`, `combined`).                              | `10.0`               |
+| `--block-total-max-rpm-threshold`    | Strategy Threshold (Absolute): Minimum peak **TOTAL SUBNET RPM** (max requests per minute for the entire subnet) (used by `peak_total_rpm`, `combined`). | `20.0`               |
+| `--block-trigger-count`              | Strategy Threshold (Absolute): Minimum number of triggers (IP count, Max IP RPM, Peak Subnet RPM, Timespan) that must be met for the `combined` strategy to block. | `2`                  |
 | `--block-duration`                   | Duration of the UFW block in minutes (used for individual blocks and automatic /16 blocks).                                                | `60`                 |
 | `--dry-run`                          | Show UFW commands that would be executed, but do not execute them.                                                                           | `False`              |
 | `--output, -o`                       | File path to save the analysis results (currently exports individual threats).                                                               | `None`               |
@@ -229,7 +233,7 @@ Strategies define how threats are scored and whether they should be blocked. All
 
 ### Available Strategies
 
-1.  **`volume_coordination` (Default)**
+1.  **`volume_coordination`**
     *   **Goal:** Catch potentially distributed attacks or widespread scanning from multiple IPs within the same network range.
     *   **Score:** Primarily based on `ip_count`, secondarily on `total_requests`.
     *   **Blocks If:** `total_requests >= effective_min_requests` **AND** `ip_count >= --block-ip-count-threshold`.
@@ -247,13 +251,25 @@ Strategies define how threats are scored and whether they should be blocked. All
     *   **Blocks If:** `total_requests >= effective_min_requests` **AND** `subnet_total_max_rpm >= --block-total-max-rpm-threshold`.
     *   **Tuning:** Adjust `--block-relative-threshold-percent` (relative filter) and `--block-total-max-rpm-threshold` (absolute peak combined RPM for the subnet).
 
-4.  **`coordinated_sustained` (Modified Again)**
+4.  **`coordinated_sustained`**
     *   **Goal:** Catch subnets showing sustained activity over a significant portion of the analysis window, regardless of the number of IPs involved.
-    *   **Score:** Weighted sum prioritizing normalized `total_requests`, then normalized `subnet_time_span`. Used for sorting threats. # UPDATED score description
+    *   **Score:** Weighted sum prioritizing normalized `total_requests`, then normalized `subnet_time_span`. Used for sorting threats.
     *   **Blocks If:**
         *   `total_requests >= effective_min_requests` **AND**
         *   `subnet_time_span` covers at least 50% of the specified analysis window (check skipped if no window defined).
     *   **Tuning:** Primarily adjust the relative request threshold (`--block-relative-threshold-percent`). The time span threshold is fixed internally at 50% of the analysis window. This strategy does not use separate absolute thresholds for IP count or RPM for blocking.
+
+5.  **`combined` (Default)**
+    *   **Goal:** Integrate multiple abuse vectors (volume, coordination, IP peaks, subnet peaks, persistence) into a single decision.
+    *   **Score:** Weighted average of normalized metrics (requests, IP count, max IP RPM, max subnet RPM, timespan). Used for sorting.
+    *   **Blocks If:**
+        *   `total_requests >= effective_min_requests` **AND**
+        *   At least `--block-trigger-count` of the following are met:
+            *   `ip_count >= --block-ip-count-threshold`
+            *   `subnet_max_ip_rpm >= --block-max-rpm-threshold`
+            *   `subnet_total_max_rpm >= --block-total-max-rpm-threshold`
+            *   `subnet_time_span` covers at least 50% of the analysis window (if defined).
+    *   **Tuning:** Adjust `--block-relative-threshold-percent` (relative filter), the individual absolute thresholds (`--block-ip-count-threshold`, `--block-max-rpm-threshold`, `--block-total-max-rpm-threshold`), and the number of required triggers (`--block-trigger-count`).
 
 **Note:** The final list of threats is always sorted based on the `strategy_score` calculated by the selected strategy. Blocking actions only apply to the `--top` N threats *that also meet the strategy's specific blocking conditions* (relative volume filter + absolute strategy thresholds, if applicable).
 
