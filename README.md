@@ -262,17 +262,18 @@ Strategies define how threats are scored and whether they should be blocked. Mos
         *   `subnet_time_span` covers at least 50% of the specified analysis window (check skipped if no window defined).
     *   **Tuning:** Primarily adjust the relative request threshold (`--block-relative-threshold-percent`). The time span threshold is fixed internally at 50% of the analysis window. This strategy does not use separate absolute thresholds for IP count or RPM for blocking.
 
-5.  **`combined` (Default)
-    *   **Goal:** Block based on meeting ALL THREE mandatory conditions: sustained activity (TimeSpan), significant relative volume (TotalReq%), and high average request rate (Req/Min(Win)).
-    *   **Score:** Reflects the number of mandatory conditions met (0.0 to 3.0). Used for sorting.
-    *   **Blocks If:** **ALL** of the following conditions are met:
-        1.  `subnet_time_span` covers at least **75%** of the analysis window (fixed threshold, check skipped if no window defined).
+5.  **`combined` (Default)**
+    *   **Goal:** Block based on meeting a sufficient number of key conditions: sustained activity (TimeSpan), significant relative volume (TotalReq%), and high average request rate (Req/Min(Win)).
+    *   **Score:** Reflects the number of mandatory conditions met (0.0 to 3.0). Used for sorting. The conditions are:
+        1.  `subnet_time_span` covers at least **75%** of the analysis window (fixed threshold).
         2.  `total_requests > (--block-relative-threshold-percent / 100.0) * max_total_requests`.
         3.  `subnet_req_per_min_window > --block-total-max-rpm-threshold`.
+    *   **Blocks If:** The calculated `score` (number of conditions met) is **>= 2.0** (i.e., at least 2 out of the 3 conditions are met).
     *   **Tuning:**
         *   Adjust `--block-total-max-rpm-threshold` (affects Condition 3).
         *   Adjust `--block-relative-threshold-percent` (affects Condition 2).
         *   The TimeSpan threshold (Condition 1) is fixed at 75%.
+        *   The blocking score threshold is fixed internally at 2.0.
         *   `--block-ip-count-threshold`, `--block-max-rpm-threshold`, and `--block-trigger-count` are ignored by this strategy's blocking logic.
 
 **Note:** The final list of threats is always sorted based on the `strategy_score`. Blocking actions apply to the `--top` N threats *that also meet the specific blocking conditions* defined by the strategy.

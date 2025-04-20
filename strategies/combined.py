@@ -30,15 +30,17 @@ logger = logging.getLogger(__name__)
 
 # --- Hardcoded value for TimeSpan threshold ---
 DEFAULT_MIN_TIMESPAN_PERCENT = 75.0
+# --- New: Threshold for blocking based on score (conditions met) ---
+BLOCKING_SCORE_THRESHOLD = 2.0
 
 class Strategy:
     """
-    Combined strategy (Updated Logic 2):
-    - Score reflects how many blocking conditions are met (0-3).
-    - Block decision requires ALL THREE conditions to be met:
+    Combined strategy (Updated Logic 3):
+    - Score reflects how many blocking conditions are met (0-3):
         1. Fixed TimeSpan >= 75%
         2. TotalReq > block_relative_threshold_percent of MaxTotalReq
         3. Req/Min(Win) > block_total_max_rpm_threshold
+    - Block decision requires score >= BLOCKING_SCORE_THRESHOLD (e.g., >= 2.0).
     - The initial effective_min_requests filter is NOT applied by this strategy.
     """
 
@@ -58,11 +60,11 @@ class Strategy:
                                          max_subnet_time_span, # Keep receiving
                                          max_subnet_req_per_min_window):
         """
-        Calculates score and decides blocking based on meeting ALL THREE conditions:
+        Calculates score (0-3) based on meeting conditions:
         1. TimeSpan >= 75%
         2. TotalReq > Relative% of Max
         3. Req/Min(Win) > Absolute Threshold
-        Score reflects the number of conditions met (0-3).
+        Decides blocking if score >= BLOCKING_SCORE_THRESHOLD (e.g., 2.0).
         """
         score = 0.0 # Use float for score
         should_block = False
@@ -116,25 +118,26 @@ class Strategy:
 
 
         # --- Final Block Decision and Score Calculation ---
-        # Block only if ALL THREE conditions are met
-        if timespan_condition_met and total_req_ok and req_min_win_ok:
-            should_block = True
-            reason = "Block: " + " AND ".join(block_decision_reasons) # Join reasons for met conditions
-        else:
-            should_block = False
-            # Construct reason showing which conditions failed
-            failed_reasons = [r for r in block_decision_reasons if "<" in r or "<=" in r or "skipped" in r]
-            met_reasons = [r for r in block_decision_reasons if ">" in r or ">=" in r]
-            if failed_reasons:
-                 reason = "No Block: Failed (" + ", ".join(failed_reasons) + ")"
-                 if met_reasons:
-                      reason += " Met (" + ", ".join(met_reasons) + ")"
-            else: # Should not happen if should_block is False, but as fallback
-                 reason = "No Block: Conditions not fully met"
-
-
         # Score is the count of conditions met
         score = float(conditions_met_count)
 
-        # Return the score (0.0, 1.0, 2.0, or 3.0) and the block decision/reason
+        # Block if score reaches the threshold (e.g., 2.0 or more conditions met)
+        if score >= BLOCKING_SCORE_THRESHOLD:
+            should_block = True
+            # Construct reason showing which conditions were met
+            met_reasons = [r for r in block_decision_reasons if ">" in r or ">=" in r]
+            reason = f"Block: Score {score:.1f} >= {BLOCKING_SCORE_THRESHOLD:.1f}. Met ({', '.join(met_reasons)})"
+        else:
+            should_block = False
+            # Construct reason showing why the score threshold wasn't met
+            failed_reasons = [r for r in block_decision_reasons if "<" in r or "<=" in r or "skipped" in r]
+            met_reasons = [r for r in block_decision_reasons if ">" in r or ">=" in r]
+            reason = f"No Block: Score {score:.1f} < {BLOCKING_SCORE_THRESHOLD:.1f}."
+            if met_reasons:
+                 reason += f" Met ({', '.join(met_reasons)})."
+            if failed_reasons:
+                 reason += f" Failed ({', '.join(failed_reasons)})."
+
+
+        # Return the score (0.0-3.0) and the block decision/reason
         return score, should_block, reason
