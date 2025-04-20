@@ -14,7 +14,7 @@ import pandas as pd
 import numpy as np
 from ipaddress import ip_network, IPv4Network, IPv6Network
 
-# Import from log_parser (Updated)
+# Import from log_parser (Ensure this is correct)
 from log_parser import (
     load_log_into_dataframe, get_subnet, is_ip_in_whitelist
 )

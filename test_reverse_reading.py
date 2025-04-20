@@ -7,7 +7,7 @@ import sys
 import logging
 from datetime import datetime, timedelta
 
-from log_parser import process_log_in_chunks
+from log_parser import process_log_in_chunks # Ensure this uses log_parser
 
 # Configure basic logging
 logging.basicConfig(
