@@ -596,14 +596,15 @@ def main():
                 achieved_max_str = f" [Achieved Max: {', '.join(achieved_max_metrics)}]"
 
                 # Reuse the metrics summary string generation
+                # Ensure total_requests is int before formatting with :d
                 metrics_summary = (
-                    f"{threat.get('total_requests', 0):d} reqs, "
-                    f"{threat.get('ip_count', 0):d} IPs, " # REMOVED bot name
+                    f"{int(threat.get('total_requests', 0)):d} reqs, " 
+                    f"{threat.get('ip_count', 0):d} IPs, " 
                     f"AvgIPRPM: {threat.get('subnet_avg_ip_rpm', 0):.1f}, "
                     f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
                     f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
                     f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, "
-                    f"Req/Min: {threat.get('subnet_req_per_min', 0)::.1f}, "
+                    f"Req/Min: {threat.get('subnet_req_per_min', 0):.1f}, " # Corrected format specifier from ::.1f to :.1f
                     f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
                 )
 
