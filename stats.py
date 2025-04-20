@@ -15,7 +15,7 @@ from collections import defaultdict # For grouping /16s
 import time # Import time module
 
 # Import own modules
-from log_parser import LogParser, get_subnet, is_ip_in_whitelist # Ensure this uses log_parser
+from parser import LogParser, get_subnet, is_ip_in_whitelist # Revert to parser
 # Import UFWManager and COMMENT_PREFIX directly if needed
 import ufw_handler
 from threat_analyzer import ThreatAnalyzer
