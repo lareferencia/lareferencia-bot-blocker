@@ -225,16 +225,26 @@ class ThreatAnalyzer:
         if self.log_df is None or self.log_df.empty:
              logger.warning("Log DataFrame not available. Cannot calculate subnet RPM metrics.")
              return None
+        # Ensure 'timestamp' column exists and is datetime
+        if 'timestamp' not in self.log_df.columns or not pd.api.types.is_datetime64_any_dtype(self.log_df['timestamp']):
+             logger.error("Cannot calculate subnet RPM: 'timestamp' column missing or not datetime.")
+             return None
 
         logger.info("Calculating total RPM metrics per Subnet...")
         try:
-            # Group by subnet and resample per minute
-            subnet_group = self.log_df.groupby('subnet')
+            # Set 'timestamp' as index temporarily for resampling
+            log_df_indexed = self.log_df.set_index('timestamp')
+            if not pd.api.types.is_datetime64_any_dtype(log_df_indexed.index):
+                 raise ValueError("Index is not datetime after set_index.")
+
+            # Group by subnet and resample per minute using the indexed DataFrame
+            subnet_group = log_df_indexed.groupby('subnet')
             rpm_counts_subnet = subnet_group.resample('T').size()
             rpm_counts_subnet = rpm_counts_subnet[rpm_counts_subnet > 0] # Filter inactive minutes
 
             # Calculate avg and max RPM for the whole subnet
-            subnet_rpm_metrics = rpm_counts_subnet.groupby('subnet').agg(
+            # Group the resulting Series by subnet level
+            subnet_rpm_metrics = rpm_counts_subnet.groupby(level='subnet').agg(
                 subnet_total_avg_rpm='mean', # Avg RPM of the subnet when active
                 subnet_total_max_rpm='max'   # Max RPM the subnet reached in any minute
             ).fillna(0)

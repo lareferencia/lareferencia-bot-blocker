@@ -286,72 +286,22 @@ def main():
 
 
     # --- Identify Threats ---
-    # The analyzer now has the log_df assigned
-    # Remove the instantiation of ThreatAnalyzer here, it was done earlier
-    # threat_analyzer = ThreatAnalyzer(config=args, log_df=log_df) # REMOVE THIS LINE
-
-    # Call identify_threats on the existing analyzer instance
-    threats = analyzer.identify_threats( # Changed from threat_analyzer to analyzer
+    # Pass the config object (args) to identify_threats
+    threats = analyzer.identify_threats(
         strategy_name=args.block_strategy,
         effective_min_requests=effective_min_requests,
         analysis_duration_seconds=analysis_duration_seconds,
         total_overall_requests=total_overall_requests,
         config=args # Pass the config object here
     )
-    # threats_df = analyzer.get_threats_df() # Assuming get_threats_df exists or is not needed
 
     # Check if threats list is valid
-    if threats is None: # identify_threats returns a list or None on error
+    if threats is None:
         logger.error("Threat identification failed.")
         sys.exit(1)
     if not threats:
         logger.info("No threats identified after analysis.")
-        # Decide if exiting here is correct, maybe just report and continue?
-        # sys.exit(0) # Exit cleanly if no threats found
-
-    # --- Calculate Maximums for Normalization ---
-    max_total_requests = 0
-    max_subnet_time_span = 0
-    max_subnet_req_per_min_window = 0.0 # Initialize new max
-    if threats:
-        # Use max() with a generator expression for efficiency
-        max_total_requests = max(threat.get('total_requests', 0) for threat in threats)
-        max_subnet_time_span = max(threat.get('subnet_time_span', 0) for threat in threats)
-        # Calculate max for the window-averaged RPM as well
-        max_subnet_req_per_min_window = max(threat.get('subnet_req_per_min_window', 0.0) for threat in threats)
-        logger.debug(
-            f"Calculated maximums for normalization: max_total_requests={max_total_requests}, "
-            f"max_subnet_time_span={max_subnet_time_span}, "
-            f"max_subnet_req_per_min_window={max_subnet_req_per_min_window:.2f}"
-        )
-    # --- End Calculate Maximums ---
-
-
-    # --- Apply Strategy, Score, and Sort (/24 or /64) ---
-    logger.info(f"Applying '{strategy_name}' strategy to {len(threats)} potential threats...")
-    # Keep track of threats marked for blocking
-    blockable_threats = []
-    for threat in threats:
-        # Pass analysis_duration_seconds and effective_min_requests to the strategy
-        # Pass the calculated maximums for normalization and thresholding
-        score, should_block, reason = strategy_instance.calculate_threat_score_and_block(
-            threat,
-            config=args, # Pass all args
-            effective_min_requests=effective_min_requests,
-            analysis_duration_seconds=analysis_duration_seconds,
-            max_total_requests=max_total_requests,
-            max_subnet_time_span=max_subnet_time_span, # Still needed if used elsewhere or for context
-            max_subnet_req_per_min_window=max_subnet_req_per_min_window # Pass the max for comparison
-        )
-        threat['strategy_score'] = score
-        threat['should_block'] = should_block
-        threat['block_reason'] = reason
-        if should_block:
-            blockable_threats.append(threat) # Add to list if marked for blocking
-
-    # Sort all threats by the calculated strategy score (descending) for reporting
-    threats.sort(key=lambda x: x.get('strategy_score', 0), reverse=True)
-    logger.info("Threats scored and sorted.")
+        # Continue to reporting section
 
     # --- Calculate Overall Maximums ---
     max_metrics = defaultdict(lambda: {'value': -1, 'subnets': []})
@@ -406,14 +356,15 @@ def main():
         # 1. Identify and Block /16 Supernets (Simplified Logic)
         supernets_to_block = defaultdict(list)
         # Group blockable IPv4 /24 threats by their /16 supernet
-        for threat in blockable_threats: # Iterate only through threats marked for blocking
-            subnet = threat.get('id')
-            if isinstance(subnet, ipaddress.IPv4Network) and subnet.prefixlen == 24:
-                try:
-                    supernet = subnet.supernet(new_prefix=16)
-                    supernets_to_block[supernet].append(threat) # Store the actual threat dict
-                except ValueError:
-                    continue # Skip if supernet calculation fails
+        for threat in threats:
+            if threat.get('should_block'):
+                subnet = threat.get('id')
+                if isinstance(subnet, ipaddress.IPv4Network) and subnet.prefixlen == 24:
+                    try:
+                        supernet = subnet.supernet(new_prefix=16)
+                        supernets_to_block[supernet].append(threat) # Store the actual threat dict
+                    except ValueError:
+                        continue # Skip if supernet calculation fails
 
         # Process potential /16 blocks
         logger.info(f"Checking {len(supernets_to_block)} /16 supernets for potential blocking (>= 2 contained blockable /24s)...")
