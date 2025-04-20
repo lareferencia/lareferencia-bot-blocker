@@ -186,22 +186,47 @@ class ThreatAnalyzer:
 
         # 2. RPM Metrics (Average and Max during active minutes)
         logger.debug("Calculating RPM metrics (avg/max during activity)...")
-        # Resample to get counts per IP per minute
-        rpm_counts = self.log_df.groupby('ip').resample('T').size() # 'T' or 'min' for minute frequency
-        # Filter out minutes with zero requests (only consider active minutes)
-        rpm_counts = rpm_counts[rpm_counts > 0]
+        try:
+            # Resample to get counts per IP per minute
+            # Ensure the index is datetime before resampling
+            if not pd.api.types.is_datetime64_any_dtype(self.log_df.index):
+                 logger.error("Cannot resample for RPM: log_df index is not datetime.")
+                 return False
 
-        # Calculate avg and max RPM based on active minutes
-        rpm_metrics = rpm_counts.groupby('ip').agg(
-            avg_rpm_activity='mean',
-            max_rpm_activity='max'
-        )
-        # Fill NaNs with 0 for IPs with only one request (or activity within a single minute)
-        rpm_metrics = rpm_metrics.fillna(0)
-        logger.debug(f"Calculated RPM metrics for {len(rpm_metrics)} IPs.")
+            rpm_counts = self.log_df.groupby('ip').resample('T').size() # 'T' or 'min' for minute frequency
+            # Filter out minutes with zero requests (only consider active minutes)
+            rpm_counts = rpm_counts[rpm_counts > 0]
+
+            # Calculate avg and max RPM based on active minutes
+            # Group the Series by the 'ip' level of the MultiIndex
+            grouped_rpm = rpm_counts.groupby(level='ip')
+
+            # Calculate mean and max separately
+            avg_rpm = grouped_rpm.mean()
+            max_rpm = grouped_rpm.max()
+
+            # Combine the results into a DataFrame
+            rpm_metrics = pd.DataFrame({
+                'avg_rpm_activity': avg_rpm,
+                'max_rpm_activity': max_rpm
+            })
+
+            # Fill NaNs with 0 for IPs with only one request (or activity within a single minute)
+            rpm_metrics = rpm_metrics.fillna(0)
+            logger.debug(f"Calculated RPM metrics for {len(rpm_metrics)} IPs.")
+
+        except Exception as e:
+            logger.error(f"Error calculating RPM metrics: {e}", exc_info=True)
+            # Create an empty DataFrame or return False if RPM is critical
+            rpm_metrics = pd.DataFrame(columns=['avg_rpm_activity', 'max_rpm_activity']) # Allow continuation
+            # return False # Uncomment if RPM metrics are essential
 
         # 3. Combine Metrics
         logger.debug("Combining basic and RPM metrics...")
+        # Ensure rpm_metrics exists, even if empty from error handling
+        if 'rpm_metrics' not in locals():
+             rpm_metrics = pd.DataFrame(columns=['avg_rpm_activity', 'max_rpm_activity'])
+
         self.ip_metrics_df = basic_agg.join(rpm_metrics, how='left')
         # Fill NaNs in RPM metrics again (for IPs present in basic_agg but not rpm_metrics)
         self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity']] = self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity']].fillna(0)
