@@ -15,11 +15,10 @@ from collections import defaultdict # For grouping /16s
 import time # Import time module
 
 # Import own modules
-from log_parser import get_subnet, is_ip_in_whitelist # Keep imports minimal
+from log_parser import LogParser, get_subnet, is_ip_in_whitelist # <-- CORRECT THIS IMPORT
 # Import UFWManager and COMMENT_PREFIX directly if needed
 import ufw_handler
 from threat_analyzer import ThreatAnalyzer
-from log_parser import LogParser
 
 # Logging configuration
 LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
