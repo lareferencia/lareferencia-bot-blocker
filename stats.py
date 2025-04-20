@@ -271,7 +271,8 @@ def main():
 
 
     # Identify threats (/24 or /64)
-    threats = analyzer.identify_threats()
+    # Pass analysis duration for window-averaged metrics
+    threats = analyzer.identify_threats(analysis_duration_seconds=analysis_duration_seconds)
     if not threats:
          logger.info("No threats identified based on initial aggregation.")
          sys.exit(0)
@@ -318,7 +319,8 @@ def main():
         'total_requests', 'ip_count', 
         'subnet_avg_ip_rpm', 'subnet_max_ip_rpm',
         'subnet_total_avg_rpm', 'subnet_total_max_rpm',
-        'subnet_time_span', 'subnet_req_per_min'
+        'subnet_time_span', 'subnet_req_per_min',
+        'subnet_req_per_min_window' # ADDED window avg metric
     ]
     metric_names_map = { # For clearer reporting
         'total_requests': 'Total Requests',
@@ -328,7 +330,8 @@ def main():
         'subnet_total_avg_rpm': 'Average Total Subnet RPM',
         'subnet_total_max_rpm': 'Maximum Total Subnet RPM',
         'subnet_time_span': 'Subnet Activity Timespan (%)',
-        'subnet_req_per_min': 'Subnet Requests/Min (Overall)' # ADDED new metric name
+        'subnet_req_per_min': 'Subnet Req/Min (Activity Span)', # Renamed original
+        'subnet_req_per_min_window': 'Subnet Req/Min (Window Avg)' # ADDED new metric name
     }
 
     if threats: # Only calculate if there are threats
@@ -479,7 +482,7 @@ def main():
             f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
             f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
             f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, "
-            f"Req/Min: {threat.get('subnet_req_per_min', 0):.1f}, "
+            f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, " # Use window average in main report
             f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
         )
         # --- End of detailed metrics summary string ---
@@ -604,7 +607,8 @@ def main():
                     f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
                     f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
                     f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, "
-                    f"Req/Min: {threat.get('subnet_req_per_min', 0):.1f}, " # Corrected format specifier from ::.1f to :.1f
+                    f"Req/Min(Span): {threat.get('subnet_req_per_min', 0):.1f}, " # Show original span-based calc here
+                    f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, " # Show new window-based calc
                     f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
                 )
 

@@ -192,7 +192,7 @@ class ThreatAnalyzer:
             logger.error(f"Error calculating subnet RPM metrics: {e}", exc_info=True)
             return None
 
-    def _aggregate_subnet_metrics(self):
+    def _aggregate_subnet_metrics(self, analysis_duration_seconds=None):
         """Aggregates IP metrics and adds Subnet RPM metrics using a more robust join approach."""
         if self.ip_metrics_df is None or self.ip_metrics_df.empty:
             logger.warning("IP metrics DataFrame not available. Cannot aggregate subnet metrics.")
@@ -234,12 +234,19 @@ class ThreatAnalyzer:
             # Handle cases where first_seen == last_seen (span is 0) or potential NaNs
             agg1['subnet_time_span'] = agg1['subnet_time_span'].fillna(0).clip(lower=0) # Ensure non-negative
 
-            # Calculate Requests per Minute for the subnet
+            # Calculate Requests per Minute for the subnet based on its own activity span (potentially high for short bursts)
             # Avoid division by zero if time_span is 0
             agg1['subnet_req_per_min'] = agg1.apply(
                 lambda row: (row['total_requests'] / (row['subnet_time_span'] / 60.0)) if row['subnet_time_span'] > 0 else 0,
                 axis=1
             )
+            
+            # NEW: Calculate Requests per Minute for the subnet averaged over the *entire analysis window*
+            if analysis_duration_seconds and analysis_duration_seconds > 0:
+                agg1['subnet_req_per_min_window'] = agg1['total_requests'] / (analysis_duration_seconds / 60.0)
+            else:
+                # If no window duration, this metric is not applicable, set to 0
+                agg1['subnet_req_per_min_window'] = 0.0
 
 
             # --- REMOVED Calculate Dominant Bot Name ---
@@ -251,7 +258,7 @@ class ThreatAnalyzer:
             if agg1.empty and len(subnet_index) > 0:
                  logger.warning("Aggregation 1 resulted in an empty DataFrame despite having subnets.")
                  # Recreate with 0s if empty but should have rows
-                 agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span', 'subnet_req_per_min']) # REMOVED dominant_bot_name
+                 agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span', 'subnet_req_per_min', 'subnet_req_per_min_window']) # ADDED window avg
                  # Ensure correct dtypes for timestamps if recreated
                  agg1['subnet_first_seen'] = pd.NaT
                  agg1['subnet_last_seen'] = pd.NaT
@@ -320,7 +327,7 @@ class ThreatAnalyzer:
                       if 'subnet_last_seen' in agg1.columns: agg1['subnet_last_seen'] = pd.NaT
                       # --- REMOVED dominant_bot_name re-add ---
                  else: # If agg1 was truly empty, create it with zeros/NaT
-                      agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span', 'subnet_req_per_min']) # REMOVED dominant_bot_name
+                      agg1 = pd.DataFrame(0, index=subnet_index, columns=['total_requests', 'ip_count', 'subnet_first_seen', 'subnet_last_seen', 'subnet_time_span', 'subnet_req_per_min', 'subnet_req_per_min_window']) # REMOVED dominant_bot_name
                       agg1['subnet_first_seen'] = pd.NaT
                       agg1['subnet_last_seen'] = pd.NaT
 
@@ -370,6 +377,7 @@ class ThreatAnalyzer:
                 'subnet_total_avg_rpm': float,
                 'subnet_total_max_rpm': float,
                 'subnet_req_per_min': float, # ADDED new metric
+                'subnet_req_per_min_window': float, # ADDED window avg metric
                 # --- REMOVED dominant_bot_name ---
             }
             for col, dtype in expected_cols.items():
@@ -410,7 +418,7 @@ class ThreatAnalyzer:
         logger.debug("Formatting subnet metrics into threat list (without final score/sorting)...")
         self.unified_threats = []
         top_ips_per_subnet = self.ip_metrics_df.sort_values(by='max_rpm_activity', ascending=False)\
-                                                  .groupby('subnet')
+                                                  .groupby('subnet', observed=True) # Use observed=True
 
         for subnet, metrics in self.subnet_metrics_df.iterrows():
             # Get top IPs for this subnet (now sorted by max_rpm_activity)
@@ -455,7 +463,8 @@ class ThreatAnalyzer:
                 'subnet_total_avg_rpm': round(metrics.get('subnet_total_avg_rpm', 0), 2),
                 'subnet_total_max_rpm': round(metrics.get('subnet_total_max_rpm', 0), 2),
                 'subnet_time_span': round(metrics.get('subnet_time_span', 0), 2), # Use the correctly calculated span
-                'subnet_req_per_min': round(metrics.get('subnet_req_per_min', 0), 2),
+                'subnet_req_per_min': round(metrics.get('subnet_req_per_min', 0), 2), # Keep original for potential comparison? Or remove? Let's keep for now.
+                'subnet_req_per_min_window': round(metrics.get('subnet_req_per_min_window', 0), 2), # Add new window average
                 # --- REMOVED dominant_bot_name ---
                 'details': details_list,
                 'strategy_score': 0.0,
@@ -467,7 +476,7 @@ class ThreatAnalyzer:
         logger.debug(f"Formatted {len(self.unified_threats)} threats (pre-strategy).")
 
 
-    def identify_threats(self):
+    def identify_threats(self, analysis_duration_seconds=None):
         """
         Orchestrates the calculation of IP metrics, aggregation by subnet,
         and formatting the final threat list.
@@ -477,7 +486,7 @@ class ThreatAnalyzer:
         """
         if not self._calculate_ip_metrics():
             return []
-        if not self._aggregate_subnet_metrics(): # This now calculates the correct timespan
+        if not self._aggregate_subnet_metrics(analysis_duration_seconds=analysis_duration_seconds): # Pass duration
             return []
 
         self._format_threat_output()
@@ -533,6 +542,7 @@ class ThreatAnalyzer:
                 'subnet_avg_ip_rpm', 'subnet_max_ip_rpm',
                 'subnet_total_avg_rpm', 'subnet_total_max_rpm',
                 'subnet_req_per_min', # ADDED new metric
+                'subnet_req_per_min_window', # ADDED window avg metric
                 'subnet_time_span', # Ensure this is included
                 'details'
             ]
