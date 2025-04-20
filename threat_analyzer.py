@@ -13,6 +13,7 @@ import os
 import pandas as pd
 import numpy as np
 from ipaddress import ip_network, IPv4Network, IPv6Network
+import importlib # Needed for dynamic strategy loading
 
 # Import from parser (Reverted)
 from parser import (
@@ -556,50 +557,117 @@ class ThreatAnalyzer:
                          strategy_name,
                          effective_min_requests,
                          analysis_duration_seconds,
-                         total_overall_requests): # Parameter should exist
+                         total_overall_requests,
+                         config): # Add config parameter to load strategy
         """
         Orchestrates the calculation of IP metrics, aggregation by subnet,
-        and formatting the final threat list.
-
-        Returns:
-            list: List of detected subnet threats, sorted by total requests descending.
+        strategy application, and formatting the final threat list.
+        Requires self.log_df to be set externally.
         """
+        # --- Ensure 'subnet' column exists ---
+        if self.log_df is None or self.log_df.empty:
+             logger.error("log_df is not set or is empty. Cannot identify threats.")
+             return None # Return None to indicate failure
+
+        if 'subnet' not in self.log_df.columns:
+            logger.info("Adding 'subnet' column to log_df...")
+            try:
+                self.log_df['subnet'] = self.log_df['ip'].map(get_subnet)
+                # Drop rows where subnet couldn't be determined
+                initial_rows = len(self.log_df)
+                self.log_df = self.log_df.dropna(subset=['subnet'])
+                dropped_rows = initial_rows - len(self.log_df)
+                if dropped_rows > 0:
+                     logger.warning(f"Dropped {dropped_rows} rows due to missing subnet information.")
+                logger.info("'subnet' column added.")
+            except Exception as e:
+                 logger.error(f"Failed to add 'subnet' column: {e}", exc_info=True)
+                 return None # Cannot proceed without subnet
+
+        # --- Calculate Metrics ---
         if not self._calculate_ip_metrics():
-            return []
-        if not self._aggregate_subnet_metrics(analysis_duration_seconds=analysis_duration_seconds): # Pass duration
-            return []
+            logger.error("Failed during IP metrics calculation.")
+            return None # Return None to indicate failure
+        if not self._aggregate_subnet_metrics(analysis_duration_seconds=analysis_duration_seconds):
+            logger.error("Failed during subnet metrics aggregation.")
+            return None # Return None to indicate failure
 
-        self.total_overall_requests = total_overall_requests # Store it
+        # --- Load Strategy ---
+        try:
+            strategy_module = importlib.import_module(f"strategies.{strategy_name}")
+            strategy_instance = strategy_module.Strategy()
+            logger.info(f"Successfully loaded strategy: {strategy_name}")
+            # Store config for strategy use
+            self.config = config
+        except ImportError:
+            logger.error(f"Could not load strategy module: strategies.{strategy_name}.py")
+            return None # Cannot proceed without strategy
+        except AttributeError:
+            logger.error(f"Strategy module strategies.{strategy_name}.py does not contain a 'Strategy' class.")
+            return None # Cannot proceed without strategy
+        except Exception as e:
+             logger.error(f"An unexpected error occurred loading strategy '{strategy_name}': {e}", exc_info=True)
+             return None
 
-        # ... (Calculate max values as before) ...
-        max_total_requests = self.subnet_metrics_df['total_requests'].max() if not self.subnet_metrics_df.empty else 0
-        max_subnet_time_span = self.subnet_metrics_df['subnet_time_span'].max() if not self.subnet_metrics_df.empty else 0
-        max_subnet_req_per_min_window = self.subnet_metrics_df['subnet_req_per_min_window'].max() if not self.subnet_metrics_df.empty else 0
 
-        # ... (Load strategy) ...
-
-        # Apply strategy to each potential threat (subnet)
-        results = []
-        for index, threat_data_series in self.subnet_metrics_df.iterrows():
-            # ... (Convert Series to dict) ...
-
-            # Calculate score and block decision using the strategy
-            # Ensure 'total_overall_requests' is passed here
-            score, should_block, reason = strategy_instance.calculate_threat_score_and_block(
-                threat_data=threat_data,
-                config=self.config,
-                effective_min_requests=effective_min_requests,
-                analysis_duration_seconds=analysis_duration_seconds,
-                total_overall_requests=self.total_overall_requests, # Pass overall total
-                max_total_requests=max_total_requests,
-                max_subnet_time_span=max_subnet_time_span,
-                max_subnet_req_per_min_window=max_subnet_req_per_min_window
+        # --- Calculate Maximums for Normalization ---
+        max_total_requests = 0
+        max_subnet_time_span = 0
+        max_subnet_req_per_min_window = 0.0
+        if self.subnet_metrics_df is not None and not self.subnet_metrics_df.empty:
+            max_total_requests = self.subnet_metrics_df['total_requests'].max()
+            max_subnet_time_span = self.subnet_metrics_df['subnet_time_span'].max()
+            max_subnet_req_per_min_window = self.subnet_metrics_df['subnet_req_per_min_window'].max()
+            logger.debug(
+                f"Calculated maximums for normalization: max_total_requests={max_total_requests}, "
+                f"max_subnet_time_span={max_subnet_time_span}, "
+                f"max_subnet_req_per_min_window={max_subnet_req_per_min_window:.2f}"
             )
+        else:
+             logger.warning("Subnet metrics DataFrame is empty or None. Cannot calculate maximums.")
+             # Set defaults or handle error appropriately
+             max_total_requests = 0
+             max_subnet_time_span = 0
+             max_subnet_req_per_min_window = 0.0
 
-            # ... (Store results) ...
-        # ... (Rest of the method) ...
 
-        self._format_threat_output()
+        # --- Apply strategy to each potential threat (subnet) ---
+        results = []
+        if self.subnet_metrics_df is None or self.subnet_metrics_df.empty:
+             logger.warning("Subnet metrics DataFrame is empty. Skipping strategy application.")
+        else:
+             logger.info(f"Applying '{strategy_name}' strategy to {len(self.subnet_metrics_df)} subnets...")
+             for index, threat_data_series in self.subnet_metrics_df.iterrows():
+                 threat_data = threat_data_series.to_dict()
+                 threat_data['id'] = index # Ensure subnet_id object is in the dict
+
+                 # Calculate score and block decision using the strategy
+                 # Ensure 'strategy_instance' is defined now
+                 score, should_block, reason = strategy_instance.calculate_threat_score_and_block(
+                     threat_data=threat_data,
+                     config=self.config, # Use stored config
+                     effective_min_requests=effective_min_requests,
+                     analysis_duration_seconds=analysis_duration_seconds,
+                     total_overall_requests=total_overall_requests, # Pass overall total
+                     max_total_requests=max_total_requests,
+                     max_subnet_time_span=max_subnet_time_span,
+                     max_subnet_req_per_min_window=max_subnet_req_per_min_window
+                 )
+
+                 # Store results including score and block decision
+                 threat_data['strategy_score'] = score
+                 threat_data['should_block'] = should_block
+                 threat_data['block_reason'] = reason
+                 results.append(threat_data) # Append the enriched dictionary
+
+        # --- Format and Sort Output ---
+        # Sort results by strategy score before formatting (optional, could also sort later)
+        results.sort(key=lambda x: x.get('strategy_score', 0), reverse=True)
+
+        # Format into the unified_threats structure (if needed, or just return results)
+        # self._format_threat_output() # This formats self.subnet_metrics_df, not results
+        # Let's return the results list directly as it contains all info
+        self.unified_threats = results # Store the results list
 
         logger.info(f"Threat identification complete. Found {len(self.unified_threats)} subnet threats.")
         return self.unified_threats
@@ -682,3 +750,19 @@ class ThreatAnalyzer:
         except Exception as e:
             logger.error(f"Failed to export results to {output_file}: {e}", exc_info=True)
             return False
+
+    def get_threats_df(self):
+        """Returns the identified threats as a DataFrame."""
+        if not self.unified_threats:
+            logger.warning("No threats identified or stored in unified_threats list.")
+            return pd.DataFrame() # Return empty DataFrame
+        try:
+            # Convert the list of dictionaries directly to a DataFrame
+            df = pd.DataFrame(self.unified_threats)
+            # Set the subnet ID as index if desired
+            if 'id' in df.columns:
+                 df = df.set_index('id')
+            return df
+        except Exception as e:
+            logger.error(f"Error converting unified_threats list to DataFrame: {e}", exc_info=True)
+            return pd.DataFrame() # Return empty DataFrame on error

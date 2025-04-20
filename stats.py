@@ -295,7 +295,8 @@ def main():
         strategy_name=args.block_strategy,
         effective_min_requests=effective_min_requests,
         analysis_duration_seconds=analysis_duration_seconds,
-        total_overall_requests=total_overall_requests
+        total_overall_requests=total_overall_requests,
+        config=args # Pass the config object here
     )
     # threats_df = analyzer.get_threats_df() # Assuming get_threats_df exists or is not needed
 
@@ -653,7 +654,7 @@ def main():
                     f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
                     f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, "
                     f"Req/Min(Span): {threat.get('subnet_req_per_min', 0):.1f}, " 
-                    f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0)::.1f}, " 
+                    f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, " 
                     f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s" # Corrected format specifier
                 )
 
