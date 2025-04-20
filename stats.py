@@ -117,7 +117,7 @@ def main():
     parser.add_argument(
         '--block-relative-threshold-percent', type=float, default=1, # Default might need adjustment based on typical max requests
         help='Base threshold for initial consideration (most strategies). '
-             'For "combined" strategy, used as the MANDATORY threshold percentage against MAX total requests (Condition 2).' # UPDATED help
+             'For "combined" strategy, used as the MANDATORY threshold percentage against MAX total requests (Condition 2).' # Correcto
     )
     parser.add_argument(
         '--block-ip-count-threshold', type=int, default=10,
@@ -130,7 +130,7 @@ def main():
     parser.add_argument(
         '--block-total-max-rpm-threshold', type=float, default=20, # Default might need adjustment
         help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (used by peak_total_rpm). '
-             'For "combined" strategy, used as the MANDATORY threshold for average Req/Min(Win) (Condition 3).' # UPDATED help
+             'For "combined" strategy, used as the MANDATORY threshold for average Req/Min(Win) (Condition 3).' # Correcto
     )
     # --- Add argument for combined strategy ---
     parser.add_argument(

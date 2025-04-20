@@ -1,26 +1,13 @@
 """
-Blocking Strategy: **Combined Ensemble**
+Blocking Strategy: **Combined** (Logic v5)
 
-Esta estrategia integra en una sola decisión los cuatro ejes
-principales de abuso sobre los que hemos hablado:
+This strategy evaluates three conditions:
+1. TimeSpan >= 75% (fixed)
+2. Total Requests > X% of Max Observed Total Requests (using --block-relative-threshold-percent)
+3. Req/Min(Win) > Y (using --block-total-max-rpm-threshold)
 
-1. **Volumen** total de peticiones en la subred (/24 · /64)
-2. **Coordinación** → número de IPs distintas (`ip_count`)
-3. **Picos por IP** → máximo RPM observado en un único IP del mismo rango
-4. **Pico global del rango** → máximo RPM sumando todas las IPs
-5. **Persistencia** → porcentaje del intervalo de análisis en el que la
-   subred estuvo enviando tráfico (solo si se delimitó la ventana con
-   `--time-window` o `--start-date`)
-
-Decisión de bloqueo (`should_block`):
-
-* La subred supera el *volumen mínimo* dinámico (`effective_min_requests`)
-  **y**
-* Cumple **al menos `block_trigger_count` disparadores** de la lista
-  anterior (por defecto, 2 de 5).
-
-`StrategyScore` (para orden de reporte) es la media ponderada de los
-cinco factores, normalizados en cada ejecución.
+The score (0.0-3.0) reflects the number of conditions met.
+Blocking occurs if the score is >= 2.0.
 """
 
 import logging
