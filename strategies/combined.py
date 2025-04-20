@@ -35,17 +35,18 @@ BLOCKING_SCORE_THRESHOLD = 2.0
 
 class Strategy:
     """
-    Combined strategy (Updated Logic 3):
+    Combined strategy (Updated Logic 5 - Reverted Condition 2):
     - Score reflects how many blocking conditions are met (0-3):
         1. Fixed TimeSpan >= 75%
-        2. TotalReq > block_relative_threshold_percent of MaxTotalReq
+        2. TotalReq > block_relative_threshold_percent of MaxTotalReq (observed max)
         3. Req/Min(Win) > block_total_max_rpm_threshold
     - Block decision requires score >= BLOCKING_SCORE_THRESHOLD (e.g., >= 2.0).
-    - The initial effective_min_requests filter is NOT applied by this strategy.
+    - Ignores effective_min_requests for its core logic.
     """
 
     def get_required_config_keys(self):
         """Returns a list of config keys required by this strategy."""
+        # effective_min_requests is ignored by this strategy's core logic
         return [
             'block_total_max_rpm_threshold', # Used for Req/Min(Win) threshold (Condition 3)
             'block_relative_threshold_percent' # Used for Total Requests threshold % (Condition 2)
@@ -56,13 +57,13 @@ class Strategy:
                                          config,
                                          effective_min_requests, # Received but ignored
                                          analysis_duration_seconds,
-                                         max_total_requests,
+                                         max_total_requests, # Now used again for Condition 2 calculation here
                                          max_subnet_time_span, # Keep receiving
                                          max_subnet_req_per_min_window):
         """
         Calculates score (0-3) based on meeting conditions:
         1. TimeSpan >= 75%
-        2. TotalReq > Relative% of Max
+        2. TotalReq > Relative% of Max Observed Total Requests
         3. Req/Min(Win) > Absolute Threshold
         Decides blocking if score >= BLOCKING_SCORE_THRESHOLD (e.g., 2.0).
         """
@@ -86,8 +87,9 @@ class Strategy:
         else:
              block_decision_reasons.append("TimeSpan % condition skipped (duration=0)")
 
-        # --- Condition 2: Check Mandatory Total Requests % ---
+        # --- Condition 2: Check Mandatory Total Requests % vs Max Observed ---
         total_req_ok = False
+        # Use the max_total_requests observed across all subnets
         if max_total_requests > 0:
              min_total_req_threshold = max_total_requests * (config.block_relative_threshold_percent / 100.0)
              current_total_req_raw = threat_data.get('total_requests', 0)
@@ -99,10 +101,13 @@ class Strategy:
              if current_total_req > min_total_req_threshold:
                  total_req_ok = True
                  conditions_met_count += 1
+                 # Update reason to reflect comparison with % of max
                  block_decision_reasons.append(f"TotalReq > {config.block_relative_threshold_percent:.1f}% max ({current_total_req} > {min_total_req_threshold:.0f})")
              else:
+                 # Update reason
                  block_decision_reasons.append(f"TotalReq <= {config.block_relative_threshold_percent:.1f}% max ({current_total_req} <= {min_total_req_threshold:.0f})")
         else:
+             # If max_total_requests is 0, this condition cannot be met
              block_decision_reasons.append("TotalReq % condition skipped (max=0)")
 
         # --- Condition 3: Check Mandatory Req/Min(Win) ---
@@ -115,7 +120,6 @@ class Strategy:
              block_decision_reasons.append(f"Req/Min(Win) > {min_req_win_threshold:.1f}")
         else:
              block_decision_reasons.append(f"Req/Min(Win) <= {min_req_win_threshold:.1f}")
-
 
         # --- Final Block Decision and Score Calculation ---
         # Score is the count of conditions met
@@ -137,7 +141,6 @@ class Strategy:
                  reason += f" Met ({', '.join(met_reasons)})."
             if failed_reasons:
                  reason += f" Failed ({', '.join(failed_reasons)})."
-
 
         # Return the score (0.0-3.0) and the block decision/reason
         return score, should_block, reason

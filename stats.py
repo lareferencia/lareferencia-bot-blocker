@@ -266,7 +266,8 @@ def main():
     if total_overall_requests > 0:
         # Calculate based on the relative threshold - This is now primarily for strategies OTHER than 'combined'
         effective_min_requests = max(1, int(total_overall_requests * (args.block_relative_threshold_percent / 100.0)))
-        logger.info(f"Calculated effective_min_requests = {effective_min_requests} (based on {args.block_relative_threshold_percent}% of {total_overall_requests}). Note: 'combined' strategy ignores this as an initial filter.") # UPDATED log message
+        # UPDATED log message (restored note about combined ignoring it)
+        logger.info(f"Calculated effective_min_requests = {effective_min_requests} (based on {args.block_relative_threshold_percent}% of {total_overall_requests}). Note: 'combined' strategy ignores this for its Condition 2.")
     else:
         # If no requests, the threshold remains 1, but analysis likely stops anyway
         logger.warning(f"Total requests in analysis window is 0. Effective minimum request threshold set to {effective_min_requests}.")
@@ -624,7 +625,7 @@ def main():
                     f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
                     f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, "
                     f"Req/Min(Span): {threat.get('subnet_req_per_min', 0):.1f}, " 
-                    f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, " 
+                    f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0)::.1f}, " 
                     f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s" # Corrected format specifier
                 )
 
