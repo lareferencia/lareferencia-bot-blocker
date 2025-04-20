@@ -19,6 +19,7 @@ from log_parser import get_subnet, is_ip_in_whitelist # Keep imports minimal
 # Import UFWManager and COMMENT_PREFIX directly if needed
 import ufw_handler
 from threat_analyzer import ThreatAnalyzer
+from parser import LogParser # <-- ADD THIS IMPORT
 
 # Logging configuration
 LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
@@ -652,7 +653,7 @@ def main():
                     f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
                     f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, "
                     f"Req/Min(Span): {threat.get('subnet_req_per_min', 0):.1f}, " 
-                    f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, " 
+                    f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0)::.1f}, " 
                     f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s" # Corrected format specifier
                 )
 
