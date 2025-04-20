@@ -608,17 +608,22 @@ def main():
                 achieved_max_str = f" [Achieved Max: {', '.join(achieved_max_metrics)}]"
 
                 # Reuse the metrics summary string generation
-                # Ensure total_requests is int before formatting with :d
+                # Ensure total_requests is int before formatting with :d, handle None/NaN
+                total_req_val = threat.get('total_requests', 0)
+                # Check for None or NaN (using pandas.isna if it could be NaN)
+                if total_req_val is None or pd.isna(total_req_val):
+                    total_req_val = 0
+                
                 metrics_summary = (
-                    f"{int(threat.get('total_requests', 0)):d} reqs, " 
+                    f"{int(total_req_val):d} reqs, " # Use cleaned value
                     f"{threat.get('ip_count', 0):d} IPs, " 
                     f"AvgIPRPM: {threat.get('subnet_avg_ip_rpm', 0):.1f}, "
                     f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
                     f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
-                    f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0)::.0f}, "
-                    f"Req/Min(Span): {threat.get('subnet_req_per_min', 0):.1f}, " # Show original span-based calc here
-                    f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, " # Show new window-based calc
-                    f"TimeSpan: {threat.get('subnet_time_span', 0)::.0f}s"
+                    f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, " # Corrected ::.0f to :.0f
+                    f"Req/Min(Span): {threat.get('subnet_req_per_min', 0):.1f}, " 
+                    f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, " 
+                    f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s" # Corrected ::.0f to :.0f
                 )
 
                 print(f"\nSubnet: {subnet_id_str}{achieved_max_str}")
