@@ -19,7 +19,7 @@ from log_parser import get_subnet, is_ip_in_whitelist # Keep imports minimal
 # Import UFWManager and COMMENT_PREFIX directly if needed
 import ufw_handler
 from threat_analyzer import ThreatAnalyzer
-from parser import LogParser # <-- ADD THIS IMPORT
+from log_parser import LogParser
 
 # Logging configuration
 LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
