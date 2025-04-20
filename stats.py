@@ -466,9 +466,16 @@ def main():
         
         # --- Construct detailed metrics summary string ---
         # Use .get() and explicit format specifiers for robustness
+        total_req_val = threat.get('total_requests', 0)
+        # Check for None or NaN (using pandas.isna if it could be NaN)
+        if total_req_val is None or pd.isna(total_req_val):
+            total_req_val = 0
+        # If not None/NaN, it should already be an integer type from the analyzer
+        total_req_val = int(total_req_val) # Convert to int before formatting with :d
+
         metrics_summary = (
-            f"{threat.get('total_requests', 0):d} reqs, "
-            f"{threat.get('ip_count', 0):d} IPs, " # REMOVED bot name
+            f"{total_req_val:d} reqs, " # Use the int value
+            f"{threat.get('ip_count', 0):d} IPs, " 
             f"AvgIPRPM: {threat.get('subnet_avg_ip_rpm', 0):.1f}, "
             f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
             f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
@@ -596,9 +603,10 @@ def main():
                 if total_req_val is None or pd.isna(total_req_val):
                     total_req_val = 0
                 # If not None/NaN, it should already be an integer type from the analyzer
+                total_req_val = int(total_req_val) # Convert to int before formatting with :d
 
                 metrics_summary = (
-                    f"{total_req_val:d} reqs, " # REMOVED int() call, rely on value being 0 or integer type
+                    f"{total_req_val:d} reqs, " # Use the int value
                     f"{threat.get('ip_count', 0):d} IPs, " 
                     f"AvgIPRPM: {threat.get('subnet_avg_ip_rpm', 0):.1f}, "
                     f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
