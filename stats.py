@@ -280,11 +280,18 @@ def main():
     # --- Calculate Maximums for Normalization ---
     max_total_requests = 0
     max_subnet_time_span = 0
+    max_subnet_req_per_min_window = 0.0 # Initialize new max
     if threats:
         # Use max() with a generator expression for efficiency
         max_total_requests = max(threat.get('total_requests', 0) for threat in threats)
         max_subnet_time_span = max(threat.get('subnet_time_span', 0) for threat in threats)
-        logger.debug(f"Calculated maximums for normalization: max_total_requests={max_total_requests}, max_subnet_time_span={max_subnet_time_span}")
+        # Calculate max for the window-averaged RPM as well
+        max_subnet_req_per_min_window = max(threat.get('subnet_req_per_min_window', 0.0) for threat in threats)
+        logger.debug(
+            f"Calculated maximums for normalization: max_total_requests={max_total_requests}, "
+            f"max_subnet_time_span={max_subnet_time_span}, "
+            f"max_subnet_req_per_min_window={max_subnet_req_per_min_window:.2f}"
+        )
     # --- End Calculate Maximums ---
 
 
@@ -302,6 +309,8 @@ def main():
             analysis_duration_seconds=analysis_duration_seconds,
             max_total_requests=max_total_requests, # Pass max requests
             max_subnet_time_span=max_subnet_time_span # Pass max timespan
+            # Pass the new max as well, although currently unused by strategies for normalization
+            # max_subnet_req_per_min_window=max_subnet_req_per_min_window
         )
         threat['strategy_score'] = score
         threat['should_block'] = should_block
@@ -606,10 +615,10 @@ def main():
                     f"AvgIPRPM: {threat.get('subnet_avg_ip_rpm', 0):.1f}, "
                     f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
                     f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
-                    f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, "
+                    f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0)::.0f}, "
                     f"Req/Min(Span): {threat.get('subnet_req_per_min', 0):.1f}, " # Show original span-based calc here
                     f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, " # Show new window-based calc
-                    f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
+                    f"TimeSpan: {threat.get('subnet_time_span', 0)::.0f}s"
                 )
 
                 print(f"\nSubnet: {subnet_id_str}{achieved_max_str}")
