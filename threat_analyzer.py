@@ -122,15 +122,66 @@ class ThreatAnalyzer:
 
         # 1. Basic Aggregations (Total Requests, First/Last Seen)
         logger.debug("Calculating total requests, first/last seen per IP...")
-        basic_agg = self.log_df.groupby('ip').agg(
-            total_requests=('ip', 'count'),
-        )
-        basic_agg['first_seen'] = basic_agg.index.map(lambda ip: self.log_df.loc[self.log_df['ip'] == ip].index.min())
-        basic_agg['last_seen'] = basic_agg.index.map(lambda ip: self.log_df.loc[self.log_df['ip'] == ip].index.max())
+
+        # Ensure the index is datetime before grouping
+        # The index should have been set in analyze_log_file
+        if not pd.api.types.is_datetime64_any_dtype(self.log_df.index):
+             logger.error("Log DataFrame index is not datetime. Cannot calculate first/last seen accurately.")
+             # Attempt to convert index if possible, otherwise fail
+             try:
+                 self.log_df.index = pd.to_datetime(self.log_df.index, utc=True)
+                 logger.warning("Converted log_df index to datetime.")
+             except Exception as e:
+                 logger.error(f"Failed to convert log_df index to datetime: {e}")
+                 return False # Cannot proceed without datetime index
+
+        # Get the name of the index (should be 'timestamp')
+        index_name = self.log_df.index.name if self.log_df.index.name else 'timestamp'
+
+        # Aggregate directly using the datetime index
+        try:
+            basic_agg = self.log_df.groupby('ip').agg(
+                total_requests=('ip', 'count'), # Count occurrences of the IP
+                first_seen=(index_name, 'min'), # Get min timestamp from index for this IP
+                last_seen=(index_name, 'max')   # Get max timestamp from index for this IP
+            )
+        except Exception as e:
+             logger.error(f"Error during basic aggregation (min/max timestamp): {e}", exc_info=True)
+             return False
+
+        # Now first_seen and last_seen should be datetime objects
+
+        # Calculate time span in seconds - this should now work
+        try:
+            # Ensure columns exist and are datetime before subtraction
+            if 'first_seen' not in basic_agg.columns or 'last_seen' not in basic_agg.columns:
+                 logger.error("first_seen or last_seen column missing after aggregation.")
+                 return False
+            if not pd.api.types.is_datetime64_any_dtype(basic_agg['first_seen']) or \
+               not pd.api.types.is_datetime64_any_dtype(basic_agg['last_seen']):
+                 logger.error("first_seen or last_seen columns are not datetime type after aggregation.")
+                 # Attempt conversion if possible, otherwise fail
+                 try:
+                      basic_agg['first_seen'] = pd.to_datetime(basic_agg['first_seen'], utc=True)
+                      basic_agg['last_seen'] = pd.to_datetime(basic_agg['last_seen'], utc=True)
+                      logger.warning("Converted first_seen/last_seen columns to datetime.")
+                 except Exception as conv_e:
+                      logger.error(f"Failed to convert first_seen/last_seen to datetime: {conv_e}")
+                      return False
+
+            # Perform subtraction and access .dt
+            time_diff = basic_agg['last_seen'] - basic_agg['first_seen']
+            basic_agg['time_span_seconds'] = time_diff.dt.total_seconds()
+
+        except AttributeError as ae:
+             logger.error(f"AttributeError calculating time_span_seconds. Likely first/last seen are not datetime: {ae}", exc_info=True)
+             logger.error(f"Data types: first_seen={basic_agg['first_seen'].dtype}, last_seen={basic_agg['last_seen'].dtype}")
+             return False
+        except Exception as e:
+             logger.error(f"Unexpected error calculating time_span_seconds: {e}", exc_info=True)
+             return False
 
 
-        # Calculate time span in seconds
-        basic_agg['time_span_seconds'] = (basic_agg['last_seen'] - basic_agg['first_seen']).dt.total_seconds()
         logger.debug(f"Calculated basic aggregations for {len(basic_agg)} IPs.")
 
         # 2. RPM Metrics (Average and Max during active minutes)
