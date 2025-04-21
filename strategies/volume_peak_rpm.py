@@ -24,7 +24,8 @@ class Strategy(BaseStrategy):
                                          total_overall_requests=None, # ADDED for signature consistency
                                          max_total_requests=None,
                                          max_subnet_time_span=None,
-                                         max_subnet_req_per_min_window=None): # ADDED for signature consistency
+                                         max_subnet_req_per_min_window=None, # ADDED for signature consistency
+                                         max_ip_count=None): # ADDED max_ip_count
         """Calculates score and block decision."""
         total_requests = threat_data.get('total_requests', 0)
         max_rpm = threat_data.get('subnet_max_ip_rpm', 0)

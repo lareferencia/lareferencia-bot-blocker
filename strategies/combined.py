@@ -48,7 +48,8 @@ class Strategy:
                                          total_overall_requests, # Received but not used directly in logic
                                          max_total_requests, # Keep receiving, might be useful elsewhere
                                          max_subnet_time_span, # Keep receiving
-                                         max_subnet_req_per_min_window):
+                                         max_subnet_req_per_min_window,
+                                         max_ip_count=None): # ADDED max_ip_count
         """
         Calculates score (0-3) based on meeting conditions:
         1. TimeSpan >= 75%

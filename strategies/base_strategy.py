@@ -15,7 +15,8 @@ class BaseStrategy(ABC):
                                          total_overall_requests=None,
                                          max_total_requests=None,
                                          max_subnet_time_span=None,
-                                         max_subnet_req_per_min_window=None):
+                                         max_subnet_req_per_min_window=None,
+                                         max_ip_count=None):
         """
         Calculates a threat score and determines if the threat should be blocked.
 
@@ -31,7 +32,7 @@ class BaseStrategy(ABC):
             max_total_requests (int, optional): The maximum total_requests observed across all threats in this run.
             max_subnet_time_span (float, optional): The maximum subnet_time_span observed across all threats in this run.
             max_subnet_req_per_min_window (float, optional): The maximum subnet_req_per_min_window observed across all threats.
-
+            max_ip_count (int, optional): The maximum ip_count observed across all threats in this run.
 
         Returns:
             tuple: (score, should_block, reason)

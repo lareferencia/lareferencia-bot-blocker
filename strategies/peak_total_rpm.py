@@ -18,7 +18,16 @@ class Strategy(BaseStrategy):
         # block_threshold is handled by effective_min_requests
         return ['block_duration', 'block_total_max_rpm_threshold']
 
-    def calculate_threat_score_and_block(self, threat_data, config, effective_min_requests, analysis_duration_seconds=None, max_total_requests=None, max_subnet_time_span=None):
+    def calculate_threat_score_and_block(self,
+                                         threat_data,
+                                         config,
+                                         effective_min_requests,
+                                         analysis_duration_seconds=None,
+                                         total_overall_requests=None, # ADDED for signature consistency
+                                         max_total_requests=None,
+                                         max_subnet_time_span=None,
+                                         max_subnet_req_per_min_window=None, # ADDED for signature consistency
+                                         max_ip_count=None): # ADDED max_ip_count
         """Calculates score and block decision based on subnet total maximum RPM."""
         total_requests = threat_data.get('total_requests', 0)
         # Use the metric for subnet total maximum RPM

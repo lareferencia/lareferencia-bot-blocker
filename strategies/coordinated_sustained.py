@@ -30,7 +30,8 @@ class Strategy(BaseStrategy):
                                          total_overall_requests=None, # ADDED
                                          max_total_requests=None,
                                          max_subnet_time_span=None,
-                                         max_subnet_req_per_min_window=None): # ADDED
+                                         max_subnet_req_per_min_window=None, # ADDED
+                                         max_ip_count=None): # ADDED max_ip_count
         """Calculates score and block decision based on multiple factors, including peak RPM and dynamic timespan."""
         total_requests = threat_data.get('total_requests', 0)
         # ip_count = threat_data.get('ip_count', 0) # No longer used for blocking logic
@@ -91,7 +92,7 @@ class Strategy(BaseStrategy):
             if should_block:
                 reason = " and ".join(reason_parts)
             elif meets_volume_threshold: # Log why it wasn't blocked if volume was met
-                 reason = "No Block: " + " and ".join(reason_parts) # Show reasons checked so far
+                 reason = "No Block: " and ".join(reason_parts) # Show reasons checked so far
             # else: # Volume threshold not met - handled below
 
 
