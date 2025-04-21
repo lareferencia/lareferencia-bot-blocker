@@ -16,7 +16,7 @@ import pandas as pd # Import pandas for isna check
 logger = logging.getLogger(__name__)
 
 # --- Hardcoded value for TimeSpan threshold ---
-DEFAULT_MIN_TIMESPAN_PERCENT = 75.0
+DEFAULT_MIN_TIMESPAN_PERCENT = 50.0
 # --- New: Threshold for blocking based on score (conditions met) ---
 BLOCKING_SCORE_THRESHOLD = 2.0
 
@@ -24,7 +24,7 @@ class Strategy:
     """
     Combined strategy (Updated Logic 7 - Condition 2 uses effective_min_requests):
     - Score reflects how many blocking conditions are met (0-3):
-        1. Fixed TimeSpan >= 75%
+        1. Fixed TimeSpan >= 50%
         2. TotalReq >= effective_min_requests (calculated externally)
         3. Req/Min(Win) > block_total_max_rpm_threshold
     - Block decision requires score >= BLOCKING_SCORE_THRESHOLD (e.g., >= 2.0).
@@ -48,7 +48,6 @@ class Strategy:
                                          total_overall_requests, # Received but not used directly in logic
                                          max_total_requests, # Keep receiving, might be useful elsewhere
                                          max_subnet_time_span, # Keep receiving
-                                         max_subnet_req_per_min_window,
                                          max_ip_count=None): # ADDED max_ip_count
         """
         Calculates score (0-3) based on meeting conditions:

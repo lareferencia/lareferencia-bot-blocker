@@ -110,11 +110,12 @@ def main():
         '--block', action='store_true',
         help='Enable blocking of detected threats using UFW.'
     )
-    parser.add_argument(
-        '--block-strategy', default='combined', # UPDATED default
-        choices=['volume_coordination', 'volume_peak_rpm', 'peak_total_rpm', 'coordinated_sustained', 'combined'], # ADDED combined
-        help='Strategy used to score threats and decide on blocking.'
-    )
+    parser.add_argument('--block-strategy', type=str, default='combined',
+                        choices=[
+                            'combined',
+                            'volume_coordination',
+                            ],
+                        help='Strategy to use for scoring and blocking decisions.')
     parser.add_argument(
         '--block-relative-threshold-percent', type=float, default=1, # Default might need adjustment based on typical max requests
         help='Base threshold for initial consideration (most strategies). '
@@ -310,23 +311,22 @@ def main():
 
     # --- Calculate Overall Maximums using DataFrame ---
     max_metrics_data = {}
-    # Define metrics to track and their display names
+    # Define metrics to track and their display names - REMOVED metrics
     metrics_to_track = [
         'total_requests', 'ip_count',
-        'subnet_avg_ip_rpm', 'subnet_max_ip_rpm',
-        'subnet_total_avg_rpm', 'subnet_total_max_rpm',
-        'subnet_time_span', 'subnet_req_per_min',
+        # Removed IP RPMs
+        # Removed Subnet Total RPMs
+        'subnet_time_span',
+        # Removed subnet_req_per_min
         'subnet_req_per_min_window'
     ]
     metric_names_map = {
         'total_requests': 'Total Requests',
         'ip_count': 'IP Count',
-        'subnet_avg_ip_rpm': 'Average IP RPM (Subnet Avg)',
-        'subnet_max_ip_rpm': 'Maximum IP RPM (Subnet Max)',
-        'subnet_total_avg_rpm': 'Average Total Subnet RPM',
-        'subnet_total_max_rpm': 'Maximum Total Subnet RPM',
+        # Removed IP RPMs
+        # Removed Subnet Total RPMs
         'subnet_time_span': 'Subnet Activity Timespan (%)',
-        'subnet_req_per_min': 'Subnet Req/Min (Activity Span)',
+        # Removed subnet_req_per_min
         'subnet_req_per_min_window': 'Subnet Req/Min (Window Avg)'
     }
 
@@ -336,7 +336,6 @@ def main():
                 try:
                     max_value = threats_df[metric].max()
                     # Find all subnets (index values) that achieved this max value
-                    # Handle potential floating point inaccuracies if necessary, but direct comparison is usually fine
                     max_subnets = threats_df[threats_df[metric] == max_value].index.tolist()
                     max_metrics_data[metric] = {'value': max_value, 'subnets': max_subnets}
                 except Exception as e:
@@ -473,7 +472,7 @@ def main():
         target_id_str = str(target_id_obj)
         strat_score_str = f"Score: {threat.get('strategy_score', 0):.2f}"
 
-        # Construct detailed metrics summary string (using .get() on the threat dict)
+        # Construct detailed metrics summary string (using .get() on the threat dict) - REMOVED metrics
         total_req_val = threat.get('total_requests', 0)
         if total_req_val is None or pd.isna(total_req_val): total_req_val = 0
         total_req_val = int(total_req_val)
@@ -481,10 +480,8 @@ def main():
         metrics_summary = (
             f"{total_req_val:d} reqs, "
             f"{threat.get('ip_count', 0):d} IPs, "
-            f"AvgIPRPM: {threat.get('subnet_avg_ip_rpm', 0):.1f}, "
-            f"MaxIPRPM: {threat.get('subnet_max_ip_rpm', 0):.0f}, "
-            f"AvgTotalRPM: {threat.get('subnet_total_avg_rpm', 0):.1f}, "
-            f"MaxTotalRPM: {threat.get('subnet_total_max_rpm', 0):.0f}, "
+            # Removed IP RPMs
+            # Removed Subnet Total RPMs
             f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, "
             f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
         )
@@ -540,7 +537,7 @@ def main():
         print("  No threat data available or maximums could not be determined.")
     else:
         for metric_key, data in max_metrics_data.items():
-            metric_name = metric_names_map.get(metric_key, metric_key)
+            metric_name = metric_names_map.get(metric_key, metric_key) # Uses updated map
             value = data['value']
             subnets = data['subnets'] # List of subnet ID strings
             value_str = "N/A"
@@ -590,7 +587,7 @@ def main():
                         achieved_max_metrics.append(metric_names_map.get(metric_key, metric_key))
                 achieved_max_str = f" [Achieved Max: {', '.join(achieved_max_metrics)}]" if achieved_max_metrics else ""
 
-                # Reuse the metrics summary string generation from the DataFrame row
+                # Reuse the metrics summary string generation from the DataFrame row - REMOVED metrics
                 total_req_val = threat_row.get('total_requests', 0)
                 if total_req_val is None or pd.isna(total_req_val): total_req_val = 0
                 total_req_val = int(total_req_val)
@@ -598,11 +595,9 @@ def main():
                 metrics_summary = (
                     f"{total_req_val:d} reqs, "
                     f"{threat_row.get('ip_count', 0):d} IPs, "
-                    f"AvgIPRPM: {threat_row.get('subnet_avg_ip_rpm', 0):.1f}, "
-                    f"MaxIPRPM: {threat_row.get('subnet_max_ip_rpm', 0):.0f}, "
-                    f"AvgTotalRPM: {threat_row.get('subnet_total_avg_rpm', 0):.1f}, "
-                    f"MaxTotalRPM: {threat_row.get('subnet_total_max_rpm', 0):.0f}, "
-                    f"Req/Min(Span): {threat_row.get('subnet_req_per_min', 0):.1f}, " # Keep span-based req/min here
+                    # Removed IP RPMs
+                    # Removed Subnet Total RPMs
+                    # Removed subnet_req_per_min
                     f"Req/Min(Win): {threat_row.get('subnet_req_per_min_window', 0):.1f}, "
                     f"TimeSpan: {threat_row.get('subnet_time_span', 0):.0f}s"
                 )
@@ -621,7 +616,7 @@ def main():
                          else:
                              print(f"     - Invalid detail format: {ip_detail}")
                     if len(details) > max_details_to_show:
-                         print(f"     ... and {len(details) - max_details_to_show} more.")
+                         print(f"     ... and {len(details}) - max_details_to_show} more.")
                 # else:
                 #      print("  -> No IP details available.") # Redundant if details is empty list
 

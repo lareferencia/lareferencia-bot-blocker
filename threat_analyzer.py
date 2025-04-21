@@ -224,6 +224,7 @@ class ThreatAnalyzer:
         logger.debug("Combining basic and RPM metrics...")
         self.ip_metrics_df = basic_agg.join(rpm_metrics, how='left')
         # Fill any potential NaNs from join (though initialization should prevent this)
+        # Keep avg_rpm_activity and max_rpm_activity
         self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity']] = self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity']].fillna(0)
         logger.debug("Metrics combined.")
 
@@ -247,58 +248,14 @@ class ThreatAnalyzer:
         return True
 
     def _calculate_subnet_rpm_metrics(self):
-        """Calculates total RPM metrics per Subnet."""
-        if self.log_df is None or self.log_df.empty:
-             logger.warning("Log DataFrame not available. Cannot calculate subnet RPM metrics.")
-             # Return empty DataFrame with expected columns
-             return pd.DataFrame(columns=['subnet_total_avg_rpm', 'subnet_total_max_rpm'])
-
-        # Ensure datetime index for resampling
-        if not isinstance(self.log_df.index, pd.DatetimeIndex):
-             if 'timestamp' in self.log_df.columns and pd.api.types.is_datetime64_any_dtype(self.log_df['timestamp']):
-                 log_df_indexed = self.log_df.set_index('timestamp')
-                 if not isinstance(log_df_indexed.index, pd.DatetimeIndex):
-                      logger.error("Cannot calculate subnet RPM: Failed to set datetime index.")
-                      return pd.DataFrame(columns=['subnet_total_avg_rpm', 'subnet_total_max_rpm'])
-             else:
-                 logger.error("Cannot calculate subnet RPM: No usable datetime index or 'timestamp' column.")
-                 return pd.DataFrame(columns=['subnet_total_avg_rpm', 'subnet_total_max_rpm'])
-        else:
-             log_df_indexed = self.log_df
-
-        # Ensure 'subnet' column exists
-        if 'subnet' not in log_df_indexed.columns:
-             logger.error("Cannot calculate subnet RPM: 'subnet' column missing.")
-             return pd.DataFrame(columns=['subnet_total_avg_rpm', 'subnet_total_max_rpm'])
-
-
-        logger.info("Calculating total RPM metrics per Subnet...")
-        try:
-            # Group by subnet and resample per minute using the indexed DataFrame
-            # Use observed=True if pandas version >= 1.5
-            subnet_group = log_df_indexed.groupby('subnet', observed=True)
-            rpm_counts_subnet = subnet_group.resample('T').size()
-            rpm_counts_subnet = rpm_counts_subnet[rpm_counts_subnet > 0] # Filter inactive minutes
-
-            if rpm_counts_subnet.empty:
-                 logger.info("No subnet activity found for RPM calculation.")
-                 return pd.DataFrame(columns=['subnet_total_avg_rpm', 'subnet_total_max_rpm'])
-
-            # Calculate avg and max RPM for the whole subnet
-            # Group the resulting Series by subnet level
-            subnet_rpm_metrics = rpm_counts_subnet.groupby(level='subnet').agg(
-                subnet_total_avg_rpm='mean', # Avg RPM of the subnet when active
-                subnet_total_max_rpm='max'   # Max RPM the subnet reached in any minute
-            ).fillna(0)
-            logger.info(f"Calculated total RPM metrics for {len(subnet_rpm_metrics)} subnets.")
-            return subnet_rpm_metrics
-        except Exception as e:
-            logger.error(f"Error calculating subnet RPM metrics: {e}", exc_info=True)
-            # Return empty DataFrame on error
-            return pd.DataFrame(columns=['subnet_total_avg_rpm', 'subnet_total_max_rpm'])
+        """Calculates total RPM metrics per Subnet. (REMOVED - No longer needed for current strategies)"""
+        logger.debug("Subnet total RPM calculation skipped (metrics removed).")
+        # Return empty DataFrame with expected columns (or None)
+        # Returning empty DF to avoid breaking join logic downstream if it expects a DF
+        return pd.DataFrame(columns=[]) # No columns needed anymore
 
     def _aggregate_subnet_metrics(self, analysis_duration_seconds=None):
-        """Aggregates IP metrics and adds Subnet RPM metrics using a more robust join approach."""
+        """Aggregates IP metrics using a more robust join approach. (Removed some metrics)"""
         if self.ip_metrics_df is None or self.ip_metrics_df.empty:
             logger.warning("IP metrics DataFrame not available. Cannot aggregate subnet metrics.")
             return False
@@ -318,8 +275,9 @@ class ThreatAnalyzer:
                 'total_requests': 'sum',
                 'first_seen': 'min',
                 'last_seen': 'max',
-                'avg_rpm_activity': 'mean', # Avg of IP avgs
-                'max_rpm_activity': 'max'   # Max of IP maxs
+                # Remove aggregation of IP RPMs
+                # 'avg_rpm_activity': 'mean', # Avg of IP avgs - REMOVED
+                # 'max_rpm_activity': 'max'   # Max of IP maxs - REMOVED
             }
             # Calculate ip_count separately
             ip_counts = grouped_ips.size().rename('ip_count')
@@ -333,8 +291,7 @@ class ThreatAnalyzer:
 
             # Rename columns for clarity before calculating derived metrics
             agg1 = agg1.rename(columns={
-                'avg_rpm_activity': 'subnet_avg_ip_rpm',
-                'max_rpm_activity': 'subnet_max_ip_rpm',
+                # Removed IP RPM renames
                 'first_seen': 'subnet_first_seen',
                 'last_seen': 'subnet_last_seen'
             })
@@ -342,13 +299,12 @@ class ThreatAnalyzer:
             # Calculate subnet_time_span (vectorized)
             agg1['subnet_time_span'] = (agg1['subnet_last_seen'] - agg1['subnet_first_seen']).dt.total_seconds().fillna(0).clip(lower=0)
 
-            # Calculate Requests per Minute (vectorized)
-            # Avoid division by zero
-            agg1['subnet_req_per_min'] = np.where(
-                agg1['subnet_time_span'] > 0,
-                agg1['total_requests'] / (agg1['subnet_time_span'] / 60.0),
-                0
-            )
+            # Calculate Requests per Minute (vectorized) - REMOVED
+            # agg1['subnet_req_per_min'] = np.where(
+            #     agg1['subnet_time_span'] > 0,
+            #     agg1['total_requests'] / (agg1['subnet_time_span'] / 60.0),
+            #     0
+            # )
 
             # Calculate Requests per Minute over the entire analysis window (vectorized)
             if analysis_duration_seconds and analysis_duration_seconds > 0:
@@ -369,15 +325,8 @@ class ThreatAnalyzer:
             return False
 
         # --- 2. Calculate Subnet Total RPM metrics from log_df ---
-        logger.debug("Calculating Subnet Total RPM metrics from log_df...")
-        agg2 = self._calculate_subnet_rpm_metrics() # Returns DF indexed by subnet or empty DF
-        if agg2 is None: # Should return empty DF now, but check just in case
-             logger.warning("Subnet total RPM calculation failed unexpectedly. Creating placeholders.")
-             agg2 = pd.DataFrame(index=agg1.index, columns=['subnet_total_avg_rpm', 'subnet_total_max_rpm']).fillna(0.0)
-        elif not agg2.empty:
-             # Ensure index consistency if needed (though _calculate_subnet_rpm_metrics should handle it)
-             agg2.index = agg2.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (IPv4Network, IPv6Network)) else x)
-        # No need to recreate if empty, join will handle it.
+        # logger.debug("Calculating Subnet Total RPM metrics from log_df...") # SKIPPED
+        agg2 = self._calculate_subnet_rpm_metrics() # Returns empty DF
 
         # --- 3. Combine the aggregations ---
         logger.debug("Joining aggregated metrics...")
@@ -385,13 +334,12 @@ class ThreatAnalyzer:
             # Start with the primary aggregation
             self.subnet_metrics_df = agg1
 
-            # Join the subnet total RPM metrics. Use how='left'.
-            # Reindex agg2 to match agg1's index before joining to handle missing subnets
-            agg2_reindexed = agg2.reindex(self.subnet_metrics_df.index).fillna(0.0)
-            self.subnet_metrics_df = self.subnet_metrics_df.join(agg2_reindexed, how='left')
+            # Join the subnet total RPM metrics (agg2 is empty, so join won't add columns)
+            if not agg2.empty:
+                 agg2_reindexed = agg2.reindex(self.subnet_metrics_df.index).fillna(0.0)
+                 self.subnet_metrics_df = self.subnet_metrics_df.join(agg2_reindexed, how='left')
 
-            # Fill any remaining NaNs that might have occurred (e.g., if agg1 was empty initially)
-            # Fill only numeric columns, potentially excluding specific ones if needed
+            # Fill any remaining NaNs that might have occurred
             numeric_cols = self.subnet_metrics_df.select_dtypes(include=np.number).columns
             self.subnet_metrics_df[numeric_cols] = self.subnet_metrics_df[numeric_cols].fillna(0)
 
@@ -407,13 +355,11 @@ class ThreatAnalyzer:
             expected_types = {
                 'total_requests': int,
                 'ip_count': int,
-                'subnet_avg_ip_rpm': float,
-                'subnet_max_ip_rpm': float,
+                # Removed IP RPMs
                 'subnet_time_span': float,
-                'subnet_req_per_min': float,
+                # Removed subnet_req_per_min
                 'subnet_req_per_min_window': float,
-                'subnet_total_avg_rpm': float,
-                'subnet_total_max_rpm': float,
+                # Removed Subnet Total RPMs
             }
             for col, dtype in expected_types.items():
                 if col in self.subnet_metrics_df.columns:
@@ -421,9 +367,6 @@ class ThreatAnalyzer:
                     self.subnet_metrics_df[col] = pd.to_numeric(self.subnet_metrics_df[col], errors='coerce').fillna(0)
                     # Convert to the target type
                     if dtype == int:
-                         # Use Int64 (nullable int) if pandas version supports it and NaNs might exist before fillna
-                         # self.subnet_metrics_df[col] = self.subnet_metrics_df[col].astype(pd.Int64Dtype())
-                         # Or stick to standard int after fillna(0)
                          self.subnet_metrics_df[col] = self.subnet_metrics_df[col].astype(int)
                     else:
                          self.subnet_metrics_df[col] = self.subnet_metrics_df[col].astype(float)
@@ -438,76 +381,6 @@ class ThreatAnalyzer:
         logger.info(f"Finished aggregating metrics for {len(self.subnet_metrics_df)} subnets.")
         logger.debug(f"Final combined subnet metrics (after type conversion):\n{self.subnet_metrics_df.head()}")
         return True
-
-    def _format_threat_output(self):
-        """
-        DEPRECATED / REPLACED by direct dictionary creation in identify_threats.
-        Formats the aggregated subnet metrics into the unified_threats list.
-        """
-        logger.warning("'_format_threat_output' is deprecated. Formatting is now done within 'identify_threats'.")
-        # Keep the logic here for reference or potential future use, but it's not called by the simplified identify_threats
-        if self.subnet_metrics_df is None or self.ip_metrics_df is None:
-            logger.warning("Subnet or IP metrics not available. Cannot format output.")
-            self.unified_threats = []
-            return
-
-        logger.debug("Formatting subnet metrics into threat list...")
-        formatted_threats = []
-
-        # Prepare top IPs per subnet efficiently
-        logger.debug("Preparing top IP details per subnet...")
-        top_ips_details = {}
-        if not self.ip_metrics_df.empty:
-            try:
-                # Sort IPs by max_rpm_activity descending, group by subnet, take top 5
-                top_ips_per_subnet = self.ip_metrics_df.sort_values('max_rpm_activity', ascending=False) \
-                                                    .groupby('subnet', observed=True) \
-                                                    .head(5) # Get top 5 rows per group
-
-                # Convert these top IPs into the desired dictionary format per subnet
-                for subnet, group_df in top_ips_per_subnet.groupby('subnet', observed=True):
-                    details_list = []
-                    for ip, ip_metrics in group_df.iterrows():
-                        details_list.append({
-                            'ip': str(ip), # Ensure IP is string
-                            'total_requests': int(ip_metrics.get('total_requests', 0)),
-                            'avg_rpm': round(ip_metrics.get('avg_rpm_activity', 0), 2),
-                            'max_rpm': round(ip_metrics.get('max_rpm_activity', 0), 2),
-                        })
-                    top_ips_details[subnet] = details_list
-                logger.debug(f"Prepared details for {len(top_ips_details)} subnets.")
-            except Exception as e:
-                logger.error(f"Error preparing top IP details: {e}", exc_info=True)
-                # Continue without details if preparation fails
-
-        logger.debug("Iterating through subnet metrics to create final list...")
-        for subnet, metrics_row in self.subnet_metrics_df.iterrows():
-            # Convert the metrics row Series to a dictionary
-            threat_dict = metrics_row.to_dict()
-
-            # Ensure correct types and rounding for the final output dictionary
-            threat = {
-                'type': 'subnet',
-                'id': subnet, # Keep as ipaddress object initially
-                'total_requests': int(threat_dict.get('total_requests', 0)),
-                'ip_count': int(threat_dict.get('ip_count', 0)),
-                'subnet_avg_ip_rpm': round(threat_dict.get('subnet_avg_ip_rpm', 0), 2),
-                'subnet_max_ip_rpm': round(threat_dict.get('subnet_max_ip_rpm', 0), 2),
-                'subnet_total_avg_rpm': round(threat_dict.get('subnet_total_avg_rpm', 0), 2),
-                'subnet_total_max_rpm': round(threat_dict.get('subnet_total_max_rpm', 0), 2),
-                'subnet_time_span': round(threat_dict.get('subnet_time_span', 0), 2),
-                'subnet_req_per_min': round(threat_dict.get('subnet_req_per_min', 0), 2),
-                'subnet_req_per_min_window': round(threat_dict.get('subnet_req_per_min_window', 0), 2),
-                'details': top_ips_details.get(subnet, []), # Get pre-calculated details
-                'strategy_score': 0.0, # Placeholder, will be calculated later
-                'should_block': False, # Placeholder
-                'block_reason': None   # Placeholder
-            }
-            formatted_threats.append(threat)
-
-        self.unified_threats = formatted_threats
-        logger.debug(f"Formatted {len(self.unified_threats)} threats (pre-strategy).")
-
 
     def identify_threats(self,
                          strategy_name,
@@ -573,24 +446,20 @@ class ThreatAnalyzer:
         # --- Calculate Maximums for Normalization (from subnet_metrics_df) ---
         max_total_requests = 0
         max_subnet_time_span = 0
-        max_subnet_req_per_min_window = 0.0
         max_ip_count = 0 # ADDED: Initialize max_ip_count
         if self.subnet_metrics_df is not None and not self.subnet_metrics_df.empty:
             # Use .max() on the DataFrame columns
             max_total_requests = self.subnet_metrics_df['total_requests'].max()
             max_subnet_time_span = self.subnet_metrics_df['subnet_time_span'].max()
-            max_subnet_req_per_min_window = self.subnet_metrics_df['subnet_req_per_min_window'].max()
             max_ip_count = self.subnet_metrics_df['ip_count'].max() # ADDED: Calculate max_ip_count
             # Ensure they are standard Python types if necessary (e.g., numpy int -> int)
             max_total_requests = int(max_total_requests) if pd.notna(max_total_requests) else 0
             max_subnet_time_span = float(max_subnet_time_span) if pd.notna(max_subnet_time_span) else 0.0
-            max_subnet_req_per_min_window = float(max_subnet_req_per_min_window) if pd.notna(max_subnet_req_per_min_window) else 0.0
             max_ip_count = int(max_ip_count) if pd.notna(max_ip_count) else 0 # ADDED: Convert max_ip_count
 
             logger.debug(
                 f"Calculated maximums for normalization: max_total_requests={max_total_requests}, "
                 f"max_subnet_time_span={max_subnet_time_span:.2f}, "
-                f"max_subnet_req_per_min_window={max_subnet_req_per_min_window:.2f}, "
                 f"max_ip_count={max_ip_count}" # ADDED: Log max_ip_count
             )
         else:
@@ -645,7 +514,6 @@ class ThreatAnalyzer:
                      total_overall_requests=total_overall_requests,
                      max_total_requests=max_total_requests,
                      max_subnet_time_span=max_subnet_time_span,
-                     max_subnet_req_per_min_window=max_subnet_req_per_min_window, # Pass the new max
                      max_ip_count=max_ip_count # ADDED: Pass max_ip_count
                  )
 
@@ -655,12 +523,7 @@ class ThreatAnalyzer:
                      'id': subnet_obj, # Keep as object for now, convert during export
                      'total_requests': int(threat_data.get('total_requests', 0)),
                      'ip_count': int(threat_data.get('ip_count', 0)),
-                     'subnet_avg_ip_rpm': round(threat_data.get('subnet_avg_ip_rpm', 0), 2),
-                     'subnet_max_ip_rpm': round(threat_data.get('subnet_max_ip_rpm', 0), 2),
-                     'subnet_total_avg_rpm': round(threat_data.get('subnet_total_avg_rpm', 0), 2),
-                     'subnet_total_max_rpm': round(threat_data.get('subnet_total_max_rpm', 0), 2),
                      'subnet_time_span': round(threat_data.get('subnet_time_span', 0), 2),
-                     'subnet_req_per_min': round(threat_data.get('subnet_req_per_min', 0), 2),
                      'subnet_req_per_min_window': round(threat_data.get('subnet_req_per_min_window', 0), 2),
                      'details': top_ips_details.get(subnet_obj, []), # Get pre-calculated details
                      'strategy_score': score, # Use calculated score
@@ -730,13 +593,10 @@ class ThreatAnalyzer:
 
         try:
             df_export = pd.DataFrame(export_data)
-            # Reorder columns for clarity
+            # Reorder columns for clarity - REMOVED metrics
             cols_order = [
                 'id', 'strategy_score', 'should_block', 'block_reason',
                 'total_requests', 'ip_count',
-                'subnet_avg_ip_rpm', 'subnet_max_ip_rpm',
-                'subnet_total_avg_rpm', 'subnet_total_max_rpm',
-                'subnet_req_per_min',
                 'subnet_req_per_min_window',
                 'subnet_time_span',
                 'details'

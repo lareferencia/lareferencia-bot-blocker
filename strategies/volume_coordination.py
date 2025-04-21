@@ -24,7 +24,7 @@ class Strategy(BaseStrategy):
                                          total_overall_requests=None,
                                          max_total_requests=None,
                                          max_subnet_time_span=None,
-                                         max_subnet_req_per_min_window=None,
+                                         # max_subnet_req_per_min_window=None, # REMOVED
                                          max_ip_count=None): # ADDED max_ip_count
         """Calculates normalized score and block decision."""
         total_requests = threat_data.get('total_requests', 0)
