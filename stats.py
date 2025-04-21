@@ -616,7 +616,8 @@ def main():
                          else:
                              print(f"     - Invalid detail format: {ip_detail}")
                     if len(details) > max_details_to_show:
-                         print(f"     ... and {len(details}) - max_details_to_show} more.")
+                         # Corrected f-string: removed extra '}' inside len()
+                         print(f"     ... and {len(details) - max_details_to_show} more.")
                 # else:
                 #      print("  -> No IP details available.") # Redundant if details is empty list
 
