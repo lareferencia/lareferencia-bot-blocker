@@ -16,7 +16,15 @@ class Strategy(BaseStrategy):
         # block_threshold is handled by effective_min_requests
         return ['block_duration', 'block_ip_count_threshold']
 
-    def calculate_threat_score_and_block(self, threat_data, config, effective_min_requests, analysis_duration_seconds=None, max_total_requests=None, max_subnet_time_span=None):
+    def calculate_threat_score_and_block(self,
+                                         threat_data,
+                                         config,
+                                         effective_min_requests,
+                                         analysis_duration_seconds=None,
+                                         total_overall_requests=None, # ADDED for signature consistency
+                                         max_total_requests=None,
+                                         max_subnet_time_span=None,
+                                         max_subnet_req_per_min_window=None): # ADDED for signature consistency
         """Calculates score and block decision."""
         total_requests = threat_data.get('total_requests', 0)
         ip_count = threat_data.get('ip_count', 0)
