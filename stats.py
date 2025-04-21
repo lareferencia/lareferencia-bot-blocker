@@ -278,8 +278,8 @@ def main():
     if total_overall_requests > 0:
         # Calculate based on the relative threshold - This is now primarily for strategies OTHER than 'combined'
         effective_min_requests = max(1, int(total_overall_requests * (args.block_relative_threshold_percent / 100.0)))
-        # UPDATED log message (restored note about combined ignoring it for Cond 2)
-        logger.info(f"Calculated effective_min_requests = {effective_min_requests} (based on {args.block_relative_threshold_percent}% of {total_overall_requests}). Note: 'combined' strategy ignores this for its Condition 2.")
+        # UPDATED log message (removed note about combined ignoring it)
+        logger.info(f"Calculated effective_min_requests = {effective_min_requests} (based on {args.block_relative_threshold_percent}% of {total_overall_requests}). Used by most strategies.")
     else:
         # If no requests, the threshold remains 1, but analysis likely stops anyway
         logger.warning(f"Total requests in analysis window is 0. Effective minimum request threshold set to {effective_min_requests}.")

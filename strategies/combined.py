@@ -1,9 +1,9 @@
 """
-Blocking Strategy: **Combined** (Logic v6)
+Blocking Strategy: **Combined** (Logic v7 - Cond 2 uses effective_min_requests)
 
 This strategy evaluates three conditions:
 1. TimeSpan >= 75% (fixed)
-2. Total Requests > X% of SUM of ALL Requests in Window (using --block-relative-threshold-percent)
+2. Total Requests >= effective_min_requests (calculated externally based on --block-relative-threshold-percent)
 3. Req/Min(Win) > Y (using --block-total-max-rpm-threshold)
 
 The score (0.0-3.0) reflects the number of conditions met.
@@ -22,36 +22,37 @@ BLOCKING_SCORE_THRESHOLD = 2.0
 
 class Strategy:
     """
-    Combined strategy (Updated Logic 6 - Condition 2 uses % of SUM):
+    Combined strategy (Updated Logic 7 - Condition 2 uses effective_min_requests):
     - Score reflects how many blocking conditions are met (0-3):
         1. Fixed TimeSpan >= 75%
-        2. TotalReq > block_relative_threshold_percent of SumTotalReq (overall sum)
+        2. TotalReq >= effective_min_requests (calculated externally)
         3. Req/Min(Win) > block_total_max_rpm_threshold
     - Block decision requires score >= BLOCKING_SCORE_THRESHOLD (e.g., >= 2.0).
-    - Ignores effective_min_requests for its core logic.
+    - --block-relative-threshold-percent is used *externally* to calculate effective_min_requests.
     """
 
     def get_required_config_keys(self):
         """Returns a list of config keys required by this strategy."""
-        # block_relative_threshold_percent is used for Condition 2 calculation
+        # effective_min_requests (derived from block_relative_threshold_percent) is passed in.
+        # block_total_max_rpm_threshold is used for Condition 3.
         return [
             'block_total_max_rpm_threshold', # Used for Req/Min(Win) threshold (Condition 3)
-            'block_relative_threshold_percent' # Used for Total Requests threshold % (Condition 2)
+            # 'block_relative_threshold_percent' # No longer directly used by the strategy itself
         ]
 
     def calculate_threat_score_and_block(self,
                                          threat_data,
                                          config,
-                                         effective_min_requests, # Received but ignored
+                                         effective_min_requests, # Now used directly for Condition 2
                                          analysis_duration_seconds,
-                                         total_overall_requests, # Use this for Condition 2
+                                         total_overall_requests, # Received but not used directly in logic
                                          max_total_requests, # Keep receiving, might be useful elsewhere
                                          max_subnet_time_span, # Keep receiving
                                          max_subnet_req_per_min_window):
         """
         Calculates score (0-3) based on meeting conditions:
         1. TimeSpan >= 75%
-        2. TotalReq > Relative% of SUM of ALL Requests in Window
+        2. TotalReq >= effective_min_requests
         3. Req/Min(Win) > Absolute Threshold
         Decides blocking if score >= BLOCKING_SCORE_THRESHOLD (e.g., 2.0).
         """
@@ -64,7 +65,7 @@ class Strategy:
         # --- Condition 1: Check Mandatory TimeSpan ---
         timespan_condition_met = False
         current_timespan = threat_data.get('subnet_time_span', 0)
-        if analysis_duration_seconds > 0:
+        if analysis_duration_seconds and analysis_duration_seconds > 0: # Check if valid duration
             min_timespan_threshold_seconds = analysis_duration_seconds * (DEFAULT_MIN_TIMESPAN_PERCENT / 100.0)
             if current_timespan >= min_timespan_threshold_seconds:
                 timespan_condition_met = True
@@ -73,34 +74,31 @@ class Strategy:
             else:
                  block_decision_reasons.append(f"TimeSpan < {DEFAULT_MIN_TIMESPAN_PERCENT:.1f}% ({current_timespan:.0f}s)")
         else:
-             block_decision_reasons.append("TimeSpan % condition skipped (duration=0)")
+             block_decision_reasons.append(f"TimeSpan % condition skipped (duration={analysis_duration_seconds})") # Log the duration value
 
-        # --- Condition 2: Check Mandatory Total Requests % vs SUM Overall ---
+        # --- Condition 2: Check Mandatory Total Requests vs effective_min_requests ---
         total_req_ok = False
-        # Use the total_overall_requests from the entire analysis window
-        if total_overall_requests > 0:
-             # Calculate threshold based on the SUM of all requests
-             min_total_req_threshold = total_overall_requests * (config.block_relative_threshold_percent / 100.0)
-             current_total_req_raw = threat_data.get('total_requests', 0)
-             current_total_req = 0
-             if current_total_req_raw is not None and not pd.isna(current_total_req_raw):
-                  current_total_req = int(current_total_req_raw)
+        # Use the externally calculated effective_min_requests
+        min_total_req_threshold = effective_min_requests # Use directly
+        current_total_req_raw = threat_data.get('total_requests', 0)
+        current_total_req = 0
+        if current_total_req_raw is not None and not pd.isna(current_total_req_raw):
+             current_total_req = int(current_total_req_raw)
 
-             min_total_req_threshold = max(1, min_total_req_threshold) # Ensure threshold is at least 1
-             if current_total_req > min_total_req_threshold:
-                 total_req_ok = True
-                 conditions_met_count += 1
-                 # Update reason to reflect comparison with % of SUM
-                 block_decision_reasons.append(f"TotalReq > {config.block_relative_threshold_percent:.1f}% sum ({current_total_req} > {min_total_req_threshold:.0f})")
-             else:
-                 # Update reason
-                 block_decision_reasons.append(f"TotalReq <= {config.block_relative_threshold_percent:.1f}% sum ({current_total_req} <= {min_total_req_threshold:.0f})")
+        # min_total_req_threshold is already guaranteed >= 1 from external calculation
+        if current_total_req >= min_total_req_threshold:
+            total_req_ok = True
+            conditions_met_count += 1
+            # Update reason to reflect comparison with effective_min_requests
+            block_decision_reasons.append(f"TotalReq >= effective_min ({current_total_req} >= {min_total_req_threshold})")
         else:
-             # If total_overall_requests is 0, this condition cannot be met
-             block_decision_reasons.append("TotalReq % condition skipped (sum=0)")
+            # Update reason
+            block_decision_reasons.append(f"TotalReq < effective_min ({current_total_req} < {min_total_req_threshold})")
+
 
         # --- Condition 3: Check Mandatory Req/Min(Win) ---
         req_min_win_ok = False
+        # Use block_total_max_rpm_threshold for this condition's threshold
         min_req_win_threshold = config.block_total_max_rpm_threshold
         current_req_min_win = threat_data.get('subnet_req_per_min_window', 0.0)
         if current_req_min_win > min_req_win_threshold:
@@ -118,13 +116,13 @@ class Strategy:
         if score >= BLOCKING_SCORE_THRESHOLD:
             should_block = True
             # Construct reason showing which conditions were met
-            met_reasons = [r for r in block_decision_reasons if ">" in r or ">=" in r]
+            met_reasons = [r for r in block_decision_reasons if ">=" in r or ">" in r] # Adjusted check
             reason = f"Block: Score {score:.1f} >= {BLOCKING_SCORE_THRESHOLD:.1f}. Met ({', '.join(met_reasons)})"
         else:
             should_block = False
             # Construct reason showing why the score threshold wasn't met
-            failed_reasons = [r for r in block_decision_reasons if "<" in r or "<=" in r or "skipped" in r]
-            met_reasons = [r for r in block_decision_reasons if ">" in r or ">=" in r]
+            failed_reasons = [r for r in block_decision_reasons if "<" in r or "<=" in r or "skipped" in r] # Adjusted check
+            met_reasons = [r for r in block_decision_reasons if ">=" in r or ">" in r] # Adjusted check
             reason = f"No Block: Score {score:.1f} < {BLOCKING_SCORE_THRESHOLD:.1f}."
             if met_reasons:
                  reason += f" Met ({', '.join(met_reasons)})."
