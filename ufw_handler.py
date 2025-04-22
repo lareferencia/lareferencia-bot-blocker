@@ -30,7 +30,7 @@ class UFWManager:
         try:
             result = subprocess.run(["which", "ufw"], check=False, capture_output=True, text=True, timeout=5)
             if result.returncode != 0:
-                 logger.warning("UFW command not found. Blocking/cleanup will fail.")
+                 # logger.warning("UFW command not found. Blocking/cleanup will fail.") # <-- COMMENTED OUT
                  return False
             return True
         except Exception:
