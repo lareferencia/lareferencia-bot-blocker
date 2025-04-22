@@ -169,12 +169,35 @@ def main():
         '--clean-rules', action='store_true',
         help='Run cleanup of expired UFW rules and exit.'
     )
+    parser.add_argument(
+        '--silent', action='store_true',
+        help='Suppress most output, only show blocked targets.'
+    )
     args = parser.parse_args()
 
     # --- Logging Setup ---
     log_level = getattr(logging, args.log_level)
-    setup_logging(args.log_file, log_level)
+    # If silent, force log level to WARNING for console unless DEBUG is explicitly set
+    if args.silent and log_level < logging.WARNING and log_level != logging.DEBUG:
+        log_level_console = logging.WARNING
+    else:
+        log_level_console = log_level
+    # Setup logging (adjust setup_logging if needed or handle console level here)
+    # Assuming setup_logging primarily sets the root logger level and file handler level
+    # We might need to adjust the console handler level specifically
+    setup_logging(args.log_file, log_level) # Setup root and file logger
     logger = logging.getLogger('botstats.main')
+
+    # Adjust console handler level if silent mode is active
+    for handler in logging.root.handlers:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+             if args.silent and log_level < logging.WARNING and log_level != logging.DEBUG:
+                 logger.debug(f"Silent mode: Setting console log level to WARNING (was {logging.getLevelName(log_level)})")
+                 handler.setLevel(logging.WARNING)
+             else:
+                 # Ensure console handler respects the requested log_level if not silent
+                 handler.setLevel(log_level)
+
 
     # --- Clean Rules Mode ---
     if args.clean_rules:
@@ -358,7 +381,8 @@ def main():
     blocked_subnets_via_supernet = set() # Keep track of /24s blocked via /16
 
     if args.block:
-        print("-" * 30)
+        if not args.silent:
+            print("-" * 30)
         logger.info(f"Processing blocks (Dry Run: {args.dry_run})...")
         ufw_manager_instance = ufw_handler.UFWManager(args.dry_run)
 
@@ -393,13 +417,16 @@ def main():
                 if success:
                     blocked_targets_count += 1
                     action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
+                    # ALWAYS PRINT block actions
                     print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes.")
                     for contained_threat in contained_blockable_threats:
                         # Store the ipaddress object in the set
                         blocked_subnets_via_supernet.add(contained_threat['id'])
                 else:
                     action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
-                    print(f" -> {action} {target_type}: {target_to_block_obj}.")
+                    # Print failures only if not silent
+                    if not args.silent:
+                        print(f" -> {action} {target_type}: {target_to_block_obj}.")
 
 
         # 2. Process individual /24 or /64 Blocks (Top N from the *original* sorted list)
@@ -445,75 +472,82 @@ def main():
                 if success:
                     blocked_targets_count += 1
                     action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
+                    # ALWAYS PRINT block actions
                     print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes.")
                 else:
                     action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
-                    print(f" -> {action} {target_type}: {target_to_block_obj}.")
+                    # Print failures only if not silent
+                    if not args.silent:
+                        print(f" -> {action} {target_type}: {target_to_block_obj}.")
 
-        print(f"Block processing complete. {blocked_targets_count} targets {'would be' if args.dry_run else 'were'} processed for blocking.")
-        print("-" * 30)
+        if not args.silent:
+            print(f"Block processing complete. {blocked_targets_count} targets {'would be' if args.dry_run else 'were'} processed for blocking.")
+            print("-" * 30)
     else:
         logger.info("Blocking is disabled (--block not specified).")
 
 
     # --- Reporting Logic ---
-    # Report Top /24 or /64 Threats using the original list (threats)
-    top_count = min(args.top, len(threats))
-    print(f"\n=== TOP {top_count} INDIVIDUAL THREATS DETECTED (/24 or /64) (Sorted by Strategy Score: '{strategy_name}') ===")
-    if args.block:
-        action = "Blocked" if not args.dry_run else "[DRY RUN] Marked for blocking"
-        print(f"--- {action} based on strategy '{strategy_name}' criteria applied to top {args.top} threats ---")
-        print(f"--- NOTE: /16 supernets containing >= 2 blockable /24s may have been blocked instead ---")
-
-    top_threats_report = threats[:top_count] # Use original list for reporting top N
-
-    for i, threat in enumerate(top_threats_report, 1):
-        target_id_obj = threat['id'] # ipaddress object
-        target_id_str = str(target_id_obj)
-        strat_score_str = f"Score: {threat.get('strategy_score', 0):.2f}"
-
-        # Construct detailed metrics summary string (using .get() on the threat dict) - REMOVED metrics
-        total_req_val = threat.get('total_requests', 0)
-        if total_req_val is None or pd.isna(total_req_val): total_req_val = 0
-        total_req_val = int(total_req_val)
-
-        metrics_summary = (
-            f"{total_req_val:d} reqs, "
-            f"{threat.get('ip_count', 0):d} IPs, "
-            # Removed IP RPMs
-            # Removed Subnet Total RPMs
-            f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, "
-            f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
-        )
-
-        block_info = ""
-        # Determine block status for reporting (using ipaddress object for check)
-        is_blockable = threat.get('should_block', False)
-        is_top_n = i <= args.top
-        covered_by_supernet = target_id_obj in blocked_subnets_via_supernet # Check using object
-
+    # Suppress reporting if silent mode is active
+    if not args.silent:
+        top_count = min(args.top, len(threats))
+        print(f"\n=== TOP {top_count} INDIVIDUAL THREATS DETECTED (/24 or /64) (Sorted by Strategy Score: '{strategy_name}') ===")
         if args.block:
-            if covered_by_supernet:
-                block_info = f" [COVERED BY /16 BLOCK]"
-            elif is_blockable and is_top_n:
-                block_status = "[BLOCKED]" if not args.dry_run else "[DRY RUN - BLOCKED]"
-                block_reason_str = f" ({threat.get('block_reason', 'No reason')})" if threat.get('block_reason') else ""
-                block_info = f" {block_status}{block_reason_str}"
+            action = "Blocked" if not args.dry_run else "[DRY RUN] Marked for blocking"
+            print(f"--- {action} based on strategy '{strategy_name}' criteria applied to top {args.top} threats ---")
+            print(f"--- NOTE: /16 supernets containing >= 2 blockable /24s may have been blocked instead ---")
 
-        print(f"\n#{i} Subnet: {target_id_str} - {strat_score_str}{block_info}")
-        print(f"  Metrics: {metrics_summary}")
+        top_threats_report = threats[:top_count] # Use original list for reporting top N
 
-        # Use details from the threat dictionary
-        if threat.get('details'):
-            print("  -> Top IPs (by Max RPM):")
-            # Limit details shown in console report if desired
-            max_details_to_show = 5
-            for ip_detail in threat['details'][:max_details_to_show]:
-                 print(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})")
-            if len(threat['details']) > max_details_to_show:
-                 print(f"     ... and {len(threat['details']) - max_details_to_show} more.")
-        else:
-             print("  -> No IP details available.")
+        for i, threat in enumerate(top_threats_report, 1):
+            target_id_obj = threat['id'] # ipaddress object
+            target_id_str = str(target_id_obj)
+            strat_score_str = f"Score: {threat.get('strategy_score', 0):.2f}"
+
+            # Construct detailed metrics summary string (using .get() on the threat dict) - REMOVED metrics
+            total_req_val = threat.get('total_requests', 0)
+            if total_req_val is None or pd.isna(total_req_val): total_req_val = 0
+            total_req_val = int(total_req_val)
+
+            metrics_summary = (
+                f"{total_req_val:d} reqs, "
+                f"{threat.get('ip_count', 0):d} IPs, "
+                # Removed IP RPMs
+                # Removed Subnet Total RPMs
+                f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, "
+                f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
+            )
+
+            block_info = ""
+            # Determine block status for reporting (using ipaddress object for check)
+            is_blockable = threat.get('should_block', False)
+            is_top_n = i <= args.top
+            covered_by_supernet = target_id_obj in blocked_subnets_via_supernet # Check using object
+
+            if args.block:
+                if covered_by_supernet:
+                    block_info = f" [COVERED BY /16 BLOCK]"
+                elif is_blockable and is_top_n:
+                    # Block status is already printed during the blocking phase, maybe add reason here?
+                    block_reason_str = f" ({threat.get('block_reason', 'No reason')})" if threat.get('block_reason') else ""
+                    # Indicate it was processed for blocking
+                    block_info = f" [PROCESSED FOR BLOCKING]{block_reason_str}"
+
+
+            print(f"\n#{i} Subnet: {target_id_str} - {strat_score_str}{block_info}")
+            print(f"  Metrics: {metrics_summary}")
+
+            # Use details from the threat dictionary
+            if threat.get('details'):
+                print("  -> Top IPs (by Max RPM):")
+                # Limit details shown in console report if desired
+                max_details_to_show = 5
+                for ip_detail in threat['details'][:max_details_to_show]:
+                     print(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})")
+                if len(threat['details']) > max_details_to_show:
+                     print(f"     ... and {len(threat['details']) - max_details_to_show} more.")
+            else:
+                 print("  -> No IP details available.")
 
     # --- Export Results ---
     if args.output:
@@ -524,102 +558,108 @@ def main():
             logger.error(f"Error exporting results to {args.output}")
 
     # --- Final Summary ---
-    print(f"\nAnalysis completed using strategy '{strategy_name}'.")
+    # Print simplified summary in silent mode
+    if not args.silent:
+        print(f"\nAnalysis completed using strategy '{strategy_name}'.")
+    # Always print the blocked count summary
     print(f"{blocked_targets_count} unique targets (subnets/IPs or /16 supernets) {'blocked' if not args.dry_run else 'marked for blocking'} in this execution.")
-    # Use len(threats) which is the original list count
-    print(f"From a total of {len(threats)} detected individual threats.")
-    if args.block:
-        print(f"Use '--clean-rules' periodically to remove expired rules.")
+    if not args.silent:
+        # Use len(threats) which is the original list count
+        print(f"From a total of {len(threats)} detected individual threats.")
+        if args.block:
+            print(f"Use '--clean-rules' periodically to remove expired rules.")
 
     # --- Report Overall Maximums ---
-    print(f"\n=== OVERALL MAXIMUMS OBSERVED ===")
-    if not max_metrics_data or all(data['value'] == -1 for data in max_metrics_data.values()):
-        print("  No threat data available or maximums could not be determined.")
-    else:
-        for metric_key, data in max_metrics_data.items():
-            metric_name = metric_names_map.get(metric_key, metric_key) # Uses updated map
-            value = data['value']
-            subnets = data['subnets'] # List of subnet ID strings
-            value_str = "N/A"
+    # Suppress if silent
+    if not args.silent:
+        print(f"\n=== OVERALL MAXIMUMS OBSERVED ===")
+        if not max_metrics_data or all(data['value'] == -1 for data in max_metrics_data.values()):
+            print("  No threat data available or maximums could not be determined.")
+        else:
+            for metric_key, data in max_metrics_data.items():
+                metric_name = metric_names_map.get(metric_key, metric_key) # Uses updated map
+                value = data['value']
+                subnets = data['subnets'] # List of subnet ID strings
+                value_str = "N/A"
 
-            if value != -1 and pd.notna(value): # Check if metric was found and is valid
-                if metric_key == 'subnet_time_span':
-                    if analysis_duration_seconds > 0:
-                        percentage = (value / analysis_duration_seconds) * 100
-                        value_str = f"{percentage:.1f}% ({value:.0f}s raw)"
-                    else:
-                        value_str = f"N/A ({value:.0f}s raw)"
-                elif isinstance(value, float):
-                    value_str = f"{value:.2f}"
-                else: # Should be int or similar
-                    value_str = str(int(value)) # Ensure integer representation if applicable
+                if value != -1 and pd.notna(value): # Check if metric was found and is valid
+                    if metric_key == 'subnet_time_span':
+                        if analysis_duration_seconds > 0:
+                            percentage = (value / analysis_duration_seconds) * 100
+                            value_str = f"{percentage:.1f}% ({value:.0f}s raw)"
+                        else:
+                            value_str = f"N/A ({value:.0f}s raw)"
+                    elif isinstance(value, float):
+                        value_str = f"{value:.2f}"
+                    else: # Should be int or similar
+                        value_str = str(int(value)) # Ensure integer representation if applicable
 
-            print(f"  {metric_name}: {value_str} (Achieved by: {', '.join(subnets)})")
-
-    # --- End Report Overall Maximums ---
+                print(f"  {metric_name}: {value_str} (Achieved by: {', '.join(subnets)})")
 
     # --- Report Details for Subnets Achieving Maximums ---
-    print(f"\n=== DETAILS FOR SUBNETS ACHIEVING MAXIMUMS ===")
-    if threats_df.empty:
-        print("  No data available to report maximum-achieving subnets.")
-    else:
-        # Collect unique subnet IDs (strings) that achieved any maximum
-        max_achieving_subnet_ids = set()
-        for metric_key, data in max_metrics_data.items():
-            if data['value'] != -1 and pd.notna(data['value']):
-                max_achieving_subnet_ids.update(data['subnets'])
-
-        if not max_achieving_subnet_ids:
-            print("  No subnets achieved any maximum values.")
+    # Suppress if silent
+    if not args.silent:
+        print(f"\n=== DETAILS FOR SUBNETS ACHIEVING MAXIMUMS ===")
+        if threats_df.empty:
+            print("  No data available to report maximum-achieving subnets.")
         else:
-            logger.info(f"Reporting details for {len(max_achieving_subnet_ids)} subnets that achieved at least one maximum.")
-            # Filter the DataFrame to get only the rows for these subnets
-            max_subnets_df = threats_df[threats_df.index.isin(max_achieving_subnet_ids)]
+            # Collect unique subnet IDs (strings) that achieved any maximum
+            max_achieving_subnet_ids = set()
+            for metric_key, data in max_metrics_data.items():
+                if data['value'] != -1 and pd.notna(data['value']):
+                    max_achieving_subnet_ids.update(data['subnets'])
 
-            # Sort by index (subnet string) for consistent reporting order
-            max_subnets_df = max_subnets_df.sort_index()
+            if not max_achieving_subnet_ids:
+                print("  No subnets achieved any maximum values.")
+            else:
+                logger.info(f"Reporting details for {len(max_achieving_subnet_ids)} subnets that achieved at least one maximum.")
+                # Filter the DataFrame to get only the rows for these subnets
+                max_subnets_df = threats_df[threats_df.index.isin(max_achieving_subnet_ids)]
 
-            for subnet_id_str, threat_row in max_subnets_df.iterrows():
-                # Find which maximums this subnet achieved
-                achieved_max_metrics = []
-                for metric_key, data in max_metrics_data.items():
-                    if subnet_id_str in data['subnets']:
-                        achieved_max_metrics.append(metric_names_map.get(metric_key, metric_key))
-                achieved_max_str = f" [Achieved Max: {', '.join(achieved_max_metrics)}]" if achieved_max_metrics else ""
+                # Sort by index (subnet string) for consistent reporting order
+                max_subnets_df = max_subnets_df.sort_index()
 
-                # Reuse the metrics summary string generation from the DataFrame row - REMOVED metrics
-                total_req_val = threat_row.get('total_requests', 0)
-                if total_req_val is None or pd.isna(total_req_val): total_req_val = 0
-                total_req_val = int(total_req_val)
+                for subnet_id_str, threat_row in max_subnets_df.iterrows():
+                    # Find which maximums this subnet achieved
+                    achieved_max_metrics = []
+                    for metric_key, data in max_metrics_data.items():
+                        if subnet_id_str in data['subnets']:
+                            achieved_max_metrics.append(metric_names_map.get(metric_key, metric_key))
+                    achieved_max_str = f" [Achieved Max: {', '.join(achieved_max_metrics)}]" if achieved_max_metrics else ""
 
-                metrics_summary = (
-                    f"{total_req_val:d} reqs, "
-                    f"{threat_row.get('ip_count', 0):d} IPs, "
-                    # Removed IP RPMs
-                    # Removed Subnet Total RPMs
-                    # Removed subnet_req_per_min
-                    f"Req/Min(Win): {threat_row.get('subnet_req_per_min_window', 0):.1f}, "
-                    f"TimeSpan: {threat_row.get('subnet_time_span', 0):.0f}s"
-                )
+                    # Reuse the metrics summary string generation from the DataFrame row - REMOVED metrics
+                    total_req_val = threat_row.get('total_requests', 0)
+                    if total_req_val is None or pd.isna(total_req_val): total_req_val = 0
+                    total_req_val = int(total_req_val)
 
-                print(f"\nSubnet: {subnet_id_str}{achieved_max_str}")
-                print(f"  Metrics: {metrics_summary}")
-                # Optionally print top IPs again if desired, accessing 'details' from the row
-                details = threat_row.get('details', [])
-                if details and isinstance(details, list):
-                    print("  -> Top IPs (by Max RPM):")
-                    max_details_to_show = 3 # Show fewer details here?
-                    for ip_detail in details[:max_details_to_show]:
-                         # Ensure ip_detail is a dict before accessing keys
-                         if isinstance(ip_detail, dict):
-                             print(f"     - IP: {ip_detail.get('ip','N/A')} ({ip_detail.get('total_requests',0)} reqs, AvgRPM: {ip_detail.get('avg_rpm',0):.2f}, MaxRPM: {ip_detail.get('max_rpm',0):.0f})")
-                         else:
-                             print(f"     - Invalid detail format: {ip_detail}")
-                    if len(details) > max_details_to_show:
-                         # Corrected f-string: removed extra '}' inside len()
-                         print(f"     ... and {len(details) - max_details_to_show} more.")
-                # else:
-                #      print("  -> No IP details available.") # Redundant if details is empty list
+                    metrics_summary = (
+                        f"{total_req_val:d} reqs, "
+                        f"{threat_row.get('ip_count', 0):d} IPs, "
+                        # Removed IP RPMs
+                        # Removed Subnet Total RPMs
+                        # Removed subnet_req_per_min
+                        f"Req/Min(Win): {threat_row.get('subnet_req_per_min_window', 0):.1f}, "
+                        f"TimeSpan: {threat_row.get('subnet_time_span', 0):.0f}s"
+                    )
+
+                    print(f"\nSubnet: {subnet_id_str}{achieved_max_str}")
+                    print(f"  Metrics: {metrics_summary}")
+                    # Optionally print top IPs again if desired, accessing 'details' from the row
+                    details = threat_row.get('details', [])
+                    if details and isinstance(details, list):
+                        print("  -> Top IPs (by Max RPM):")
+                        max_details_to_show = 3 # Show fewer details here?
+                        for ip_detail in details[:max_details_to_show]:
+                             # Ensure ip_detail is a dict before accessing keys
+                             if isinstance(ip_detail, dict):
+                                 print(f"     - IP: {ip_detail.get('ip','N/A')} ({ip_detail.get('total_requests',0)} reqs, AvgRPM: {ip_detail.get('avg_rpm',0):.2f}, MaxRPM: {ip_detail.get('max_rpm',0):.0f})")
+                             else:
+                                 print(f"     - Invalid detail format: {ip_detail}")
+                        if len(details) > max_details_to_show:
+                             # Corrected f-string: removed extra '}' inside len()
+                             print(f"     ... and {len(details) - max_details_to_show} more.")
+                    # else:
+                    #      print("  -> No IP details available.") # Redundant if details is empty list
 
     # --- End Report Details for Subnets Achieving Maximums ---
 
