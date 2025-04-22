@@ -472,14 +472,27 @@ def main():
                 if success:
                     blocked_targets_count += 1
                     action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
-                    # ALWAYS PRINT block actions
-                    print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes.")
+
+                    # --- Construct metrics summary string for block message ---
+                    try:
+                        metrics_summary = (
+                            f"Metrics: "
+                            f"{int(threat.get('total_requests', 0)):d} reqs, "
+                            f"{threat.get('ip_count', 0):d} IPs, "
+                            f"Score: {threat.get('strategy_score', 0):.1f}, "
+                            f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, "
+                            f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
+                        )
+                    except Exception as e:
+                         logger.warning(f"Could not format metrics for block message of {target_to_block_obj}: {e}")
+                         metrics_summary = "Metrics: N/A"
+                    # --- End metrics summary string ---
+
+                    # Append the metrics_summary to the print statement
+                    print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes. Reason: {threat.get('block_reason')}. {metrics_summary}")
                 else:
                     action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
-                    # Print failures only if not silent
-                    if not args.silent:
-                        print(f" -> {action} {target_type}: {target_to_block_obj}.")
-
+                    print(f" -> {action} {target_type}: {target_to_block_obj}.")
         if not args.silent:
             print(f"Block processing complete. {blocked_targets_count} targets {'would be' if args.dry_run else 'were'} processed for blocking.")
             print("-" * 30)
