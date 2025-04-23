@@ -87,13 +87,13 @@ sudo crontab -e
 # Note: Adjust paths, log file, and parameters as needed.
 # Use the Python from the virtual environment if you created one.
 # Add --log-file for better debugging. Redirect stdout/stderr for cron logs.
-0 * * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/stats.py -f /var/log/apache2/access.log --time-window hour --block --block-strategy combined --block-relative-threshold-percent 0.5 --block-total-max-rpm-threshold 30 --block-duration 120 --whitelist /etc/lareferencia-bot-blocker/whitelist.txt --log-file /var/log/lareferencia-bot-blocker.log >> /var/log/lareferencia-bot-blocker-cron.log 2>&1
+0 * * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/blocker.py -f /var/log/apache2/access.log --time-window hour --block --block-strategy combined --block-relative-threshold-percent 0.5 --block-total-max-rpm-threshold 30 --block-duration 120 --whitelist /etc/lareferencia-bot-blocker/whitelist.txt --log-file /var/log/lareferencia-bot-blocker.log >> /var/log/lareferencia-bot-blocker-cron.log 2>&1
 
 # --- Example 2: Analyze last day's logs once daily at 1 AM using volume_coordination ---
-0 1 * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/stats.py -f /var/log/nginx/access.log --time-window day --block --block-strategy volume_coordination --block-relative-threshold-percent 0.2 --block-ip-count-threshold 8 --block-duration 1440 --whitelist /etc/lareferencia-bot-blocker/whitelist.txt --log-file /var/log/lareferencia-bot-blocker.log >> /var/log/lareferencia-bot-blocker-cron.log 2>&1
+0 1 * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/blocker.py -f /var/log/nginx/access.log --time-window day --block --block-strategy volume_coordination --block-relative-threshold-percent 0.2 --block-ip-count-threshold 8 --block-duration 1440 --whitelist /etc/lareferencia-bot-blocker/whitelist.txt --log-file /var/log/lareferencia-bot-blocker.log >> /var/log/lareferencia-bot-blocker-cron.log 2>&1
 
 # --- Example 3: Run rule cleanup every 15 minutes ---
-*/15 * * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/stats.py --clean-rules >> /var/log/lareferencia-bot-blocker-clean.log 2>&1
+*/15 * * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/blocker.py --clean-rules >> /var/log/lareferencia-bot-blocker-clean.log 2>&1
 
 ```
 
@@ -111,13 +111,13 @@ sudo crontab -e
 
 ```bash
 # Analyze entire log, show top 10 threats sorted by default strategy ('combined')
-python3 stats.py -f /var/log/apache2/access.log
+python3 blocker.py -f /var/log/apache2/access.log
 
 # Analyze last hour, show top 20 threats
-python3 stats.py -f /var/log/nginx/access.log --time-window hour --top 20
+python3 blocker.py -f /var/log/nginx/access.log --time-window hour --top 20
 
 # Analyze using a different strategy for sorting/display
-python3 stats.py -f /var/log/apache2/access.log --block-strategy volume_coordination
+python3 blocker.py -f /var/log/apache2/access.log --block-strategy volume_coordination
 ```
 
 ### Analysis and Blocking
@@ -127,7 +127,7 @@ python3 stats.py -f /var/log/apache2/access.log --block-strategy volume_coordina
 ```bash
 # Analyze last day, block top 10 threats meeting 'combined' criteria
 # Automatically blocks /16 if >=2 contained /24s are blockable
-sudo python3 stats.py -f /var/log/apache2/access.log --time-window day --block \
+sudo python3 blocker.py -f /var/log/apache2/access.log --time-window day --block \
     --block-strategy combined \
     --block-relative-threshold-percent 0.5 \
     --block-total-max-rpm-threshold 30 \
@@ -136,7 +136,7 @@ sudo python3 stats.py -f /var/log/apache2/access.log --time-window day --block \
 # Analyze last hour, block top 5 threats meeting 'volume_coordination' criteria (Dry Run)
 # Uses default relative threshold (1%) and default IP count threshold (10)
 # Also shows potential /16 blocks in dry run output
-sudo python3 stats.py -f /var/log/nginx/access.log --time-window hour --block --top 5 --dry-run \
+sudo python3 blocker.py -f /var/log/nginx/access.log --time-window hour --block --top 5 --dry-run \
     --block-strategy volume_coordination \
     --block-ip-count-threshold 8 \
     --block-duration 60
@@ -146,11 +146,11 @@ sudo python3 stats.py -f /var/log/nginx/access.log --time-window hour --block --
 
 ```bash
 # Analyze and save results to a JSON file using a 0.5% relative threshold
-python3 stats.py -f /var/log/apache2/access.log --output threats_report.json --format json \
+python3 blocker.py -f /var/log/apache2/access.log --output threats_report.json --format json \
     --block-relative-threshold-percent 0.5
 
 # Analyze last week and save to CSV using the default relative threshold
-python3 stats.py -f /var/log/nginx/access.log --time-window week --output weekly_threats.csv --format csv
+python3 blocker.py -f /var/log/nginx/access.log --time-window week --output weekly_threats.csv --format csv
 ```
 
 ### Cleaning Expired Rules
@@ -159,10 +159,10 @@ python3 stats.py -f /var/log/nginx/access.log --time-window week --output weekly
 
 ```bash
 # Remove expired UFW rules added by this script
-sudo python3 stats.py --clean-rules
+sudo python3 blocker.py --clean-rules
 
 # See which rules would be removed (Dry Run)
-sudo python3 stats.py --clean-rules --dry-run
+sudo python3 blocker.py --clean-rules --dry-run
 ```
 
 ## Options
@@ -246,7 +246,7 @@ The whitelist file (specified via `--whitelist`) should contain one IP address o
 
 ## Project Structure
 
--   `stats.py`: Main script.
+-   `blocker.py`: Main script.
 -   `parser.py`: Log parsing functions.
 -   `threat_analyzer.py`: Core analysis logic using Pandas.
 -   `ufw_handler.py`: UFW interaction logic.
