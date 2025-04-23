@@ -137,20 +137,12 @@ def main():
         help='Strategy threshold: Minimum unique IPs (used by volume_coordination). Ignored by "combined" blocking logic.' # Clarified usage
     )
     parser.add_argument(
-        '--block-max-rpm-threshold', type=float, default=10,
-        help='Strategy threshold: Minimum peak RPM from any IP (used by volume_peak_rpm). Ignored by "combined" blocking logic.' # Clarified usage
-    )
-    parser.add_argument(
         '--block-total-max-rpm-threshold', type=float, default=20, # Default might need adjustment
         help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (used by peak_total_rpm). '
              'For "combined" strategy, used as the MANDATORY threshold for average Req/Min(Win) (Condition 3).' # Correcto
     )
-    # --- Add argument for combined strategy ---
-    parser.add_argument(
-        '--block-trigger-count', type=int, default=2,
-        help='Strategy threshold: Minimum number of original triggers met. Ignored by "combined" blocking logic.' # Clarified usage for scoring only
-    )
-    # --- End of removed arguments ---
+    # --- REMOVED block-max-rpm-threshold ---
+    # --- REMOVED block-trigger-count ---
     parser.add_argument(
         '--block-duration', type=int, default=60,
         help='Duration of the UFW block in minutes (used for all blocks).'

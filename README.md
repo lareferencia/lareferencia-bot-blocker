@@ -180,9 +180,7 @@ sudo python3 stats.py --clean-rules --dry-run
 | `--block-absolute-min-requests`      | **Base Filter:** Absolute minimum request count threshold. Ensures `effective_min_requests` does not fall below this value.                    | `100`                |
 | `--block-min-timespan-percent`       | Strategy threshold: Minimum percentage of analysis window duration a subnet must be active (used by `combined` strategy Condition 1).          | `50.0`               |
 | `--block-ip-count-threshold`         | Strategy Threshold (Absolute): Minimum number of unique IPs (used by `volume_coordination`). Ignored by `combined` blocking logic.             | `10`                 |
-| `--block-max-rpm-threshold`          | Strategy Threshold (Absolute): Minimum peak RPM from any *individual* IP. **Currently ignored by available strategies.**                       | `10.0`               |
 | `--block-total-max-rpm-threshold`    | Strategy Threshold (Absolute): **For `combined` strategy:** MANDATORY threshold for average `Req/Min(Win)` (Condition 3).                      | `20.0`               |
-| `--block-trigger-count`              | Strategy Threshold: Minimum number of original triggers met. **Currently ignored by available strategies.**                                    | `2`                  |
 | `--block-duration`                   | Duration (minutes) for UFW blocks applied based on strategy decisions (subnets, /16 supernets).                                              | `60`                 |
 | `--block-ip-min-req-per-hour`        | **IP Blocking:** Block individual IPs if their request rate (req/hour) over the analysis window exceeds this threshold. Set to 0 to disable.    | `400`                |
 | `--block-ip-duration`                | **IP Blocking:** Duration (minutes) for blocks applied to individual IPs exceeding the `--block-ip-min-req-per-hour` threshold.                | `1440` (24 hours)    |
@@ -215,10 +213,8 @@ Strategies define how threats are scored and whether they should be blocked. Mos
     -   Define absolute levels of "badness".
     -   **`combined` Strategy Reuse:**
         -   `--block-total-max-rpm-threshold` is used as the absolute threshold for the `Req/Min(Win)` blocking condition (Condition 3 - Mandatory).
-        -   `--block-ip-count-threshold` and `--block-max-rpm-threshold` are *ignored* by the `combined` strategy's blocking logic.
+        -   `--block-ip-count-threshold` is *ignored* by the `combined` strategy's blocking logic.
     -   **Recommendation:** Use the **"OVERALL MAXIMUMS OBSERVED"** section in the console output to guide adjustments.
--   **`--block-trigger-count`:**
-    -   *Ignored* by the `combined` strategy's blocking logic.
 
 ### Available Strategies
 
@@ -228,7 +224,7 @@ Strategies define how threats are scored and whether they should be blocked. Mos
     *   **Blocks If:** `total_requests >= effective_min_requests` **AND** `ip_count >= --block-ip-count-threshold`.
     *   **Tuning:** Adjust `--block-ip-count-threshold`. `effective_min_requests` is influenced by `--block-relative-threshold-percent` and `--block-absolute-min-requests`.
 
-2.  **`combined` (Default)
+2.  **`combined` (Default)**
     *   **Goal:** Block based on meeting a sufficient number of key conditions: sustained activity (TimeSpan), significant volume (TotalReq vs effective_min), and high average request rate over the window (`Req/Min(Win)`).
     *   **Score:** Reflects the number of conditions met (0.0 to 3.0). Used for sorting. The conditions are:
         1.  `subnet_time_span` covers at least **`--block-min-timespan-percent`** (default 50%) of the analysis window.
@@ -240,7 +236,7 @@ Strategies define how threats are scored and whether they should be blocked. Mos
         *   Adjust `--block-total-max-rpm-threshold` (affects Condition 3).
         *   Adjust `--block-relative-threshold-percent` and `--block-absolute-min-requests` (affects the calculation of `effective_min_requests` used in Condition 2).
         *   The blocking score threshold is fixed internally at 2.0.
-        *   `--block-ip-count-threshold`, `--block-max-rpm-threshold`, and `--block-trigger-count` are ignored by this strategy's blocking logic.
+        *   `--block-ip-count-threshold` is ignored by this strategy's blocking logic.
 
 **Note:** The final list of threats is always sorted based on the `strategy_score`. Blocking actions apply to the `--top` N threats *that also meet the specific blocking conditions* defined by the strategy.
 
