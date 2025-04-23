@@ -122,6 +122,11 @@ def main():
              'For "combined" strategy, used as the MANDATORY threshold percentage against the SUM of ALL requests in the window (Condition 2).' # UPDATED help
     )
     parser.add_argument(
+        '--block-min-timespan-percent', type=float, default=50.0, # NEW ARGUMENT
+        help='Strategy threshold: Minimum percentage of analysis window duration a subnet must be active '
+             '(used by "combined" strategy Condition 1).'
+    )
+    parser.add_argument(
         '--block-ip-count-threshold', type=int, default=10,
         help='Strategy threshold: Minimum unique IPs (used by volume_coordination). Ignored by "combined" blocking logic.' # Clarified usage
     )

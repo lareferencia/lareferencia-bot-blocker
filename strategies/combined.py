@@ -1,8 +1,8 @@
 """
-Blocking Strategy: **Combined** (Logic v7 - Cond 2 uses effective_min_requests)
+Blocking Strategy: **Combined** (Logic v8 - Configurable TimeSpan)
 
 This strategy evaluates three conditions:
-1. TimeSpan >= 75% (fixed)
+1. TimeSpan >= X% (using --block-min-timespan-percent, default 50%)
 2. Total Requests >= effective_min_requests (calculated externally based on --block-relative-threshold-percent)
 3. Req/Min(Win) > Y (using --block-total-max-rpm-threshold)
 
@@ -15,16 +15,16 @@ import pandas as pd # Import pandas for isna check
 
 logger = logging.getLogger(__name__)
 
-# --- Hardcoded value for TimeSpan threshold ---
-DEFAULT_MIN_TIMESPAN_PERCENT = 50.0
-# --- New: Threshold for blocking based on score (conditions met) ---
+# --- REMOVED Hardcoded value for TimeSpan threshold ---
+# DEFAULT_MIN_TIMESPAN_PERCENT = 50.0
+# --- Threshold for blocking based on score (conditions met) ---
 BLOCKING_SCORE_THRESHOLD = 2.0
 
 class Strategy:
     """
-    Combined strategy (Updated Logic 7 - Condition 2 uses effective_min_requests):
+    Combined strategy (Updated Logic 8 - Configurable TimeSpan):
     - Score reflects how many blocking conditions are met (0-3):
-        1. Fixed TimeSpan >= 50%
+        1. TimeSpan >= block_min_timespan_percent (default 50%)
         2. TotalReq >= effective_min_requests (calculated externally)
         3. Req/Min(Win) > block_total_max_rpm_threshold
     - Block decision requires score >= BLOCKING_SCORE_THRESHOLD (e.g., >= 2.0).
@@ -35,9 +35,10 @@ class Strategy:
         """Returns a list of config keys required by this strategy."""
         # effective_min_requests (derived from block_relative_threshold_percent) is passed in.
         # block_total_max_rpm_threshold is used for Condition 3.
+        # block_min_timespan_percent is used for Condition 1.
         return [
             'block_total_max_rpm_threshold', # Used for Req/Min(Win) threshold (Condition 3)
-            # 'block_relative_threshold_percent' # No longer directly used by the strategy itself
+            'block_min_timespan_percent'     # Used for TimeSpan threshold (Condition 1)
         ]
 
     def calculate_threat_score_and_block(self,
@@ -51,7 +52,7 @@ class Strategy:
                                          max_ip_count=None): # ADDED max_ip_count
         """
         Calculates score (0-3) based on meeting conditions:
-        1. TimeSpan >= 75%
+        1. TimeSpan >= Configured %
         2. TotalReq >= effective_min_requests
         3. Req/Min(Win) > Absolute Threshold
         Decides blocking if score >= BLOCKING_SCORE_THRESHOLD (e.g., 2.0).
@@ -65,14 +66,17 @@ class Strategy:
         # --- Condition 1: Check Mandatory TimeSpan ---
         timespan_condition_met = False
         current_timespan = threat_data.get('subnet_time_span', 0)
+        # Get threshold from config
+        min_timespan_percent = config.block_min_timespan_percent
+
         if analysis_duration_seconds and analysis_duration_seconds > 0: # Check if valid duration
-            min_timespan_threshold_seconds = analysis_duration_seconds * (DEFAULT_MIN_TIMESPAN_PERCENT / 100.0)
+            min_timespan_threshold_seconds = analysis_duration_seconds * (min_timespan_percent / 100.0)
             if current_timespan >= min_timespan_threshold_seconds:
                 timespan_condition_met = True
                 conditions_met_count += 1
-                block_decision_reasons.append(f"TimeSpan >= {DEFAULT_MIN_TIMESPAN_PERCENT:.1f}% ({current_timespan:.0f}s)")
+                block_decision_reasons.append(f"TimeSpan >= {min_timespan_percent:.1f}% ({current_timespan:.0f}s)")
             else:
-                 block_decision_reasons.append(f"TimeSpan < {DEFAULT_MIN_TIMESPAN_PERCENT:.1f}% ({current_timespan:.0f}s)")
+                 block_decision_reasons.append(f"TimeSpan < {min_timespan_percent:.1f}% ({current_timespan:.0f}s)")
         else:
              block_decision_reasons.append(f"TimeSpan % condition skipped (duration={analysis_duration_seconds})") # Log the duration value
 
