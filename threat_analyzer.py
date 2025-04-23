@@ -114,7 +114,7 @@ class ThreatAnalyzer:
 
         return len(self.log_df)
 
-    def _calculate_ip_metrics(self):
+    def _calculate_ip_metrics(self, analysis_duration_seconds=None): # Add analysis_duration_seconds parameter
         """Calculates metrics per IP address using the loaded DataFrame."""
         if self.log_df is None or self.log_df.empty:
             logger.warning("Log DataFrame is not loaded or empty. Cannot calculate IP metrics.")
@@ -169,6 +169,15 @@ class ThreatAnalyzer:
             )
             # Calculate time span directly on the aggregated result
             basic_agg['time_span_seconds'] = (basic_agg['last_seen'] - basic_agg['first_seen']).dt.total_seconds().fillna(0).clip(lower=0)
+
+            # Calculate Requests per Hour (using analysis window duration)
+            if analysis_duration_seconds and analysis_duration_seconds > 0:
+                analysis_duration_hours = analysis_duration_seconds / 3600.0
+                basic_agg['req_per_hour'] = basic_agg['total_requests'] / analysis_duration_hours
+            else:
+                basic_agg['req_per_hour'] = 0.0 # Cannot calculate if duration is unknown or zero
+                logger.warning("Analysis duration is zero or unknown. 'req_per_hour' for IPs set to 0.")
+
 
         except Exception as e:
              logger.error(f"Error during basic IP aggregation: {e}", exc_info=True)
@@ -225,7 +234,7 @@ class ThreatAnalyzer:
         self.ip_metrics_df = basic_agg.join(rpm_metrics, how='left')
         # Fill any potential NaNs from join (though initialization should prevent this)
         # Keep avg_rpm_activity and max_rpm_activity
-        self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity']] = self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity']].fillna(0)
+        self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity', 'req_per_hour']] = self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity', 'req_per_hour']].fillna(0) # Add req_per_hour to fillna
         logger.debug("Metrics combined.")
 
         # 4. Add Subnet Information
@@ -414,7 +423,7 @@ class ThreatAnalyzer:
 
         # --- Calculate Metrics ---
         start_time = time.time()
-        if not self._calculate_ip_metrics():
+        if not self._calculate_ip_metrics(analysis_duration_seconds=analysis_duration_seconds):
             logger.error("Failed during IP metrics calculation.")
             return None
         logger.info(f"IP metrics calculation took {time.time() - start_time:.2f} seconds.")

@@ -9,11 +9,12 @@ This tool analyzes web server logs (e.g., Apache, Nginx) using Pandas to identif
 ## Features
 
 -   ✅ **Log Analysis:** Parses common web server log formats.
--   ✅ **Pandas Integration:** Leverages Pandas DataFrames for efficient metric calculation (request counts, time spans, RPM).
+-   ✅ **Pandas Integration:** Leverages Pandas DataFrames for efficient metric calculation (request counts, time spans, RPM, Req/Hour).
 -   ✅ **Threat Grouping:** Aggregates IP-level metrics by subnet (/24 for IPv4, /64 for IPv6) to identify coordinated activity.
 -   ✅ **Simplified Supernet Blocking:** Automatically blocks the encompassing /16 supernet (IPv4) if it contains >= 2 blockable /24 subnets, preventing redundant individual blocks.
 -   ✅ **Configurable Strategies:** Uses selectable strategies to score threats (/24 or /64) and determine blocking actions based on different criteria (volume, IP count, combined metrics).
 -   ✅ **Automated Blocking:** Integrates with UFW to insert temporary `deny` rules with comments indicating expiration time (ISO 8601 UTC). Supports blocking individual IPs, /24 or /64 subnets, and /16 supernets.
+    -   ✅ **High-Rate IP Blocking:** Automatically blocks individual IPs exceeding a configurable request-per-hour threshold for a specific duration (defaults to 24h).
 -   ✅ **Rule Cleanup:** Includes a mode to automatically remove expired UFW rules added by this script.
 -   ✅ **Whitelisting:** Supports excluding specific IPs or subnets from analysis and blocking.
 -   ✅ **Efficient Log Reading:** Can process logs in reverse when a time window (`--time-window` or `--start-date`) is specified, significantly speeding up analysis of recent activity in large files.
@@ -41,18 +42,19 @@ This tool can complement Fail2Ban by focusing specifically on abusive web crawli
     *   If `--start-date` or `--time-window` is used, only entries within the specified period are processed.
 3.  **IP Metrics Calculation (Pandas):**
     *   The filtered log entries (IP, Timestamp) are loaded into a Pandas DataFrame.
-    *   For each unique IP address, the script calculates metrics like `total_requests`, `first_seen`, `last_seen`, `time_span_seconds`, average RPM during active minutes (`avg_rpm_activity`), and peak RPM during active minutes (`max_rpm_activity`).
+    *   For each unique IP address, the script calculates metrics like `total_requests`, `first_seen`, `last_seen`, `time_span_seconds`, average RPM during active minutes (`avg_rpm_activity`), peak RPM during active minutes (`max_rpm_activity`), and average requests per hour over the analysis window (`req_per_hour`).
 4.  **Subnet Aggregation (Pandas):**
     *   IPs are grouped by their calculated subnet (/24 for IPv4, /64 for IPv6).
     *   For each subnet, the script aggregates metrics from the IPs within it: `total_requests` (sum), `ip_count` (unique IPs), `subnet_time_span` (overall duration), and `subnet_req_per_min_window` (average requests per minute over the entire analysis window).
 5.  **Strategy Application (/24 or /64):**
-    *   The script calculates the `effective_min_requests` threshold based on `--block-relative-threshold-percent` applied to the total requests in the window (minimum 1).
+    *   The script calculates the `effective_min_requests` threshold based on `--block-relative-threshold-percent` and `--block-absolute-min-requests`.
     *   The script loads the selected `--block-strategy`.
-    *   For each subnet, the strategy calculates a `strategy_score` and determines if it `should_block` based on the strategy's criteria, using `effective_min_requests` and other relevant thresholds (like `--block-total-max-rpm-threshold` for the `combined` strategy).
+    *   For each subnet, the strategy calculates a `strategy_score` and determines if it `should_block` based on the strategy's criteria, using `effective_min_requests` and other relevant thresholds.
 6.  **Sorting & Filtering:** All threats (/24 or /64) are sorted in descending order based on the `strategy_score` for reporting purposes.
 7.  **Blocking (Optional):** If `--block` is enabled:
-    *   **Supernet /16 Blocking Check:** Groups blockable IPv4 /24 threats by their /16 supernet. If any /16 contains **two or more** such /24 threats, the entire /16 is blocked. Subnets within a blocked /16 are marked to avoid redundant blocking.
-    *   **Individual Blocking:** Iterates through the **top N** individual threats (/24, /64, or single IPs) from the sorted list. If a threat `should_block` AND wasn't covered by a /16 block, `ufw_handler` attempts to insert a `deny` rule using `--block-duration`.
+    *   **High-Rate IP Blocking:** Iterates through all individual IPs. If an IP's `req_per_hour` exceeds `--block-ip-min-req-per-hour`, it is blocked immediately using `--block-ip-duration`. These IPs are tracked to prevent redundant blocking later.
+    *   **Supernet /16 Blocking Check:** Groups blockable IPv4 /24 threats (identified by the strategy) by their /16 supernet. If any /16 contains **two or more** such /24 threats, the entire /16 is blocked using `--block-duration`. Subnets within a blocked /16 are marked to avoid redundant blocking.
+    *   **Individual Strategy Blocking:** Iterates through the **top N** individual threats (/24, /64, or single IPs) from the sorted list. If a threat `should_block` (based on strategy) AND wasn't covered by a /16 block AND wasn't already blocked as a high-rate IP, `ufw_handler` attempts to insert a `deny` rule using `--block-duration`.
 8.  **Reporting:** Displays the top N individual threats to the console, indicating block status and key metrics. Optionally exports the *individual* threat list to a file (`--output`).
 9.  **Rule Cleanup:** The `--clean-rules` mode scans UFW rules for comments matching the script's format and removes rules whose expiration timestamp has passed.
 
@@ -170,17 +172,20 @@ sudo python3 stats.py --clean-rules --dry-run
 | `--file, -f`                         | Path to the log file to analyze (required unless `--clean-rules`).                                                                           | `None`               |
 | `--start-date, -s`                   | Analyze logs from this date/time (Format: `dd/Mmm/YYYY:HH:MM:SS`, e.g., `16/Apr/2024:10:00:00`). Assumes local timezone.                       | `None`               |
 | `--time-window, -tw`                 | Analyze logs from the `hour`, `6hour`, `day`, or `week` (overrides `--start-date`).                                                            | `None`               |
-| `--top, -n`                          | Number of top *individual* threats (/24 or /64 by strategy score) to display and consider for blocking.                                      | `10`                 |
+| `--top, -n`                          | Number of top *individual* threats (/24 or /64 by strategy score) to display and consider for blocking based on the chosen strategy.         | `10`                 |
 | `--whitelist, -w`                    | Path to a file containing IPs/subnets to exclude (one per line, `#` for comments).                                                           | `None`               |
 | `--block`                            | Enable blocking of threats using UFW. Requires appropriate permissions.                                                                      | `False`              |
 | `--block-strategy`                   | Strategy for scoring *individual* threats (`volume_coordination`, `combined`).                                                               | `combined`           |
-| `--block-relative-threshold-percent` | **Base Filter:** Minimum percentage of total requests in the window for a subnet to be considered initially (determines `effective_min_requests` used by most strategies and `combined` Condition 2). | `1.0`                |
+| `--block-relative-threshold-percent` | **Base Filter:** Minimum percentage of total requests in the window for a subnet to be considered initially. Used to calculate `effective_min_requests` along with `--block-absolute-min-requests`. | `1.0`                |
+| `--block-absolute-min-requests`      | **Base Filter:** Absolute minimum request count threshold. Ensures `effective_min_requests` does not fall below this value.                    | `100`                |
 | `--block-min-timespan-percent`       | Strategy threshold: Minimum percentage of analysis window duration a subnet must be active (used by `combined` strategy Condition 1).          | `50.0`               |
 | `--block-ip-count-threshold`         | Strategy Threshold (Absolute): Minimum number of unique IPs (used by `volume_coordination`). Ignored by `combined` blocking logic.             | `10`                 |
 | `--block-max-rpm-threshold`          | Strategy Threshold (Absolute): Minimum peak RPM from any *individual* IP. **Currently ignored by available strategies.**                       | `10.0`               |
 | `--block-total-max-rpm-threshold`    | Strategy Threshold (Absolute): **For `combined` strategy:** MANDATORY threshold for average `Req/Min(Win)` (Condition 3).                      | `20.0`               |
 | `--block-trigger-count`              | Strategy Threshold: Minimum number of original triggers met. **Currently ignored by available strategies.**                                    | `2`                  |
-| `--block-duration`                   | Duration of the UFW block in minutes (used for individual blocks and automatic /16 blocks).                                                | `60`                 |
+| `--block-duration`                   | Duration (minutes) for UFW blocks applied based on strategy decisions (subnets, /16 supernets).                                              | `60`                 |
+| `--block-ip-min-req-per-hour`        | **IP Blocking:** Block individual IPs if their request rate (req/hour) over the analysis window exceeds this threshold. Set to 0 to disable.    | `400`                |
+| `--block-ip-duration`                | **IP Blocking:** Duration (minutes) for blocks applied to individual IPs exceeding the `--block-ip-min-req-per-hour` threshold.                | `1440` (24 hours)    |
 | `--dry-run`                          | Show UFW commands that would be executed, but do not execute them.                                                                           | `False`              |
 | `--output, -o`                       | File path to save the analysis results (exports individual threats).                                                                         | `None`               |
 | `--format`                           | Output format for the results file (`json`, `csv`, `text`).                                                                                  | `text`               |
@@ -191,16 +196,18 @@ sudo python3 stats.py --clean-rules --dry-run
 
 ## Blocking Strategies (`--block-strategy`)
 
-Strategies define how threats are scored and whether they should be blocked. Most strategies first check if the subnet's `total_requests` meet the **effective minimum request threshold** (determined by `--block-relative-threshold-percent`).
+Strategies define how threats are scored and whether they should be blocked. Most strategies first check if the subnet's `total_requests` meet the **effective minimum request threshold**. This threshold (`effective_min_requests`) is calculated based on `--block-relative-threshold-percent` applied to the total requests in the window, but will not be lower than `--block-absolute-min-requests` (and always at least 1).
 
 **Important:** The `strategy_score`'s primary purpose is to **sort** the detected threats for reporting. The decision to actually block (`should_block`) depends on whether the threat meets the specific **blocking conditions** defined for that strategy, which may differ from the scoring logic.
 
 ### Tuning Thresholds
 
--   **`--block-relative-threshold-percent` (Relative Base Filter / Combined Condition 2 Source):**
-    -   Sets the minimum share of total traffic a subnet needs to be considered initially. This percentage is applied to the `total_overall_requests` to calculate the `effective_min_requests` value (minimum 1).
-    -   **`combined` Blocking Condition 2 (Mandatory):** Uses the calculated `effective_min_requests` directly as the threshold for the `Total Requests` condition.
-    -   **Tuning:** Adjust based on overall traffic volume and desired sensitivity for the initial filter / Condition 2.
+-   **`--block-relative-threshold-percent` & `--block-absolute-min-requests` (Base Filter / Combined Condition 2 Source):**
+    -   These two parameters determine the `effective_min_requests` value used as a base filter by most strategies.
+    -   First, a value is calculated using the percentage (`--block-relative-threshold-percent`) of `total_overall_requests`.
+    -   Then, `effective_min_requests` is set to `max(1, calculated_percentage_value, --block-absolute-min-requests)`.
+    -   **`combined` Blocking Condition 2 (Mandatory):** Uses the final `effective_min_requests` directly as the threshold for the `Total Requests` condition.
+    -   **Tuning:** Adjust the percentage based on desired sensitivity relative to total traffic. Adjust the absolute minimum to prevent overly low thresholds during low-traffic periods.
 -   **`--block-min-timespan-percent` (Combined Condition 1 Source):**
     -   **`combined` Blocking Condition 1 (Mandatory):** Sets the minimum percentage of the analysis window the subnet must be active.
     -   **Tuning:** Adjust based on how sustained you require the activity to be. Default is 50%.
@@ -219,19 +226,19 @@ Strategies define how threats are scored and whether they should be blocked. Mos
     *   **Goal:** Block based on high request volume AND coordination (many IPs).
     *   **Score:** Normalized score (0-1) based on `ip_count` (weighted 0.7) and `total_requests` (weighted 0.3) relative to maximums.
     *   **Blocks If:** `total_requests >= effective_min_requests` **AND** `ip_count >= --block-ip-count-threshold`.
-    *   **Tuning:** Adjust `--block-ip-count-threshold`.
+    *   **Tuning:** Adjust `--block-ip-count-threshold`. `effective_min_requests` is influenced by `--block-relative-threshold-percent` and `--block-absolute-min-requests`.
 
-2.  **`combined` (Default)**
+2.  **`combined` (Default)
     *   **Goal:** Block based on meeting a sufficient number of key conditions: sustained activity (TimeSpan), significant volume (TotalReq vs effective_min), and high average request rate over the window (`Req/Min(Win)`).
     *   **Score:** Reflects the number of conditions met (0.0 to 3.0). Used for sorting. The conditions are:
         1.  `subnet_time_span` covers at least **`--block-min-timespan-percent`** (default 50%) of the analysis window.
-        2.  `total_requests >= effective_min_requests` (where `effective_min_requests` is calculated externally based on `--block-relative-threshold-percent` applied to the total requests in the window).
+        2.  `total_requests >= effective_min_requests` (where `effective_min_requests` is calculated externally based on `--block-relative-threshold-percent` and `--block-absolute-min-requests`).
         3.  `subnet_req_per_min_window > --block-total-max-rpm-threshold`.
     *   **Blocks If:** The calculated `score` (number of conditions met) is **>= 2.0** (i.e., at least 2 out of the 3 conditions are met).
     *   **Tuning:**
         *   Adjust `--block-min-timespan-percent` (affects Condition 1).
         *   Adjust `--block-total-max-rpm-threshold` (affects Condition 3).
-        *   Adjust `--block-relative-threshold-percent` (affects the calculation of `effective_min_requests` used in Condition 2).
+        *   Adjust `--block-relative-threshold-percent` and `--block-absolute-min-requests` (affects the calculation of `effective_min_requests` used in Condition 2).
         *   The blocking score threshold is fixed internally at 2.0.
         *   `--block-ip-count-threshold`, `--block-max-rpm-threshold`, and `--block-trigger-count` are ignored by this strategy's blocking logic.
 
