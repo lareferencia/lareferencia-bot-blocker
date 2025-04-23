@@ -83,17 +83,14 @@ For periodic analysis and blocking, use `cron`. Ensure you use absolute paths an
 # Open the crontab editor (usually requires sudo for UFW access)
 sudo crontab -e
 
-# --- Example 1: Analyze last hour's logs every hour, block based on 'combined' strategy ---
+# --- Example: Analyze last hour's logs every hour, block based on 'combined' strategy ---
 # Note: Adjust paths, log file, and parameters as needed.
 # Use the Python from the virtual environment if you created one.
 # Add --log-file for better debugging. Redirect stdout/stderr for cron logs.
-0 * * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/blocker.py -f /var/log/apache2/access.log --time-window hour --block --block-strategy combined --block-relative-threshold-percent 0.5 --block-total-max-rpm-threshold 30 --block-duration 120 --whitelist /etc/lareferencia-bot-blocker/whitelist.txt --log-file /var/log/lareferencia-bot-blocker.log >> /var/log/lareferencia-bot-blocker-cron.log 2>&1
+0 * * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/blocker.py -f /var/log/apache2/access.log --time-window hour --block --block-strategy volume_coordination --block-relative-threshold-percent 1  --whitelist /etc/lareferencia-bot-blocker/whitelist.txt --silent >> /var/log/lareferencia-bot-blocker-cron.log 2>&1
 
-# --- Example 2: Analyze last day's logs once daily at 1 AM using volume_coordination ---
-0 1 * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/blocker.py -f /var/log/nginx/access.log --time-window day --block --block-strategy volume_coordination --block-relative-threshold-percent 0.2 --block-ip-count-threshold 8 --block-duration 1440 --whitelist /etc/lareferencia-bot-blocker/whitelist.txt --log-file /var/log/lareferencia-bot-blocker.log >> /var/log/lareferencia-bot-blocker-cron.log 2>&1
-
-# --- Example 3: Run rule cleanup every 15 minutes ---
-*/15 * * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/blocker.py --clean-rules >> /var/log/lareferencia-bot-blocker-clean.log 2>&1
+# --- Run rule cleanup every 30 minutes ---
+*/30 * * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/blocker.py --clean-rules >> /var/log/lareferencia-bot-blocker-clean.log 2>&1
 
 ```
 

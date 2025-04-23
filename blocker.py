@@ -133,7 +133,7 @@ def main():
              '(used by "combined" strategy Condition 1).'
     )
     parser.add_argument(
-        '--block-ip-count-threshold', type=int, default=10,
+        '--block-ip-count-threshold', type=int, default=1,
         help='Strategy threshold: Minimum unique IPs (used by volume_coordination). Ignored by "combined" blocking logic.' # Clarified usage
     )
     parser.add_argument(
