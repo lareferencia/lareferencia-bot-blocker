@@ -4,7 +4,7 @@
 >
 > This software is experimental. It is crucial to fully understand the implications of adding firewall restrictions based on log analysis before applying it to production environments. Incorrect parameterization of this script could block legitimate access. LA Referencia is not responsible for improper use or any consequences arising from its use. **Thorough testing in development environments is strongly recommended before production deployment.**
 
-This tool analyzes web server logs (e.g., Apache, Nginx) using Pandas to identify potential bot threats based on request patterns and activity levels. It groups suspicious activity by subnet and can optionally block identified threats using UFW (Uncomplicated Firewall) rules with automatic expiration.
+This tool analyzes web server logs (e.g., Apache, Nginx) using Pandas to identify potential bot threats based on request patterns and activity levels. It groups suspicious activity by subnet and can optionally block identified threats using UFW (Uncomplicated Firewall) rules with automatic expiration. It also features a strike system to escalate block durations for repeat offenders.
 
 ## Features
 
@@ -15,6 +15,7 @@ This tool analyzes web server logs (e.g., Apache, Nginx) using Pandas to identif
 -   ✅ **Configurable Strategies:** Uses selectable strategies to score threats (/24 or /64) and determine blocking actions based on different criteria (volume, IP count, combined metrics).
 -   ✅ **Automated Blocking:** Integrates with UFW to insert temporary `deny` rules with comments indicating expiration time (ISO 8601 UTC). Supports blocking individual IPs, /24 or /64 subnets, and /16 supernets.
     -   ✅ **High-Rate IP Blocking:** Automatically blocks individual IPs exceeding a configurable request-per-hour threshold for a specific duration (defaults to 24h).
+    -   ✅ **Strike System & Escalation:** Tracks block events for each target (subnet/IP) over the last 48 hours using a JSON file. If a target accumulates 8 or more strikes within that window, its block duration is automatically escalated to 24 hours (1440 minutes), overriding the default `--block-duration`.
 -   ✅ **Rule Cleanup:** Includes a mode to automatically remove expired UFW rules added by this script.
 -   ✅ **Whitelisting:** Supports excluding specific IPs or subnets from analysis and blocking.
 -   ✅ **Efficient Log Reading:** Can process logs in reverse when a time window (`--time-window` or `--start-date`) is specified, significantly speeding up analysis of recent activity in large files.
@@ -52,9 +53,20 @@ This tool can complement Fail2Ban by focusing specifically on abusive web crawli
     *   For each subnet, the strategy calculates a `strategy_score` and determines if it `should_block` based on the strategy's criteria, using `effective_min_requests` and other relevant thresholds.
 6.  **Sorting & Filtering:** All threats (/24 or /64) are sorted in descending order based on the `strategy_score` for reporting purposes.
 7.  **Blocking (Optional):** If `--block` is enabled:
-    *   **High-Rate IP Blocking:** Iterates through all individual IPs. If an IP's `req_per_hour` exceeds `--block-ip-min-req-per-hour`, it is blocked immediately using `--block-ip-duration`. These IPs are tracked to prevent redundant blocking later.
-    *   **Supernet /16 Blocking Check:** Groups blockable IPv4 /24 threats (identified by the strategy) by their /16 supernet. If any /16 contains **two or more** such /24 threats, the entire /16 is blocked using `--block-duration`. Subnets within a blocked /16 are marked to avoid redundant blocking.
-    *   **Individual Strategy Blocking:** Iterates through the **top N** individual threats (/24, /64, or single IPs) from the sorted list. If a threat `should_block` (based on strategy) AND wasn't covered by a /16 block AND wasn't already blocked as a high-rate IP, `ufw_handler` attempts to insert a `deny` rule using `--block-duration`.
+    *   **Load Strike History:** Reads the strike history from the file specified by `--strike-file`, removing entries older than 48 hours.
+    *   **High-Rate IP Blocking:** Iterates through all individual IPs. If an IP's `req_per_hour` exceeds `--block-ip-min-req-per-hour`, it is blocked immediately using `--block-ip-duration`. *Strike history is NOT checked or updated for these blocks.* These IPs are tracked to prevent redundant blocking later.
+    *   **Supernet /16 Blocking Check:** Groups blockable IPv4 /24 threats (identified by the strategy) by their /16 supernet. If any /16 contains **two or more** such /24 threats:
+        *   Checks the strike count for the /16 supernet in the loaded history.
+        *   Sets block duration to 1440 minutes if strike count >= 8, otherwise uses `--block-duration`.
+        *   Blocks the entire /16.
+        *   Records a new strike (current timestamp) for the /16 supernet in the history.
+        *   Subnets within a blocked /16 are marked to avoid redundant blocking.
+    *   **Individual Strategy Blocking:** Iterates through the **top N** individual threats (/24, /64, or single IPs) from the sorted list. If a threat `should_block` (based on strategy) AND wasn't covered by a /16 block AND wasn't already blocked as a high-rate IP:
+        *   Checks the strike count for the specific target (subnet or single IP) in the loaded history.
+        *   Sets block duration to 1440 minutes if strike count >= 8, otherwise uses `--block-duration`.
+        *   `ufw_handler` attempts to insert a `deny` rule.
+        *   If blocking is successful, records a new strike (current timestamp) for the target in the history.
+    *   **Save Strike History:** Writes the updated strike history (with new timestamps) back to the JSON file.
 8.  **Reporting:** Displays the top N individual threats to the console, indicating block status and key metrics. Optionally exports the *individual* threat list to a file (`--output`).
 9.  **Rule Cleanup:** The `--clean-rules` mode scans UFW rules for comments matching the script's format and removes rules whose expiration timestamp has passed.
 
@@ -87,7 +99,8 @@ sudo crontab -e
 # Note: Adjust paths, log file, and parameters as needed.
 # Use the Python from the virtual environment if you created one.
 # Add --log-file for better debugging. Redirect stdout/stderr for cron logs.
-0 * * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/blocker.py -f /var/log/apache2/access.log --time-window hour --block --block-strategy volume_coordination --block-relative-threshold-percent 1  --whitelist /etc/lareferencia-bot-blocker/whitelist.txt --silent >> /var/log/lareferencia-bot-blocker-cron.log 2>&1
+# Specify the strike file path.
+0 * * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/blocker.py -f /var/log/apache2/access.log --time-window hour --block --block-strategy volume_coordination --block-relative-threshold-percent 1 --whitelist /etc/lareferencia-bot-blocker/whitelist.txt --strike-file /var/log/lareferencia-bot-blocker/strike_history.json --silent >> /var/log/lareferencia-bot-blocker-cron.log 2>&1
 
 # --- Run rule cleanup every 30 minutes ---
 */30 * * * * /path/to/lareferencia-bot-blocker/venv/bin/python3 /path/to/lareferencia-bot-blocker/blocker.py --clean-rules >> /var/log/lareferencia-bot-blocker-clean.log 2>&1
@@ -164,30 +177,31 @@ sudo python3 blocker.py --clean-rules --dry-run
 
 ## Options
 
-| Option                               | Description                                                                                                                                  | Default              |
-| :----------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------- | :------------------- |
-| `--file, -f`                         | Path to the log file to analyze (required unless `--clean-rules`).                                                                           | `None`               |
-| `--start-date, -s`                   | Analyze logs from this date/time (Format: `dd/Mmm/YYYY:HH:MM:SS`, e.g., `16/Apr/2024:10:00:00`). Assumes local timezone.                       | `None`               |
-| `--time-window, -tw`                 | Analyze logs from the `hour`, `6hour`, `day`, or `week` (overrides `--start-date`).                                                            | `None`               |
-| `--top, -n`                          | Number of top *individual* threats (/24 or /64 by strategy score) to display and consider for blocking based on the chosen strategy.         | `10`                 |
-| `--whitelist, -w`                    | Path to a file containing IPs/subnets to exclude (one per line, `#` for comments).                                                           | `None`               |
-| `--block`                            | Enable blocking of threats using UFW. Requires appropriate permissions.                                                                      | `False`              |
-| `--block-strategy`                   | Strategy for scoring *individual* threats (`volume_coordination`, `combined`).                                                               | `combined`           |
-| `--block-relative-threshold-percent` | **Base Filter:** Minimum percentage of total requests in the window for a subnet to be considered initially. Used to calculate `effective_min_requests` along with `--block-absolute-min-requests`. | `1.0`                |
-| `--block-absolute-min-requests`      | **Base Filter:** Absolute minimum request count threshold. Ensures `effective_min_requests` does not fall below this value.                    | `100`                |
-| `--block-min-timespan-percent`       | Strategy threshold: Minimum percentage of analysis window duration a subnet must be active (used by `combined` strategy Condition 1).          | `50.0`               |
-| `--block-ip-count-threshold`         | Strategy Threshold (Absolute): Minimum number of unique IPs (used by `volume_coordination`). Ignored by `combined` blocking logic.             | `10`                 |
-| `--block-total-max-rpm-threshold`    | Strategy Threshold (Absolute): **For `combined` strategy:** MANDATORY threshold for average `Req/Min(Win)` (Condition 3).                      | `20.0`               |
-| `--block-duration`                   | Duration (minutes) for UFW blocks applied based on strategy decisions (subnets, /16 supernets).                                              | `60`                 |
-| `--block-ip-min-req-per-hour`        | **IP Blocking:** Block individual IPs if their request rate (req/hour) over the analysis window exceeds this threshold. Set to 0 to disable.    | `400`                |
-| `--block-ip-duration`                | **IP Blocking:** Duration (minutes) for blocks applied to individual IPs exceeding the `--block-ip-min-req-per-hour` threshold.                | `1440` (24 hours)    |
-| `--dry-run`                          | Show UFW commands that would be executed, but do not execute them.                                                                           | `False`              |
-| `--output, -o`                       | File path to save the analysis results (exports individual threats).                                                                         | `None`               |
-| `--format`                           | Output format for the results file (`json`, `csv`, `text`).                                                                                  | `text`               |
-| `--log-file`                         | File path to save execution logs.                                                                                                            | `None`               |
-| `--log-level`                        | Logging detail level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).                                                                      | `INFO`               |
-| `--clean-rules`                      | Run cleanup of expired UFW rules (matching script's comment format) and exit. Requires permissions.                                          | `False`              |
-| `--silent`                           | Suppress most console output (except block actions and final summary). Overrides log level for console (sets to WARNING unless DEBUG).         | `False`              |
+| Option                               | Description                                                                                                                                  | Default                   |
+| :----------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------ |
+| `--file, -f`                         | Path to the log file to analyze (required unless `--clean-rules`).                                                                           | `None`                    |
+| `--start-date, -s`                   | Analyze logs from this date/time (Format: `dd/Mmm/YYYY:HH:MM:SS`, e.g., `16/Apr/2024:10:00:00`). Assumes local timezone.                       | `None`                    |
+| `--time-window, -tw`                 | Analyze logs from the `hour`, `6hour`, `day`, or `week` (overrides `--start-date`).                                                            | `None`                    |
+| `--top, -n`                          | Number of top *individual* threats (/24 or /64 by strategy score) to display and consider for blocking based on the chosen strategy.         | `10`                      |
+| `--whitelist, -w`                    | Path to a file containing IPs/subnets to exclude (one per line, `#` for comments).                                                           | `None`                    |
+| `--block`                            | Enable blocking of threats using UFW. Requires appropriate permissions.                                                                      | `False`                   |
+| `--block-strategy`                   | Strategy for scoring *individual* threats (`volume_coordination`, `combined`).                                                               | `combined`                |
+| `--block-relative-threshold-percent` | **Base Filter:** Minimum percentage of total requests in the window for a subnet to be considered initially. Used to calculate `effective_min_requests` along with `--block-absolute-min-requests`. | `1.0`                     |
+| `--block-absolute-min-requests`      | **Base Filter:** Absolute minimum request count threshold. Ensures `effective_min_requests` does not fall below this value.                    | `100`                     |
+| `--block-min-timespan-percent`       | Strategy threshold: Minimum percentage of analysis window duration a subnet must be active (used by `combined` strategy Condition 1).          | `50.0`                    |
+| `--block-ip-count-threshold`         | Strategy Threshold (Absolute): Minimum number of unique IPs (used by `volume_coordination`). Ignored by `combined` blocking logic.             | `10`                      |
+| `--block-total-max-rpm-threshold`    | Strategy Threshold (Absolute): **For `combined` strategy:** MANDATORY threshold for average `Req/Min(Win)` (Condition 3).                      | `20.0`                    |
+| `--block-duration`                   | **Default** duration (minutes) for UFW blocks applied based on strategy decisions (subnets, /16 supernets). Used if strike count < 8.          | `60`                      |
+| `--block-ip-min-req-per-hour`        | **IP Blocking:** Block individual IPs if their request rate (req/hour) over the analysis window exceeds this threshold. Set to 0 to disable.    | `400`                     |
+| `--block-ip-duration`                | **IP Blocking:** Duration (minutes) for blocks applied to individual IPs exceeding the `--block-ip-min-req-per-hour` threshold.                | `1440` (24 hours)         |
+| `--strike-file`                      | Path to the JSON file for storing strike history (used for escalating block duration).                                                       | `strike_history.json`     |
+| `--dry-run`                          | Show UFW commands that would be executed, but do not execute them.                                                                           | `False`                   |
+| `--output, -o`                       | File path to save the analysis results (exports individual threats).                                                                         | `None`                    |
+| `--format`                           | Output format for the results file (`json`, `csv`, `text`).                                                                                  | `text`                    |
+| `--log-file`                         | File path to save execution logs.                                                                                                            | `None`                    |
+| `--log-level`                        | Logging detail level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).                                                                      | `INFO`                    |
+| `--clean-rules`                      | Run cleanup of expired UFW rules (matching script's comment format) and exit. Requires permissions.                                          | `False`                   |
+| `--silent`                           | Suppress most console output (except block actions and final summary). Overrides log level for console (sets to WARNING unless DEBUG).         | `False`                   |
 
 ## Blocking Strategies (`--block-strategy`)
 
@@ -236,6 +250,20 @@ Strategies define how threats are scored and whether they should be blocked. Mos
         *   `--block-ip-count-threshold` is ignored by this strategy's blocking logic.
 
 **Note:** The final list of threats is always sorted based on the `strategy_score`. Blocking actions apply to the `--top` N threats *that also meet the specific blocking conditions* defined by the strategy.
+
+## Strike System and Block Duration Escalation
+
+To handle persistent offenders, the script implements a strike system:
+
+1.  **History Storage:** When blocking is enabled (`--block`), the script maintains a history of block events in a JSON file specified by `--strike-file`.
+2.  **Timestamping:** Each time a target (subnet, single IP resulting from strategy block, or /16 supernet) is successfully blocked, the current UTC timestamp is added to its entry in the history file.
+3.  **48-Hour Window:** When loading the history at the start of a run, timestamps older than 48 hours are automatically discarded.
+4.  **Strike Count Check:** Before blocking a target (excluding blocks based solely on `--block-ip-min-req-per-hour`), the script counts how many valid timestamps (strikes) exist for that specific target within the last 48 hours.
+5.  **Escalation Trigger:** If the strike count for a target is **8 or more**, the block duration for *that specific block action* is automatically set to **1440 minutes (24 hours)**, overriding the value set by `--block-duration`.
+6.  **Default Duration:** If the strike count is less than 8, the block duration specified by `--block-duration` (default 60 minutes) is used.
+7.  **Logging:** The number of strikes and whether the duration was escalated are indicated in the log messages and console output when a block occurs.
+
+**Note:** The high-rate individual IP blocking (`--block-ip-min-req-per-hour`) uses its own fixed duration (`--block-ip-duration`) and does *not* interact with the strike system (it neither checks nor records strikes).
 
 ## Whitelist Format
 

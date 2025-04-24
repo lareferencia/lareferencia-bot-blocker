@@ -13,6 +13,7 @@ import pandas as pd
 import importlib # For dynamic strategy loading
 from collections import defaultdict # For grouping /16s
 import time # Import time module
+import json # Import json module
 
 # Import own modules
 # Remove LogParser from import, keep functions
@@ -24,6 +25,82 @@ from threat_analyzer import ThreatAnalyzer
 # Logging configuration
 LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+
+# --- Helper Functions for Strike History ---
+
+STRIKE_HISTORY_MAX_AGE_HOURS = 48
+
+def load_strike_history(filepath):
+    """Loads strike history from JSON, cleans old entries."""
+    history = {}
+    if not filepath or not os.path.exists(filepath):
+        logger.info(f"Strike history file not found or not specified ('{filepath}'). Starting fresh.")
+        return history
+
+    try:
+        with open(filepath, 'r') as f:
+            history = json.load(f)
+        logger.info(f"Loaded strike history for {len(history)} targets from {filepath}.")
+    except json.JSONDecodeError:
+        logger.warning(f"Could not decode JSON from strike history file: {filepath}. Starting fresh.")
+        return {}
+    except Exception as e:
+        logger.error(f"Error loading strike history file {filepath}: {e}. Starting fresh.")
+        return {}
+
+    # Clean old timestamps
+    cleaned_history = {}
+    now_utc = datetime.now(timezone.utc)
+    cutoff_time = now_utc - timedelta(hours=STRIKE_HISTORY_MAX_AGE_HOURS)
+    cleaned_count = 0
+    kept_count = 0
+
+    for target_id, timestamps in history.items():
+        valid_timestamps = []
+        if isinstance(timestamps, list):
+            for ts_str in timestamps:
+                try:
+                    ts_utc = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                    if ts_utc >= cutoff_time:
+                        valid_timestamps.append(ts_str)
+                        kept_count += 1
+                    else:
+                        cleaned_count += 1
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid timestamp format '{ts_str}' for target '{target_id}' in history. Skipping.")
+        if valid_timestamps:
+            cleaned_history[target_id] = valid_timestamps
+
+    if cleaned_count > 0:
+        logger.info(f"Removed {cleaned_count} strike entries older than {STRIKE_HISTORY_MAX_AGE_HOURS} hours.")
+    logger.debug(f"Strike history loaded and cleaned. Kept {kept_count} recent strikes for {len(cleaned_history)} targets.")
+    return cleaned_history
+
+def save_strike_history(filepath, history):
+    """Saves strike history to JSON safely."""
+    if not filepath:
+        logger.warning("Strike history file path not specified. Cannot save history.")
+        return False
+    temp_filepath = filepath + ".tmp"
+    try:
+        with open(temp_filepath, 'w') as f:
+            json.dump(history, f, indent=2) # Use indent for readability
+        # Atomically replace the old file with the new one
+        os.replace(temp_filepath, filepath)
+        logger.info(f"Successfully saved strike history for {len(history)} targets to {filepath}.")
+        return True
+    except Exception as e:
+        logger.error(f"Error saving strike history to {filepath}: {e}")
+        # Clean up temp file if it exists
+        if os.path.exists(temp_filepath):
+            try:
+                os.remove(temp_filepath)
+            except OSError as rm_err:
+                logger.error(f"Could not remove temporary strike file {temp_filepath}: {rm_err}")
+        return False
+
+# --- End Helper Functions ---
+
 
 def setup_logging(log_file=None, log_level=logging.INFO):
     """
@@ -78,6 +155,11 @@ def calculate_start_date(time_window):
     return None
 
 def main():
+    # --- Determine script directory for default strike file path ---
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_strike_file_path = os.path.join(script_dir, 'strike_history.json')
+    # --- End determine script directory ---
+
     parser = argparse.ArgumentParser(
         description='Analyzes logs using Pandas and configurable strategies, optionally blocks threats with UFW.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter # Show defaults in help
@@ -145,7 +227,7 @@ def main():
     # --- REMOVED block-trigger-count ---
     parser.add_argument(
         '--block-duration', type=int, default=60,
-        help='Duration of the UFW block in minutes (used for all blocks).'
+        help='Default duration of the UFW block in minutes (used if strike count < 8).' # UPDATED help
     )
     parser.add_argument(
         '--block-ip-min-req-per-hour', type=int, default=400, # NEW ARGUMENT for IP blocking
@@ -154,6 +236,10 @@ def main():
     parser.add_argument(
         '--block-ip-duration', type=int, default=1440, # NEW ARGUMENT for IP blocking duration (24h)
         help='Duration (in minutes) for blocks applied to individual IPs exceeding the req/hour threshold.'
+    )
+    parser.add_argument(
+        '--strike-file', default=default_strike_file_path, # UPDATED default
+        help='Path to the JSON file for storing strike history (for escalating block duration).'
     )
     parser.add_argument(
         '--dry-run', action='store_true',
@@ -399,12 +485,17 @@ def main():
     blocked_targets_count = 0
     blocked_subnets_via_supernet = set() # Keep track of /24s blocked via /16
     blocked_ips_high_rpm = set() # Keep track of IPs blocked due to high RPM
+    strike_history = {} # Initialize strike history dict
 
     if args.block:
         if not args.silent:
             print("-" * 30)
         logger.info(f"Processing blocks (Dry Run: {args.dry_run})...")
         ufw_manager_instance = ufw_handler.UFWManager(args.dry_run)
+
+        # --- Load Strike History ---
+        strike_history = load_strike_history(args.strike_file)
+        # --- End Load Strike History ---
 
         # 0. Block Individual IPs with High Request Rate (req/hour)
         if args.block_ip_min_req_per_hour > 0 and analyzer.ip_metrics_df is not None and 'req_per_hour' in analyzer.ip_metrics_df.columns:
@@ -418,7 +509,8 @@ def main():
                         ip_obj = ipaddress.ip_address(ip_str)
                         target_to_block_obj = ip_obj
                         target_type = "High RPM IP"
-                        block_duration = args.block_ip_duration # Use specific duration for these IPs
+                        # Use specific duration for these IPs, NO strike escalation here
+                        block_duration = args.block_ip_duration
                         reason = f"exceeded {args.block_ip_min_req_per_hour} req/hour ({ip_metrics['req_per_hour']:.1f})"
 
                         logger.info(f"Processing block for {target_type}: {target_to_block_obj}. Reason: {reason}")
@@ -464,12 +556,18 @@ def main():
         for supernet, contained_blockable_threats in supernets_to_block.items():
             if len(contained_blockable_threats) >= 2:
                 target_to_block_obj = supernet
+                target_id_str = str(target_to_block_obj) # String for strike history key
                 target_type = "Supernet /16"
-                block_duration = args.block_duration
+                # --- Strike Logic for Supernets ---
+                strike_count = len(strike_history.get(target_id_str, []))
+                escalated = strike_count >= 8
+                block_duration = 1440 if escalated else args.block_duration
+                duration_info = f"(Escalated: {strike_count} strikes)" if escalated else f"({strike_count} strikes)"
+                # --- End Strike Logic ---
                 contained_ids_str = ", ".join([str(t['id']) for t in contained_blockable_threats])
                 reason = f"contains >= 2 blockable /24 subnets ({contained_ids_str})"
 
-                logger.info(f"Processing block for {target_type}: {target_to_block_obj}. Reason: {reason}")
+                logger.info(f"Processing block for {target_type}: {target_to_block_obj}. Reason: {reason}. Duration: {block_duration}m {duration_info}")
                 success = ufw_manager_instance.block_target(
                     subnet_or_ip_obj=target_to_block_obj,
                     block_duration_minutes=block_duration
@@ -478,13 +576,17 @@ def main():
                     blocked_targets_count += 1
                     action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
                     # ALWAYS PRINT block actions
-                    print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes.")
+                    print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}.")
+                    # --- Record Strike ---
+                    now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                    if target_id_str not in strike_history:
+                        strike_history[target_id_str] = []
+                    strike_history[target_id_str].append(now_iso)
+                    # --- End Record Strike ---
                     for contained_threat in contained_blockable_threats:
-                        # Store the ipaddress object in the set
                         blocked_subnets_via_supernet.add(contained_threat['id'])
                 else:
                     action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
-                    # Print failures only if not silent
                     if not args.silent:
                         print(f" -> {action} {target_type}: {target_to_block_obj}.")
 
@@ -531,7 +633,15 @@ def main():
                     logger.info(f"Skipping block for {target_type} {target_to_block_obj}: Already blocked due to high req/hour.")
                     continue
 
-                logger.info(f"Processing block for {target_type}: {target_to_block_obj}. Reason: {threat.get('block_reason')}")
+                # --- Strike Logic for Individual Threats ---
+                target_id_str = str(target_to_block_obj) # String for strike history key
+                strike_count = len(strike_history.get(target_id_str, []))
+                escalated = strike_count >= 8
+                block_duration = 1440 if escalated else args.block_duration
+                duration_info = f"(Escalated: {strike_count} strikes)" if escalated else f"({strike_count} strikes)"
+                # --- End Strike Logic ---
+
+                logger.info(f"Processing block for {target_type}: {target_to_block_obj}. Reason: {threat.get('block_reason')}. Duration: {block_duration}m {duration_info}")
                 success = ufw_manager_instance.block_target(
                     subnet_or_ip_obj=target_to_block_obj,
                     block_duration_minutes=block_duration # Use general duration for strategy blocks
@@ -555,11 +665,24 @@ def main():
                          metrics_summary = "Metrics: N/A"
                     # --- End metrics summary string ---
 
-                    # Append the metrics_summary to the print statement
-                    print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes. Reason: {threat.get('block_reason')}. {metrics_summary}")
+                    # Append the metrics_summary and duration_info to the print statement
+                    print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}. Reason: {threat.get('block_reason')}. {metrics_summary}")
+
+                    # --- Record Strike ---
+                    now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                    if target_id_str not in strike_history:
+                        strike_history[target_id_str] = []
+                    strike_history[target_id_str].append(now_iso)
+                    # --- End Record Strike ---
+
                 else:
                     action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
                     print(f" -> {action} {target_type}: {target_to_block_obj}.")
+
+        # --- Save Strike History ---
+        save_strike_history(args.strike_file, strike_history)
+        # --- End Save Strike History ---
+
         if not args.silent:
             print(f"Block processing complete. {blocked_targets_count} targets {'would be' if args.dry_run else 'were'} processed for blocking.")
             print("-" * 30)
