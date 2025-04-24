@@ -445,14 +445,15 @@ def main():
 
     # --- Calculate Overall Maximums using DataFrame ---
     max_metrics_data = {}
-    # Define metrics to track and their display names - REMOVED metrics
+    # Define metrics to track and their display names - ADDED subnet_req_per_hour
     metrics_to_track = [
         'total_requests', 'ip_count',
         # Removed IP RPMs
         # Removed Subnet Total RPMs
         'subnet_time_span',
         # Removed subnet_req_per_min
-        'subnet_req_per_min_window'
+        'subnet_req_per_min_window',
+        'subnet_req_per_hour' # ADDED
     ]
     metric_names_map = {
         'total_requests': 'Total Requests',
@@ -461,7 +462,8 @@ def main():
         # Removed Subnet Total RPMs
         'subnet_time_span': 'Subnet Activity Timespan (%)',
         # Removed subnet_req_per_min
-        'subnet_req_per_min_window': 'Subnet Req/Min (Window Avg)'
+        'subnet_req_per_min_window': 'Subnet Req/Min (Window Avg)',
+        'subnet_req_per_hour': 'Subnet Req/Hour (Window Avg)' # ADDED
     }
 
     if not threats_df.empty:
@@ -677,6 +679,7 @@ def main():
                             f"{threat.get('ip_count', 0):d} IPs, "
                             f"Score: {threat.get('strategy_score', 0):.1f}, "
                             f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, "
+                            f"Req/Hour(Win): {threat.get('subnet_req_per_hour', 0):.1f}, " # ADDED
                             f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
                         )
                     except Exception as e:
@@ -732,7 +735,7 @@ def main():
             target_id_str = str(target_id_obj)
             strat_score_str = f"Score: {threat.get('strategy_score', 0):.2f}"
 
-            # Construct detailed metrics summary string (using .get() on the threat dict) - REMOVED metrics
+            # Construct detailed metrics summary string (using .get() on the threat dict) - ADDED Req/Hour
             total_req_val = threat.get('total_requests', 0)
             if total_req_val is None or pd.isna(total_req_val): total_req_val = 0
             total_req_val = int(total_req_val)
@@ -743,6 +746,7 @@ def main():
                 # Removed IP RPMs
                 # Removed Subnet Total RPMs
                 f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, "
+                f"Req/Hour(Win): {threat.get('subnet_req_per_hour', 0):.1f}, " # ADDED
                 f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
             )
 
@@ -847,7 +851,7 @@ def main():
                             achieved_max_metrics.append(metric_names_map.get(metric_key, metric_key))
                     achieved_max_str = f" [Achieved Max: {', '.join(achieved_max_metrics)}]" if achieved_max_metrics else ""
 
-                    # Reuse the metrics summary string generation from the DataFrame row - REMOVED metrics
+                    # Reuse the metrics summary string generation from the DataFrame row - ADDED Req/Hour
                     total_req_val = threat_row.get('total_requests', 0)
                     if total_req_val is None or pd.isna(total_req_val): total_req_val = 0
                     total_req_val = int(total_req_val)
@@ -859,6 +863,7 @@ def main():
                         # Removed Subnet Total RPMs
                         # Removed subnet_req_per_min
                         f"Req/Min(Win): {threat_row.get('subnet_req_per_min_window', 0):.1f}, "
+                        f"Req/Hour(Win): {threat_row.get('subnet_req_per_hour', 0):.1f}, " # ADDED
                         f"TimeSpan: {threat_row.get('subnet_time_span', 0):.0f}s"
                     )
 

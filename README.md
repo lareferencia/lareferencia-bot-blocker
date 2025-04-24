@@ -46,7 +46,7 @@ This tool can complement Fail2Ban by focusing specifically on abusive web crawli
     *   For each unique IP address, the script calculates metrics like `total_requests`, `first_seen`, `last_seen`, `time_span_seconds`, average RPM during active minutes (`avg_rpm_activity`), peak RPM during active minutes (`max_rpm_activity`), and average requests per hour over the analysis window (`req_per_hour`).
 4.  **Subnet Aggregation (Pandas):**
     *   IPs are grouped by their calculated subnet (/24 for IPv4, /64 for IPv6).
-    *   For each subnet, the script aggregates metrics from the IPs within it: `total_requests` (sum), `ip_count` (unique IPs), `subnet_time_span` (overall duration), and `subnet_req_per_min_window` (average requests per minute over the entire analysis window).
+    *   For each subnet, the script aggregates metrics from the IPs within it: `total_requests` (sum), `ip_count` (unique IPs), `subnet_time_span` (overall duration), `subnet_req_per_min_window` (average requests per minute over the entire analysis window), and `subnet_req_per_hour` (average requests per hour over the entire analysis window).
 5.  **Strategy Application (/24 or /64):**
     *   The script calculates the `effective_min_requests` threshold based on `--block-relative-threshold-percent` and `--block-absolute-min-requests`.
     *   The script loads the selected `--block-strategy`.
