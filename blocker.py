@@ -524,11 +524,16 @@ def main():
                             blocked_targets_count += 1
                             blocked_ips_high_rpm.add(target_to_block_obj) # Add the ipaddress object
                             action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
-                            # ALWAYS PRINT block actions
-                            print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes. Reason: {reason}.")
+                            timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            # ALWAYS PRINT block actions, format based on silent mode
+                            if args.silent:
+                                print(f"{timestamp_str} {action} {target_type}: {target_to_block_obj} for {block_duration}m. Reason: {reason}.")
+                            else:
+                                print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes. Reason: {reason}.")
                         else:
-                            action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
+                            # Only print failure if not silent
                             if not args.silent:
+                                action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
                                 print(f" -> {action} {target_type}: {target_to_block_obj}.")
                     except ValueError:
                         logger.warning(f"Could not parse IP address '{ip_str}' for high RPM blocking.")
@@ -577,8 +582,12 @@ def main():
                 if success:
                     blocked_targets_count += 1
                     action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
-                    # ALWAYS PRINT block actions
-                    print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}.")
+                    timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    # ALWAYS PRINT block actions, format based on silent mode
+                    if args.silent:
+                         print(f"{timestamp_str} {action} {target_type}: {target_to_block_obj} for {block_duration}m {duration_info}. Reason: {reason}.")
+                    else:
+                         print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}.")
                     # --- Record Strike ---
                     now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
                     if target_id_str not in strike_history:
@@ -588,8 +597,9 @@ def main():
                     for contained_threat in contained_blockable_threats:
                         blocked_subnets_via_supernet.add(contained_threat['id'])
                 else:
-                    action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
+                    # Only print failure if not silent
                     if not args.silent:
+                        action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
                         print(f" -> {action} {target_type}: {target_to_block_obj}.")
 
 
@@ -643,7 +653,9 @@ def main():
                 duration_info = f"(Escalated: {strike_count} strikes)" if escalated else f"({strike_count} strikes)"
                 # --- End Strike Logic ---
 
-                logger.info(f"Processing block for {target_type}: {target_to_block_obj}. Reason: {threat.get('block_reason')}. Duration: {block_duration}m {duration_info}")
+                block_reason = threat.get('block_reason', 'Strategy threshold met') # Get reason
+
+                logger.info(f"Processing block for {target_type}: {target_to_block_obj}. Reason: {block_reason}. Duration: {block_duration}m {duration_info}")
                 success = ufw_manager_instance.block_target(
                     subnet_or_ip_obj=target_to_block_obj,
                     block_duration_minutes=block_duration # Use general duration for strategy blocks
@@ -651,6 +663,7 @@ def main():
                 if success:
                     blocked_targets_count += 1
                     action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
+                    timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
                     # --- Construct metrics summary string for block message ---
                     try:
@@ -667,8 +680,12 @@ def main():
                          metrics_summary = "Metrics: N/A"
                     # --- End metrics summary string ---
 
-                    # Append the metrics_summary and duration_info to the print statement
-                    print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}. Reason: {threat.get('block_reason')}. {metrics_summary}")
+                    # ALWAYS PRINT block actions, format based on silent mode
+                    if args.silent:
+                        print(f"{timestamp_str} {action} {target_type}: {target_to_block_obj} for {block_duration}m {duration_info}. Reason: {block_reason}. {metrics_summary}")
+                    else:
+                        # Append the metrics_summary and duration_info to the print statement for non-silent
+                        print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}. Reason: {block_reason}. {metrics_summary}")
 
                     # --- Record Strike ---
                     now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -678,8 +695,10 @@ def main():
                     # --- End Record Strike ---
 
                 else:
-                    action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
-                    print(f" -> {action} {target_type}: {target_to_block_obj}.")
+                    # Only print failure if not silent
+                    if not args.silent:
+                        action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
+                        print(f" -> {action} {target_type}: {target_to_block_obj}.")
 
         # --- Save Strike History ---
         save_strike_history(args.strike_file, strike_history)
@@ -753,14 +772,6 @@ def main():
                      print(f"     ... and {len(threat['details']) - max_details_to_show} more.")
             else:
                  print("  -> No IP details available.")
-
-    # --- Export Results ---
-    if args.output:
-        # Pass the main threats list (list of dicts) to export
-        if analyzer.export_results(args.format, args.output, config=args, threats=threats):
-            logger.info(f"Results exported to {args.output} in {args.format} format")
-        else:
-            logger.error(f"Error exporting results to {args.output}")
 
     # --- Final Summary ---
     # Print simplified summary in silent mode
