@@ -15,7 +15,7 @@ This tool analyzes web server logs (e.g., Apache, Nginx) using Pandas to identif
 -   ✅ **Configurable Strategies:** Uses selectable strategies to score threats (/24 or /64) and determine blocking actions based on different criteria (volume, IP count, combined metrics).
 -   ✅ **Automated Blocking:** Integrates with UFW to insert temporary `deny` rules with comments indicating expiration time (ISO 8601 UTC). Supports blocking individual IPs, /24 or /64 subnets, and /16 supernets.
     -   ✅ **High-Rate IP Blocking:** Automatically blocks individual IPs exceeding a configurable request-per-hour threshold for a specific duration (defaults to 24h).
-    -   ✅ **Strike System & Escalation:** Tracks block events for each target (subnet/IP) over the last 48 hours using a JSON file. If a target accumulates 8 or more strikes within that window, its block duration is automatically escalated to 24 hours (1440 minutes), overriding the default `--block-duration`.
+    -   ✅ **Strike System & Escalation:** Tracks block events for each target (subnet/IP) over the last 48 hours using a JSON file. If a target accumulates a configurable number of strikes (`--block-escalation-strikes`, default 4) within that window, its block duration is automatically escalated to 24 hours (1440 minutes), overriding the default `--block-duration`.
 -   ✅ **Rule Cleanup:** Includes a mode to automatically remove expired UFW rules added by this script.
 -   ✅ **Whitelisting:** Supports excluding specific IPs or subnets from analysis and blocking.
 -   ✅ **Efficient Log Reading:** Can process logs in reverse when a time window (`--time-window` or `--start-date`) is specified, significantly speeding up analysis of recent activity in large files.
@@ -57,13 +57,13 @@ This tool can complement Fail2Ban by focusing specifically on abusive web crawli
     *   **High-Rate IP Blocking:** Iterates through all individual IPs. If an IP's `req_per_hour` exceeds `--block-ip-min-req-per-hour`, it is blocked immediately using `--block-ip-duration`. *Strike history is NOT checked or updated for these blocks.* These IPs are tracked to prevent redundant blocking later.
     *   **Supernet /16 Blocking Check:** Groups blockable IPv4 /24 threats (identified by the strategy) by their /16 supernet. If any /16 contains **two or more** such /24 threats:
         *   Checks the strike count for the /16 supernet in the loaded history.
-        *   Sets block duration to 1440 minutes if strike count >= 8, otherwise uses `--block-duration`.
+        *   Sets block duration to 1440 minutes if strike count >= `--block-escalation-strikes` (default 4), otherwise uses `--block-duration`.
         *   Blocks the entire /16.
         *   Records a new strike (current timestamp) for the /16 supernet in the history.
         *   Subnets within a blocked /16 are marked to avoid redundant blocking.
     *   **Individual Strategy Blocking:** Iterates through the **top N** individual threats (/24, /64, or single IPs) from the sorted list. If a threat `should_block` (based on strategy) AND wasn't covered by a /16 block AND wasn't already blocked as a high-rate IP:
         *   Checks the strike count for the specific target (subnet or single IP) in the loaded history.
-        *   Sets block duration to 1440 minutes if strike count >= 8, otherwise uses `--block-duration`.
+        *   Sets block duration to 1440 minutes if strike count >= `--block-escalation-strikes` (default 4), otherwise uses `--block-duration`.
         *   `ufw_handler` attempts to insert a `deny` rule.
         *   If blocking is successful, records a new strike (current timestamp) for the target in the history.
     *   **Save Strike History:** Writes the updated strike history (with new timestamps) back to the JSON file.
@@ -191,9 +191,10 @@ sudo python3 blocker.py --clean-rules --dry-run
 | `--block-min-timespan-percent`       | Strategy threshold: Minimum percentage of analysis window duration a subnet must be active (used by `combined` strategy Condition 1).          | `50.0`                    |
 | `--block-ip-count-threshold`         | Strategy Threshold (Absolute): Minimum number of unique IPs (used by `volume_coordination`). Ignored by `combined` blocking logic.             | `10`                      |
 | `--block-total-max-rpm-threshold`    | Strategy Threshold (Absolute): **For `combined` strategy:** MANDATORY threshold for average `Req/Min(Win)` (Condition 3).                      | `20.0`                    |
-| `--block-duration`                   | **Default** duration (minutes) for UFW blocks applied based on strategy decisions (subnets, /16 supernets). Used if strike count < 8.          | `60`                      |
+| `--block-duration`                   | **Default** duration (minutes) for UFW blocks applied based on strategy decisions (subnets, /16 supernets). Used if strike count < `--block-escalation-strikes`. | `60`                      |
 | `--block-ip-min-req-per-hour`        | **IP Blocking:** Block individual IPs if their request rate (req/hour) over the analysis window exceeds this threshold. Set to 0 to disable.    | `400`                     |
 | `--block-ip-duration`                | **IP Blocking:** Duration (minutes) for blocks applied to individual IPs exceeding the `--block-ip-min-req-per-hour` threshold.                | `1440` (24 hours)         |
+| `--block-escalation-strikes`         | Number of strikes within the history window required to trigger escalated block duration (1440 min).                                           | `4`                       |
 | `--strike-file`                      | Path to the JSON file for storing strike history (used for escalating block duration).                                                       | `strike_history.json`     |
 | `--dry-run`                          | Show UFW commands that would be executed, but do not execute them.                                                                           | `False`                   |
 | `--output, -o`                       | File path to save the analysis results (exports individual threats).                                                                         | `None`                    |
@@ -259,8 +260,8 @@ To handle persistent offenders, the script implements a strike system:
 2.  **Timestamping:** Each time a target (subnet, single IP resulting from strategy block, or /16 supernet) is successfully blocked, the current UTC timestamp is added to its entry in the history file.
 3.  **48-Hour Window:** When loading the history at the start of a run, timestamps older than 48 hours are automatically discarded.
 4.  **Strike Count Check:** Before blocking a target (excluding blocks based solely on `--block-ip-min-req-per-hour`), the script counts how many valid timestamps (strikes) exist for that specific target within the last 48 hours.
-5.  **Escalation Trigger:** If the strike count for a target is **8 or more**, the block duration for *that specific block action* is automatically set to **1440 minutes (24 hours)**, overriding the value set by `--block-duration`.
-6.  **Default Duration:** If the strike count is less than 8, the block duration specified by `--block-duration` (default 60 minutes) is used.
+5.  **Escalation Trigger:** If the strike count for a target is **equal to or greater than** the value specified by `--block-escalation-strikes` (default 4), the block duration for *that specific block action* is automatically set to **1440 minutes (24 hours)**, overriding the value set by `--block-duration`.
+6.  **Default Duration:** If the strike count is less than `--block-escalation-strikes`, the block duration specified by `--block-duration` (default 60 minutes) is used.
 7.  **Logging:** The number of strikes and whether the duration was escalated are indicated in the log messages and console output when a block occurs.
 
 **Note:** The high-rate individual IP blocking (`--block-ip-min-req-per-hour`) uses its own fixed duration (`--block-ip-duration`) and does *not* interact with the strike system (it neither checks nor records strikes).

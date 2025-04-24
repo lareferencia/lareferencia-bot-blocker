@@ -229,7 +229,7 @@ def main():
     # --- REMOVED block-trigger-count ---
     parser.add_argument(
         '--block-duration', type=int, default=60,
-        help='Default duration of the UFW block in minutes (used if strike count < 8).' # UPDATED help
+        help='Default duration of the UFW block in minutes (used if strike count < block_escalation_strikes).' # UPDATED help
     )
     parser.add_argument(
         '--block-ip-min-req-per-hour', type=int, default=400, # NEW ARGUMENT for IP blocking
@@ -238,6 +238,10 @@ def main():
     parser.add_argument(
         '--block-ip-duration', type=int, default=1440, # NEW ARGUMENT for IP blocking duration (24h)
         help='Duration (in minutes) for blocks applied to individual IPs exceeding the req/hour threshold.'
+    )
+    parser.add_argument(
+        '--block-escalation-strikes', type=int, default=4, # NEW ARGUMENT
+        help='Number of strikes within the history window required to trigger escalated block duration (1440 min).'
     )
     parser.add_argument(
         '--strike-file', default=default_strike_file_path, # UPDATED default
@@ -567,7 +571,7 @@ def main():
                 target_type = "Supernet /16"
                 # --- Strike Logic for Supernets ---
                 strike_count = len(strike_history.get(target_id_str, []))
-                escalated = strike_count >= 8
+                escalated = strike_count >= args.block_escalation_strikes # Use new arg
                 block_duration = 1440 if escalated else args.block_duration
                 duration_info = f"(Escalated: {strike_count} strikes)" if escalated else f"({strike_count} strikes)"
                 # --- End Strike Logic ---
@@ -648,7 +652,7 @@ def main():
                 # --- Strike Logic for Individual Threats ---
                 target_id_str = str(target_to_block_obj) # String for strike history key
                 strike_count = len(strike_history.get(target_id_str, []))
-                escalated = strike_count >= 8
+                escalated = strike_count >= args.block_escalation_strikes # Use new arg
                 block_duration = 1440 if escalated else args.block_duration
                 duration_info = f"(Escalated: {strike_count} strikes)" if escalated else f"({strike_count} strikes)"
                 # --- End Strike Logic ---
