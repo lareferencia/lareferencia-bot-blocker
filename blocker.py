@@ -594,11 +594,12 @@ def main():
                          print(f"{timestamp_str} {action} {target_type}: {target_to_block_obj} for {block_duration}m {duration_info}. Reason: {reason}.")
                     else:
                          print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}.")
-                    # --- Record Strike ---
-                    now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-                    if target_id_str not in strike_history:
-                        strike_history[target_id_str] = []
-                    strike_history[target_id_str].append(now_iso)
+                    # --- Record Strike (only if not dry run) ---
+                    if not args.dry_run:
+                        now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                        if target_id_str not in strike_history:
+                            strike_history[target_id_str] = []
+                        strike_history[target_id_str].append(now_iso)
                     # --- End Record Strike ---
                     for contained_threat in contained_blockable_threats:
                         blocked_subnets_via_supernet.add(contained_threat['id'])
@@ -694,11 +695,12 @@ def main():
                         # Append the metrics_summary and duration_info to the print statement for non-silent
                         print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}. Reason: {block_reason}. {metrics_summary}")
 
-                    # --- Record Strike ---
-                    now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-                    if target_id_str not in strike_history:
-                        strike_history[target_id_str] = []
-                    strike_history[target_id_str].append(now_iso)
+                    # --- Record Strike (only if not dry run) ---
+                    if not args.dry_run:
+                        now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                        if target_id_str not in strike_history:
+                            strike_history[target_id_str] = []
+                        strike_history[target_id_str].append(now_iso)
                     # --- End Record Strike ---
 
                 else:
@@ -707,8 +709,11 @@ def main():
                         action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
                         print(f" -> {action} {target_type}: {target_to_block_obj}.")
 
-        # --- Save Strike History ---
-        save_strike_history(args.strike_file, strike_history)
+        # --- Save Strike History (only if not dry run) ---
+        if not args.dry_run:
+            save_strike_history(args.strike_file, strike_history)
+        else:
+            logger.info("Dry run mode: Strike history not saved.")
         # --- End Save Strike History ---
 
         if not args.silent:
