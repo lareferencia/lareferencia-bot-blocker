@@ -32,6 +32,7 @@ STRIKE_HISTORY_MAX_AGE_HOURS = 48
 
 def load_strike_history(filepath):
     """Loads strike history from JSON, cleans old entries."""
+    logger = logging.getLogger('botstats.strike_history') # Get logger instance
     history = {}
     if not filepath or not os.path.exists(filepath):
         logger.info(f"Strike history file not found or not specified ('{filepath}'). Starting fresh.")
@@ -78,6 +79,7 @@ def load_strike_history(filepath):
 
 def save_strike_history(filepath, history):
     """Saves strike history to JSON safely."""
+    logger = logging.getLogger('botstats.strike_history') # Get logger instance
     if not filepath:
         logger.warning("Strike history file path not specified. Cannot save history.")
         return False
