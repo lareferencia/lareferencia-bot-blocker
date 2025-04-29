@@ -593,7 +593,7 @@ def main():
                     if args.silent:
                          print(f"{timestamp_str} {action} {target_type}: {target_to_block_obj} for {block_duration}m {duration_info}. Reason: {reason}.")
                     else:
-                         print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}.")
+                         print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}. Reason: {reason}.")
                     # --- Record Strike (only if not dry run) ---
                     if not args.dry_run:
                         now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -681,7 +681,7 @@ def main():
                             f"Score: {threat.get('strategy_score', 0):.1f}, "
                             f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, "
                             f"Req/Hour(Win): {threat.get('subnet_req_per_hour', 0):.1f}, " # ADDED
-                            f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
+                            f"TimeSpan: {threat.get('subnet_time_span', 0)::.0f}s"
                         )
                     except Exception as e:
                          logger.warning(f"Could not format metrics for block message of {target_to_block_obj}: {e}")

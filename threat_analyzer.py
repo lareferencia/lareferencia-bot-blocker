@@ -308,18 +308,16 @@ class ThreatAnalyzer:
             # Calculate subnet_time_span (vectorized)
             agg1['subnet_time_span'] = (agg1['subnet_last_seen'] - agg1['subnet_first_seen']).dt.total_seconds().fillna(0).clip(lower=0)
 
-            # Calculate Requests per Minute (vectorized) - REMOVED
-            # agg1['subnet_req_per_min'] = np.where(
-            #     agg1['subnet_time_span'] > 0,
-            #     agg1['total_requests'] / (agg1['subnet_time_span'] / 60.0),
-            #     0
-            # )
-
             # Calculate Requests per Minute over the entire analysis window (vectorized)
             if analysis_duration_seconds and analysis_duration_seconds > 0:
                 agg1['subnet_req_per_min_window'] = agg1['total_requests'] / (analysis_duration_seconds / 60.0)
+                # Calculate Requests per Hour over the entire analysis window (vectorized)
+                analysis_duration_hours = analysis_duration_seconds / 3600.0
+                agg1['subnet_req_per_hour'] = agg1['total_requests'] / analysis_duration_hours
             else:
                 agg1['subnet_req_per_min_window'] = 0.0 # Or np.nan if preferred
+                agg1['subnet_req_per_hour'] = 0.0 # Or np.nan if preferred
+
 
             # Drop intermediate timestamp columns
             agg1 = agg1.drop(columns=['subnet_first_seen', 'subnet_last_seen'], errors='ignore')
@@ -368,6 +366,7 @@ class ThreatAnalyzer:
                 'subnet_time_span': float,
                 # Removed subnet_req_per_min
                 'subnet_req_per_min_window': float,
+                'subnet_req_per_hour': float, # ADDED subnet_req_per_hour
                 # Removed Subnet Total RPMs
             }
             for col, dtype in expected_types.items():
@@ -534,6 +533,7 @@ class ThreatAnalyzer:
                      'ip_count': int(threat_data.get('ip_count', 0)),
                      'subnet_time_span': round(threat_data.get('subnet_time_span', 0), 2),
                      'subnet_req_per_min_window': round(threat_data.get('subnet_req_per_min_window', 0), 2),
+                     'subnet_req_per_hour': round(threat_data.get('subnet_req_per_hour', 0), 2), # ADDED: Include subnet_req_per_hour
                      'details': top_ips_details.get(subnet_obj, []), # Get pre-calculated details
                      'strategy_score': score, # Use calculated score
                      'should_block': should_block, # Use calculated decision
@@ -607,11 +607,12 @@ class ThreatAnalyzer:
                 'id', 'strategy_score', 'should_block', 'block_reason',
                 'total_requests', 'ip_count',
                 'subnet_req_per_min_window',
+                'subnet_req_per_hour', # ADDED: Include subnet_req_per_hour
                 'subnet_time_span',
                 'details'
             ]
             # Get columns present in the DataFrame, maintaining the desired order
-            cols_present = [col for col in cols_order if col in df_export.columns]
+            cols_present = [col for col in df_export.columns if col in cols_order]
             # Add any remaining columns not in the desired order list
             remaining_cols = [col for col in df_export.columns if col not in cols_present]
             df_export = df_export[cols_present + remaining_cols]
