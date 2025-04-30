@@ -14,6 +14,12 @@ import importlib # For dynamic strategy loading
 from collections import defaultdict # For grouping /16s
 import time # Import time module
 import json # Import json module
+# ADD pyarrow import for parquet export, handle potential ImportError
+try:
+    import pyarrow
+except ImportError:
+    pyarrow = None
+
 
 # Import own modules
 # Remove LogParser from import, keep functions
@@ -267,6 +273,10 @@ def main():
         '--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='INFO',
         help='Log detail level.'
     )
+    parser.add_argument( # NEW ARGUMENT
+        '--dump-data', action='store_true',
+        help='Dump the raw log data DataFrame used for analysis to a Parquet file in the script directory.'
+    )
     # --- Utility Args ---
     parser.add_argument(
         '--clean-rules', action='store_true',
@@ -395,6 +405,34 @@ def main():
 
         total_overall_requests = len(log_df)
         logger.info(f"Total requests in analysis window: {total_overall_requests}")
+
+        # --- Dump DataFrame if requested ---
+        if args.dump_data:
+            if pyarrow is None:
+                logger.warning("--dump-data specified, but 'pyarrow' library is not installed. Skipping dump. Please install it (`pip install pyarrow`).")
+            else:
+                try:
+                    timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    period_str = "full_log" # Default if no time filter
+                    if args.time_window:
+                        period_str = args.time_window
+                    elif args.start_date:
+                        period_str = "custom_start"
+
+                    dump_filename = f"log_dump_{timestamp_str}_{period_str}.parquet"
+                    dump_filepath = os.path.join(script_dir, dump_filename)
+
+                    logger.info(f"Dumping loaded log DataFrame ({len(log_df)} rows) to Parquet file: {dump_filepath}")
+                    # Ensure index is saved if it's the timestamp
+                    if isinstance(log_df.index, pd.DatetimeIndex):
+                         log_df.to_parquet(dump_filepath, index=True)
+                    else:
+                         log_df.to_parquet(dump_filepath, index=False)
+                    logger.info(f"Successfully dumped data to {dump_filepath}")
+                except Exception as dump_err:
+                    logger.error(f"Failed to dump DataFrame to Parquet file: {dump_err}", exc_info=True)
+        # --- End Dump DataFrame ---
+
 
     except Exception as e:
         logger.error(f"Error loading/parsing log file: {e}", exc_info=True)

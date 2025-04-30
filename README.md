@@ -72,7 +72,7 @@ This tool can complement Fail2Ban by focusing specifically on abusive web crawli
 
 ## Installation
 
-Requires **Python 3.7+** (due to Pandas dependencies and f-string usage) and **UFW** (for blocking).
+Requires **Python 3.7+** (due to Pandas dependencies and f-string usage), **UFW** (for blocking), and **pyarrow** (for `--dump-data`).
 
 ```bash
 # 1. Clone the repository
@@ -84,7 +84,7 @@ python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # 3. Install dependencies
-pip install -r requirements.txt # Installs pandas
+pip install -r requirements.txt # Installs pandas and pyarrow
 ```
 
 ## Scheduled Execution with Cron
@@ -201,6 +201,7 @@ sudo python3 blocker.py --clean-rules --dry-run
 | `--format`                           | Output format for the results file (`json`, `csv`, `text`).                                                                                  | `text`                    |
 | `--log-file`                         | File path to save execution logs.                                                                                                            | `None`                    |
 | `--log-level`                        | Logging detail level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).                                                                      | `INFO`                    |
+| `--dump-data`                        | Dump the raw log data DataFrame used for analysis to a Parquet file (`log_dump_YYYYMMDD_HHMMSS_period.parquet`) in the script directory. Requires `pyarrow`. | `False`                   |
 | `--clean-rules`                      | Run cleanup of expired UFW rules (matching script's comment format) and exit. Requires permissions.                                          | `False`                   |
 | `--silent`                           | Suppress most console output (except block actions and final summary). Overrides log level for console (sets to WARNING unless DEBUG).         | `False`                   |
 
