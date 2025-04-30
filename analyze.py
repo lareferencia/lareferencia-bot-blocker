@@ -38,6 +38,14 @@ def get_subnet(ip_str, ipv4_prefix=24, ipv6_prefix=64):
         return None # Invalid IP string
     return None
 
+def detect_ip_column(df_columns):
+    """Detects the IP address column from a list of common names."""
+    common_ip_cols = ['ip_address', 'ip', 'client_ip', 'remote_addr']
+    for col in common_ip_cols:
+        if col in df_columns:
+            return col
+    return None
+
 def main():
     """Main execution function."""
     setup_logging()
@@ -55,11 +63,7 @@ def main():
         '--top', '-n', type=int, default=10,
         help='Number of top IPs/Subnets to display.'
     )
-    # ADD new argument for IP column name
-    parser.add_argument(
-        '--ip-column', type=str, default='ip_address',
-        help='Name of the column containing IP addresses in the Parquet file.'
-    )
+    # REMOVED --ip-column argument
     args = parser.parse_args()
 
     # --- File Validation ---
@@ -120,9 +124,11 @@ def main():
         print(f"  Duration: {time_range}")
 
         # --- IP Analysis ---
-        # Use args.ip_column here
-        ip_col_name = args.ip_column
-        if ip_col_name in df.columns:
+        # Detect IP column automatically
+        ip_col_name = detect_ip_column(df.columns)
+
+        if ip_col_name:
+            logger.info(f"Detected IP address column: '{ip_col_name}'")
             unique_ips = df[ip_col_name].nunique()
             print(f"\nUnique IP Addresses: {unique_ips}")
 
@@ -132,8 +138,7 @@ def main():
 
             # --- Subnet Analysis ---
             logger.info("Calculating subnets...")
-            # Apply the get_subnet function - might be slow for very large datasets
-            # Use args.ip_column here
+            # Apply the get_subnet function using the detected column name
             df['subnet'] = df[ip_col_name].apply(get_subnet)
             unique_subnets = df['subnet'].nunique()
             print(f"\nUnique Subnets (/24 or /64): {unique_subnets}")
@@ -143,8 +148,9 @@ def main():
             print(subnet_counts.head(args.top).to_string())
         else:
             # Update warning message
-            logger.warning(f"Column '{ip_col_name}' not found. Skipping IP and Subnet analysis. "
-                           f"Use the --ip-column argument if the IP address column has a different name.")
+            logger.warning(f"Could not automatically detect an IP address column "
+                           f"(checked for: ip_address, ip, client_ip, remote_addr). "
+                           f"Skipping IP and Subnet analysis.")
 
         # --- Temporal Analysis ---
         print(f"\nRequests per Hour (UTC):")

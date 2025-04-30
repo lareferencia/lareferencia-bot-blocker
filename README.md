@@ -327,7 +327,7 @@ Script auxiliar para realizar análisis estadísticos básicos sobre los datos d
 
 **Propósito:**
 
-Permite obtener una visión rápida de los datos contenidos en un fichero Parquet de logs, como el rango temporal, IPs/subredes más activas y distribución horaria de peticiones, sin necesidad de ejecutar el análisis completo de `blocker.py`.
+Permite obtener una visión rápida de los datos contenidos en un fichero Parquet de logs, como el rango temporal, IPs/subredes más activas y distribución horaria de peticiones, sin necesidad de ejecutar el análisis completo de `blocker.py`. El script detecta automáticamente la columna que contiene las direcciones IP buscando nombres comunes como `ip_address`, `ip`, `client_ip` o `remote_addr`.
 
 **Requisitos:**
 
@@ -358,8 +358,8 @@ python analyze.py -f log_dump_20231027_103000_hour.parquet -n 5
 El script imprimirá en la consola:
 
 *   Estadísticas básicas (total de peticiones, rango temporal).
-*   Número de IPs únicas.
-*   Ranking de las N IPs con más peticiones.
-*   Número de subredes únicas (/24 para IPv4, /64 para IPv6).
-*   Ranking de las N subredes con más peticiones.
+*   Número de IPs únicas (si se detecta la columna).
+*   Ranking de las N IPs con más peticiones (si se detecta la columna).
+*   Número de subredes únicas (/24 para IPv4, /64 para IPv6) (si se detecta la columna).
+*   Ranking de las N subredes con más peticiones (si se detecta la columna).
 *   Distribución de peticiones por hora (UTC).
