@@ -308,3 +308,58 @@ This is a human-readable summary of the license. The full license is available a
 > **⚠️ DISCLAIMER: EXPERIMENTAL SOFTWARE**
 >
 > This software is experimental in nature. It is crucial to fully understand the implications of adding firewall restrictions to a system based on log analysis before applying it to production environments. Incorrect parameterization of this script could generate massive blocks of legitimate access to the service. LA Referencia is not responsible for the improper use of this script or any consequences arising from its use. It is strongly recommended to test it thoroughly in development environments before considering its use in production.
+
+# LA Referencia BotStats Tools
+
+Herramientas para analizar logs de acceso web, detectar tráfico de bots y opcionalmente bloquear amenazas usando UFW.
+
+## Scripts
+
+### `blocker.py`
+
+Script principal para el análisis de logs en tiempo real (o sobre un fichero), detección de amenazas basada en estrategias configurables y bloqueo opcional mediante UFW.
+
+**(Documentación detallada de blocker.py iría aquí)**
+
+### `analyze.py`
+
+Script auxiliar para realizar análisis estadísticos básicos sobre los datos de logs exportados en formato Parquet por `blocker.py` usando la opción `--dump-data`.
+
+**Propósito:**
+
+Permite obtener una visión rápida de los datos contenidos en un fichero Parquet de logs, como el rango temporal, IPs/subredes más activas y distribución horaria de peticiones, sin necesidad de ejecutar el análisis completo de `blocker.py`.
+
+**Requisitos:**
+
+*   Python 3
+*   Pandas (`pip install pandas`)
+*   PyArrow (`pip install pyarrow`)
+
+**Uso:**
+
+```bash
+python analyze.py -f <ruta_al_fichero_parquet> [-n <numero>]
+```
+
+**Argumentos:**
+
+*   `-f`, `--file`: **(Obligatorio)** Ruta al fichero `.parquet` generado por `blocker.py --dump-data`.
+*   `-n`, `--top`: (Opcional) Número de IPs y subredes principales a mostrar en los rankings. Por defecto es 10.
+
+**Ejemplo:**
+
+```bash
+# Analizar un fichero de dump específico mostrando el top 5
+python analyze.py -f log_dump_20231027_103000_hour.parquet -n 5
+```
+
+**Salida:**
+
+El script imprimirá en la consola:
+
+*   Estadísticas básicas (total de peticiones, rango temporal).
+*   Número de IPs únicas.
+*   Ranking de las N IPs con más peticiones.
+*   Número de subredes únicas (/24 para IPv4, /64 para IPv6).
+*   Ranking de las N subredes con más peticiones.
+*   Distribución de peticiones por hora (UTC).

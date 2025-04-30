@@ -55,6 +55,11 @@ def main():
         '--top', '-n', type=int, default=10,
         help='Number of top IPs/Subnets to display.'
     )
+    # ADD new argument for IP column name
+    parser.add_argument(
+        '--ip-column', type=str, default='ip_address',
+        help='Name of the column containing IP addresses in the Parquet file.'
+    )
     args = parser.parse_args()
 
     # --- File Validation ---
@@ -115,18 +120,21 @@ def main():
         print(f"  Duration: {time_range}")
 
         # --- IP Analysis ---
-        if 'ip_address' in df.columns:
-            unique_ips = df['ip_address'].nunique()
+        # Use args.ip_column here
+        ip_col_name = args.ip_column
+        if ip_col_name in df.columns:
+            unique_ips = df[ip_col_name].nunique()
             print(f"\nUnique IP Addresses: {unique_ips}")
 
-            ip_counts = df['ip_address'].value_counts()
+            ip_counts = df[ip_col_name].value_counts()
             print(f"\nTop {args.top} IPs by Request Count:")
             print(ip_counts.head(args.top).to_string())
 
             # --- Subnet Analysis ---
             logger.info("Calculating subnets...")
             # Apply the get_subnet function - might be slow for very large datasets
-            df['subnet'] = df['ip_address'].apply(get_subnet)
+            # Use args.ip_column here
+            df['subnet'] = df[ip_col_name].apply(get_subnet)
             unique_subnets = df['subnet'].nunique()
             print(f"\nUnique Subnets (/24 or /64): {unique_subnets}")
 
@@ -134,7 +142,9 @@ def main():
             print(f"\nTop {args.top} Subnets by Request Count:")
             print(subnet_counts.head(args.top).to_string())
         else:
-            logger.warning("Column 'ip_address' not found. Skipping IP and Subnet analysis.")
+            # Update warning message
+            logger.warning(f"Column '{ip_col_name}' not found. Skipping IP and Subnet analysis. "
+                           f"Use the --ip-column argument if the IP address column has a different name.")
 
         # --- Temporal Analysis ---
         print(f"\nRequests per Hour (UTC):")

@@ -422,11 +422,17 @@ def main():
                     dump_filename = f"log_dump_{timestamp_str}_{period_str}.parquet"
                     dump_filepath = os.path.join(script_dir, dump_filename)
 
+                    # Log the columns being dumped for verification
+                    logger.info(f"Columns in DataFrame to be dumped: {log_df.columns.tolist()}")
+
                     logger.info(f"Dumping loaded log DataFrame ({len(log_df)} rows) to Parquet file: {dump_filepath}")
                     # Ensure index is saved if it's the timestamp
                     if isinstance(log_df.index, pd.DatetimeIndex):
                          log_df.to_parquet(dump_filepath, index=True)
                     else:
+                         # If index is not timestamp, ensure IP column exists before saving without index
+                         if 'ip_address' not in log_df.columns: # Check default name, adjust if needed
+                             logger.warning("Index is not DatetimeIndex and default 'ip_address' column not found. Dumping might lack crucial data if index isn't meaningful.")
                          log_df.to_parquet(dump_filepath, index=False)
                     logger.info(f"Successfully dumped data to {dump_filepath}")
                 except Exception as dump_err:
