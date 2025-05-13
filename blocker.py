@@ -717,17 +717,37 @@ def main():
 
                     # --- Construct metrics summary string for block message ---
                     try:
+                        # Helper functions for safe numeric retrieval and conversion
+                        def _safe_get_float(val, default=0.0):
+                            if val is None: return default
+                            if isinstance(val, (int, float)): return float(val)
+                            try: return float(val) # Attempt conversion if string or other
+                            except (ValueError, TypeError): return default
+
+                        def _safe_get_int(val, default=0):
+                            if val is None: return default
+                            if isinstance(val, (int, float)): return int(val) # Handles float to int conversion
+                            try: return int(float(val)) # Attempt conversion to float first, then int
+                            except (ValueError, TypeError): return default
+
+                        total_requests_val = _safe_get_int(threat.get('total_requests'))
+                        ip_count_val = _safe_get_int(threat.get('ip_count'))
+                        strategy_score_val = _safe_get_float(threat.get('strategy_score'))
+                        subnet_req_min_win_val = _safe_get_float(threat.get('subnet_req_per_min_window'))
+                        subnet_req_hour_val = _safe_get_float(threat.get('subnet_req_per_hour'))
+                        subnet_time_span_val = _safe_get_float(threat.get('subnet_time_span'))
+
                         metrics_summary = (
                             f"Metrics: "
-                            f"{int(threat.get('total_requests', 0)):d} reqs, "
-                            f"{threat.get('ip_count', 0):d} IPs, "
-                            f"Score: {threat.get('strategy_score', 0):.1f}, "
-                            f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, "
-                            f"Req/Hour(Win): {threat.get('subnet_req_per_hour', 0):.1f}, " # ADDED
-                            f"TimeSpan: {threat.get('subnet_time_span', 0)::.0f}s"
+                            f"{total_requests_val:d} reqs, "
+                            f"{ip_count_val:d} IPs, "
+                            f"Score: {strategy_score_val:.1f}, "
+                            f"Req/Min(Win): {subnet_req_min_win_val:.1f}, "
+                            f"Req/Hour(Win): {subnet_req_hour_val:.1f}, "
+                            f"TimeSpan: {subnet_time_span_val:.0f}s"
                         )
                     except Exception as e:
-                         logger.warning(f"Could not format metrics for block message of {target_to_block_obj}: {e}")
+                         logger.warning(f"Could not format metrics for block message of {target_to_block_obj}: {e}", exc_info=True)
                          metrics_summary = "Metrics: N/A"
                     # --- End metrics summary string ---
 
