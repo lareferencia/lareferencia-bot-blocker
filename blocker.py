@@ -474,6 +474,22 @@ def main():
         logger.info(f"System load average (15-minutes): {system_load_avg:.2f}")
     except Exception as e:
         logger.warning(f"Could not retrieve system load average using psutil: {e}. Proceeding without it.")
+    
+    # Always print system load average, format based on silent mode
+    if system_load_avg != -1.0:
+        load_avg_message = f"System load average (15-min): {system_load_avg:.2f}"
+        if args.silent:
+            timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            print(f"{timestamp_str} INFO: {load_avg_message}")
+        else:
+            # For non-silent mode, it's already logged by logger.info above.
+            # Optionally, could print here as well if consistent "always print" behavior is desired.
+            # For now, relying on the logger.info for non-silent.
+            pass # logger.info already covers non-silent
+    elif args.silent: # If psutil failed and in silent mode, print a message
+        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"{timestamp_str} WARNING: Could not retrieve system load average.")
+
     # --- End Get System Load Average ---
 
     # --- Define metrics_to_track_for_max and metric_names_map earlier for use later ---
