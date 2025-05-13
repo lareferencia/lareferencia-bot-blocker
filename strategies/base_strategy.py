@@ -11,11 +11,7 @@ class BaseStrategy(ABC):
                                          threat_data,
                                          config,
                                          effective_min_requests,
-                                         analysis_duration_seconds=None,
-                                         total_overall_requests=None,
-                                         max_total_requests=None,
-                                         max_subnet_time_span=None,
-                                         max_ip_count=None):
+                                         shared_context_params):
         """
         Calculates a threat score and determines if the threat should be blocked.
 
@@ -26,11 +22,9 @@ class BaseStrategy(ABC):
             config (argparse.Namespace): Parsed command-line arguments containing strategy-specific thresholds
                                          (e.g., config.block_danger_threshold).
             effective_min_requests (int): The calculated minimum request threshold (absolute or relative).
-            analysis_duration_seconds (float, optional): The duration of the analysis window in seconds. Defaults to None.
-            total_overall_requests (int, optional): The total number of requests observed in the analysis window.
-            max_total_requests (int, optional): The maximum total_requests observed across all threats in this run.
-            max_subnet_time_span (float, optional): The maximum subnet_time_span observed across all threats in this run.
-            max_ip_count (int, optional): The maximum ip_count observed across all threats in this run.
+            shared_context_params (dict): Dictionary containing shared parameters and overall maximums/context.
+                                          Expected keys like 'analysis_duration_seconds', 'total_overall_requests',
+                                          'system_load_avg', 'max_total_requests', 'max_ip_count', etc.
 
         Returns:
             tuple: (score, should_block, reason)

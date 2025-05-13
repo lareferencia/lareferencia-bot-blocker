@@ -14,6 +14,7 @@ import importlib # For dynamic strategy loading
 from collections import defaultdict # For grouping /16s
 import time # Import time module
 import json # Import json module
+import psutil # Import psutil for system load average
 # ADD pyarrow import for parquet export, handle potential ImportError
 try:
     import pyarrow
@@ -461,16 +462,110 @@ def main():
         logger.warning(f"Total requests in analysis window is 0. Effective minimum request threshold set to {effective_min_requests} "
                        f"(based on absolute min: {args.block_absolute_min_requests}).")
 
+    # --- Get System Load Average ---
+    system_load_avg = -1.0 # Default if psutil fails or not available
+    try:
+        # getloadavg() returns a tuple of (1min, 5min, 15min) load averages
+        # We'll use the 1-minute average.
+        # Normalize by number of CPU cores for a more comparable metric if desired,
+        # but raw load average is also common. For now, raw 1-min average.
+        load_averages = psutil.getloadavg()
+        system_load_avg = load_averages[0] # 0: 1-min, 1: 5-min, 2: 15-min
+        logger.info(f"System load average (1-minute): {system_load_avg:.2f}")
+    except Exception as e:
+        logger.warning(f"Could not retrieve system load average using psutil: {e}. Proceeding without it.")
+    # --- End Get System Load Average ---
 
     # --- Identify Threats ---
     # Pass the config object (args) to identify_threats
     # Also pass analysis_duration_seconds needed for req_per_hour calculation
+    # Pass system_load_avg
     threats = analyzer.identify_threats(
         strategy_name=args.block_strategy,
         effective_min_requests=effective_min_requests,
         analysis_duration_seconds=analysis_duration_seconds,
         total_overall_requests=total_overall_requests,
+        system_load_avg=system_load_avg, # Pass the system load average
         config=args # Pass the config object here
+    )
+
+    # --- Get DataFrame for Reporting ---
+    # Use the analyzer's method to get the DataFrame after threats are identified
+    threats_df = analyzer.get_threats_df() # Returns DF indexed by string representation of subnet ID
+
+    # --- Calculate Overall Maximums for strategies and reporting ---
+    # This section will now populate values for shared_context_params and also keep
+    # max_metrics_data for detailed reporting (which subnets achieved max).
+    
+    # For shared_context_params (direct max values)
+    calculated_max_values = {
+        'max_total_requests': 0,
+        'max_ip_count': 0,
+        'max_subnet_time_span': 0.0,
+        'max_subnet_req_per_min_window': 0.0,
+        'max_subnet_req_per_hour': 0.0
+    }
+    
+    # For reporting (value + subnets achieving it)
+    max_metrics_data_for_reporting = {}
+
+    # Define metrics to track and their display names
+    metrics_to_track_for_max = [ # Renamed to avoid conflict
+        'total_requests', 'ip_count',
+        'subnet_time_span',
+        'subnet_req_per_min_window',
+        'subnet_req_per_hour'
+    ]
+    metric_names_map = {
+        'total_requests': 'Total Requests',
+        'ip_count': 'IP Count',
+        'subnet_time_span': 'Subnet Activity Timespan (%)',
+        'subnet_req_per_min_window': 'Subnet Req/Min (Window Avg)',
+        'subnet_req_per_hour': 'Subnet Req/Hour (Window Avg)'
+    }
+
+    if not threats_df.empty:
+        for metric_key in metrics_to_track_for_max:
+            if metric_key in threats_df.columns:
+                try:
+                    max_value = threats_df[metric_key].max()
+                    # Store for shared_context_params
+                    calculated_max_values[f'max_{metric_key}'] = max_value if pd.notna(max_value) else (0 if 'count' in metric_key or 'requests' in metric_key else 0.0)
+                    
+                    # Store for reporting
+                    max_subnets = threats_df[threats_df[metric_key] == max_value].index.tolist()
+                    max_metrics_data_for_reporting[metric_key] = {'value': max_value, 'subnets': max_subnets}
+                except Exception as e:
+                    logger.warning(f"Could not calculate max for metric '{metric_key}': {e}")
+                    # Default for reporting
+                    max_metrics_data_for_reporting[metric_key] = {'value': -1, 'subnets': []}
+                    # Default for calculated_max_values already set
+            else:
+                logger.warning(f"Metric '{metric_key}' not found in threats DataFrame for max calculation.")
+                max_metrics_data_for_reporting[metric_key] = {'value': -1, 'subnets': []}
+    else:
+        logger.info("Threats DataFrame is empty. Cannot calculate overall maximums.")
+        for metric_key in metrics_to_track_for_max:
+             max_metrics_data_for_reporting[metric_key] = {'value': -1, 'subnets': []}
+
+    # --- Create Shared Context Parameters for Strategies ---
+    shared_context_params = {
+        'analysis_duration_seconds': analysis_duration_seconds,
+        'total_overall_requests': total_overall_requests,
+        'system_load_avg': system_load_avg,
+        **calculated_max_values # Unpack all calculated max values
+    }
+    logger.debug(f"Shared context parameters for strategies: {shared_context_params}")
+    # --- End Create Shared Context Parameters ---
+
+
+    # --- Identify Threats ---
+    # Pass the config object (args) and shared_context_params to identify_threats
+    threats = analyzer.identify_threats(
+        strategy_name=args.block_strategy,
+        effective_min_requests=effective_min_requests,
+        shared_context_params=shared_context_params, # MODIFIED
+        config=args
     )
 
     # Check if threats list is valid
@@ -481,10 +576,6 @@ def main():
         logger.info("No threats identified after analysis.")
         # threats is an empty list, proceed to reporting section which will handle it
     # else: # threats is a list of dictionaries
-
-    # --- Get DataFrame for Reporting ---
-    # Use the analyzer's method to get the DataFrame after threats are identified
-    threats_df = analyzer.get_threats_df() # Returns DF indexed by string representation of subnet ID
 
     # --- Calculate Overall Maximums using DataFrame ---
     max_metrics_data = {}
@@ -814,7 +905,7 @@ def main():
                 # Removed IP RPMs
                 # Removed Subnet Total RPMs
                 f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, "
-                f"Req/Hour(Win): {threat.get('subnet_req_per_hour', 0):.1f}, " # ADDED
+                f"Req/Hour(Win): {threat.get('subnet_req_per_hour', 0):.1f}, "
                 f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
             )
 
@@ -865,11 +956,11 @@ def main():
     # Suppress if silent
     if not args.silent:
         print(f"\n=== OVERALL MAXIMUMS OBSERVED ===")
-        if not max_metrics_data or all(data['value'] == -1 for data in max_metrics_data.values()):
+        if not max_metrics_data_for_reporting or all(data['value'] == -1 for data in max_metrics_data_for_reporting.values()): # MODIFIED to use new dict name
             print("  No threat data available or maximums could not be determined.")
         else:
-            for metric_key, data in max_metrics_data.items():
-                metric_name = metric_names_map.get(metric_key, metric_key) # Uses updated map
+            for metric_key, data in max_metrics_data_for_reporting.items(): # MODIFIED
+                metric_name = metric_names_map.get(metric_key, metric_key)
                 value = data['value']
                 subnets = data['subnets'] # List of subnet ID strings
                 value_str = "N/A"
@@ -897,7 +988,7 @@ def main():
         else:
             # Collect unique subnet IDs (strings) that achieved any maximum
             max_achieving_subnet_ids = set()
-            for metric_key, data in max_metrics_data.items():
+            for metric_key, data in max_metrics_data_for_reporting.items(): # MODIFIED
                 if data['value'] != -1 and pd.notna(data['value']):
                     max_achieving_subnet_ids.update(data['subnets'])
 
@@ -914,7 +1005,7 @@ def main():
                 for subnet_id_str, threat_row in max_subnets_df.iterrows():
                     # Find which maximums this subnet achieved
                     achieved_max_metrics = []
-                    for metric_key, data in max_metrics_data.items():
+                    for metric_key, data in max_metrics_data_for_reporting.items(): # MODIFIED
                         if subnet_id_str in data['subnets']:
                             achieved_max_metrics.append(metric_names_map.get(metric_key, metric_key))
                     achieved_max_str = f" [Achieved Max: {', '.join(achieved_max_metrics)}]" if achieved_max_metrics else ""

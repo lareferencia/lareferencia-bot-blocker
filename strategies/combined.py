@@ -45,11 +45,7 @@ class Strategy:
                                          threat_data,
                                          config,
                                          effective_min_requests, # Now used directly for Condition 2
-                                         analysis_duration_seconds,
-                                         total_overall_requests, # Received but not used directly in logic
-                                         max_total_requests, # Keep receiving, might be useful elsewhere
-                                         max_subnet_time_span, # Keep receiving
-                                         max_ip_count=None): # ADDED max_ip_count
+                                         shared_context_params): # MODIFIED
         """
         Calculates score (0-3) based on meeting conditions:
         1. TimeSpan >= Configured %
@@ -62,6 +58,14 @@ class Strategy:
         reason = "Conditions not met"
         conditions_met_count = 0
         block_decision_reasons = [] # Store reasons for each condition check
+
+        # Retrieve necessary context params
+        analysis_duration_seconds = shared_context_params.get('analysis_duration_seconds', 0)
+        # total_overall_requests = shared_context_params.get('total_overall_requests', 0) # Example if needed
+        # system_load_avg = shared_context_params.get('system_load_avg', -1.0) # Example if needed
+        # max_total_requests = shared_context_params.get('max_total_requests', 0) # Example if needed
+        # max_subnet_time_span = shared_context_params.get('max_subnet_time_span', 0) # Example if needed
+        # max_ip_count = shared_context_params.get('max_ip_count', 0) # Example if needed
 
         # --- Condition 1: Check Mandatory TimeSpan ---
         timespan_condition_met = False

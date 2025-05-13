@@ -393,14 +393,18 @@ class ThreatAnalyzer:
     def identify_threats(self,
                          strategy_name,
                          effective_min_requests,
-                         analysis_duration_seconds,
-                         total_overall_requests,
-                         config): # Add config parameter to load strategy
+                         shared_context_params, # MODIFIED: Replaces individual context/max args
+                         config):
         """
         Orchestrates the calculation of IP metrics, aggregation by subnet,
         strategy application, and formatting the final threat list.
         Requires self.log_df to be set externally.
         """
+        # --- Extract necessary parameters from shared_context_params ---
+        analysis_duration_seconds = shared_context_params.get('analysis_duration_seconds', 0)
+        # total_overall_requests = shared_context_params.get('total_overall_requests', 0) # Available if needed
+        # system_load_avg = shared_context_params.get('system_load_avg', -1.0) # Available if needed
+
         # --- Ensure 'subnet' column exists in log_df ---
         if self.log_df is None or self.log_df.empty:
              logger.error("log_df is not set or is empty. Cannot identify threats.")
@@ -451,28 +455,11 @@ class ThreatAnalyzer:
              return None
 
 
-        # --- Calculate Maximums for Normalization (from subnet_metrics_df) ---
-        max_total_requests = 0
-        max_subnet_time_span = 0
-        max_ip_count = 0 # ADDED: Initialize max_ip_count
-        if self.subnet_metrics_df is not None and not self.subnet_metrics_df.empty:
-            # Use .max() on the DataFrame columns
-            max_total_requests = self.subnet_metrics_df['total_requests'].max()
-            max_subnet_time_span = self.subnet_metrics_df['subnet_time_span'].max()
-            max_ip_count = self.subnet_metrics_df['ip_count'].max() # ADDED: Calculate max_ip_count
-            # Ensure they are standard Python types if necessary (e.g., numpy int -> int)
-            max_total_requests = int(max_total_requests) if pd.notna(max_total_requests) else 0
-            max_subnet_time_span = float(max_subnet_time_span) if pd.notna(max_subnet_time_span) else 0.0
-            max_ip_count = int(max_ip_count) if pd.notna(max_ip_count) else 0 # ADDED: Convert max_ip_count
-
-            logger.debug(
-                f"Calculated maximums for normalization: max_total_requests={max_total_requests}, "
-                f"max_subnet_time_span={max_subnet_time_span:.2f}, "
-                f"max_ip_count={max_ip_count}" # ADDED: Log max_ip_count
-            )
-        else:
-             logger.warning("Subnet metrics DataFrame is empty or None. Cannot calculate maximums.")
-             # Defaults are already set
+        # --- Calculate Maximums for Normalization (REMOVED - now part of shared_context_params) ---
+        # max_total_requests, max_subnet_time_span, max_ip_count are now expected
+        # directly within shared_context_params if the strategy needs them.
+        # Example: max_total_requests = shared_context_params.get('max_total_requests', 0)
+        # These were already calculated in blocker.py and put into shared_context_params.
 
 
         # --- Prepare Top IP Details (Efficiently) ---
@@ -518,11 +505,7 @@ class ThreatAnalyzer:
                      threat_data=threat_data,
                      config=config, # Pass command line args directly
                      effective_min_requests=effective_min_requests,
-                     analysis_duration_seconds=analysis_duration_seconds,
-                     total_overall_requests=total_overall_requests,
-                     max_total_requests=max_total_requests,
-                     max_subnet_time_span=max_subnet_time_span,
-                     max_ip_count=max_ip_count # ADDED: Pass max_ip_count
+                     shared_context_params=shared_context_params # MODIFIED: Pass the whole dict
                  )
 
                  # Build the final dictionary for this threat

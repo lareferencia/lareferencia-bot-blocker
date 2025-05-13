@@ -20,15 +20,15 @@ class Strategy(BaseStrategy):
                                          threat_data,
                                          config,
                                          effective_min_requests,
-                                         analysis_duration_seconds=None,
-                                         total_overall_requests=None,
-                                         max_total_requests=None,
-                                         max_subnet_time_span=None,
-                                         # max_subnet_req_per_min_window=None, # REMOVED
-                                         max_ip_count=None): # ADDED max_ip_count
+                                         shared_context_params): # MODIFIED
         """Calculates normalized score and block decision."""
         total_requests = threat_data.get('total_requests', 0)
         ip_count = threat_data.get('ip_count', 0)
+
+        # Retrieve necessary max values from shared_context_params
+        max_ip_count = shared_context_params.get('max_ip_count', 0)
+        max_total_requests = shared_context_params.get('max_total_requests', 0)
+        # system_load_avg = shared_context_params.get('system_load_avg', -1.0) # Example if needed
 
         # --- Normalized Score Calculation (0-1 range) ---
         # Normalize ip_count and total_requests relative to the maximums observed
