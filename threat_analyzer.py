@@ -442,8 +442,6 @@ class ThreatAnalyzer:
             strategy_module = importlib.import_module(f"strategies.{strategy_name}")
             strategy_instance = strategy_module.Strategy()
             logger.info(f"Successfully loaded strategy: {strategy_name}")
-            # Store config for strategy use (if needed by strategy, passed directly now)
-            # self.config = config # No longer storing config in self
         except ImportError:
             logger.error(f"Could not load strategy module: strategies.{strategy_name}.py")
             return None
@@ -454,12 +452,46 @@ class ThreatAnalyzer:
              logger.error(f"An unexpected error occurred loading strategy '{strategy_name}': {e}", exc_info=True)
              return None
 
+        # --- Calculate Maximums from self.subnet_metrics_df for strategy context ---
+        # These will be added to the context passed to the strategy
+        strategy_context = shared_context_params.copy() # Start with what blocker provided
 
-        # --- Calculate Maximums for Normalization (REMOVED - now part of shared_context_params) ---
-        # max_total_requests, max_subnet_time_span, max_ip_count are now expected
-        # directly within shared_context_params if the strategy needs them.
-        # Example: max_total_requests = shared_context_params.get('max_total_requests', 0)
-        # These were already calculated in blocker.py and put into shared_context_params.
+        if self.subnet_metrics_df is not None and not self.subnet_metrics_df.empty:
+            logger.debug("Calculating maximums from subnet_metrics_df for strategy context...")
+            # Metrics that strategies might need max values for
+            metrics_for_max_calc = {
+                'total_requests': 0,
+                'ip_count': 0,
+                'subnet_time_span': 0.0,
+                'subnet_req_per_min_window': 0.0,
+                'subnet_req_per_hour': 0.0
+            }
+            for metric_key, default_value in metrics_for_max_calc.items():
+                if metric_key in self.subnet_metrics_df.columns:
+                    max_val = self.subnet_metrics_df[metric_key].max()
+                    if pd.notna(max_val):
+                        # Convert to Python native types
+                        if isinstance(default_value, int):
+                            strategy_context[f'max_{metric_key}'] = int(max_val)
+                        elif isinstance(default_value, float):
+                            strategy_context[f'max_{metric_key}'] = float(max_val)
+                        else:
+                            strategy_context[f'max_{metric_key}'] = max_val # Keep original type if not int/float
+                    else:
+                        strategy_context[f'max_{metric_key}'] = default_value
+                else:
+                    logger.warning(f"Metric '{metric_key}' not found in subnet_metrics_df for max calculation. Using default for strategy context.")
+                    strategy_context[f'max_{metric_key}'] = default_value
+            logger.debug(f"Strategy context enriched with maximums: {strategy_context}")
+        else:
+            logger.warning("Subnet metrics DataFrame is empty. Strategies will receive initial shared_context_params without calculated maximums.")
+            # Ensure default max keys are present if strategies expect them
+            for metric_key, default_value in {
+                'max_total_requests': 0, 'max_ip_count': 0, 'max_subnet_time_span': 0.0,
+                'max_subnet_req_per_min_window': 0.0, 'max_subnet_req_per_hour': 0.0
+            }.items():
+                 if metric_key not in strategy_context:
+                     strategy_context[metric_key] = default_value
 
 
         # --- Prepare Top IP Details (Efficiently) ---
@@ -505,7 +537,7 @@ class ThreatAnalyzer:
                      threat_data=threat_data,
                      config=config, # Pass command line args directly
                      effective_min_requests=effective_min_requests,
-                     shared_context_params=shared_context_params # MODIFIED: Pass the whole dict
+                     shared_context_params=strategy_context # MODIFIED: Pass the enriched context
                  )
 
                  # Build the final dictionary for this threat

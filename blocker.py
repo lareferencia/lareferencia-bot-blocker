@@ -476,41 +476,8 @@ def main():
         logger.warning(f"Could not retrieve system load average using psutil: {e}. Proceeding without it.")
     # --- End Get System Load Average ---
 
-    # --- Identify Threats ---
-    # Pass the config object (args) to identify_threats
-    # Also pass analysis_duration_seconds needed for req_per_hour calculation
-    # Pass system_load_avg
-    # threats = analyzer.identify_threats( # OLD CALL - TO BE REMOVED/COMMENTED
-    #     strategy_name=args.block_strategy,
-    #     effective_min_requests=effective_min_requests,
-    #     analysis_duration_seconds=analysis_duration_seconds,
-    #     total_overall_requests=total_overall_requests,
-    #     system_load_avg=system_load_avg, # Pass the system load average
-    #     config=args # Pass the config object here
-    # )
-
-    # --- Get DataFrame for Reporting ---
-    # Use the analyzer's method to get the DataFrame after threats are identified
-    threats_df = analyzer.get_threats_df() # Returns DF indexed by string representation of subnet ID
-
-    # --- Calculate Overall Maximums for strategies and reporting ---
-    # This section will now populate values for shared_context_params and also keep
-    # max_metrics_data for detailed reporting (which subnets achieved max).
-    
-    # For shared_context_params (direct max values)
-    calculated_max_values = {
-        'max_total_requests': 0,
-        'max_ip_count': 0,
-        'max_subnet_time_span': 0.0,
-        'max_subnet_req_per_min_window': 0.0,
-        'max_subnet_req_per_hour': 0.0
-    }
-    
-    # For reporting (value + subnets achieving it)
-    max_metrics_data_for_reporting = {}
-
-    # Define metrics to track and their display names
-    metrics_to_track_for_max = [ # Renamed to avoid conflict
+    # --- Define metrics_to_track_for_max and metric_names_map earlier for use later ---
+    metrics_to_track_for_max = [
         'total_requests', 'ip_count',
         'subnet_time_span',
         'subnet_req_per_min_window',
@@ -523,48 +490,26 @@ def main():
         'subnet_req_per_min_window': 'Subnet Req/Min (Window Avg)',
         'subnet_req_per_hour': 'Subnet Req/Hour (Window Avg)'
     }
+    # --- End Define metrics_to_track_for_max ---
 
-    if not threats_df.empty:
-        for metric_key in metrics_to_track_for_max:
-            if metric_key in threats_df.columns:
-                try:
-                    max_value = threats_df[metric_key].max()
-                    # Store for shared_context_params
-                    calculated_max_values[f'max_{metric_key}'] = max_value if pd.notna(max_value) else (0 if 'count' in metric_key or 'requests' in metric_key else 0.0)
-                    
-                    # Store for reporting
-                    max_subnets = threats_df[threats_df[metric_key] == max_value].index.tolist()
-                    max_metrics_data_for_reporting[metric_key] = {'value': max_value, 'subnets': max_subnets}
-                except Exception as e:
-                    logger.warning(f"Could not calculate max for metric '{metric_key}': {e}")
-                    # Default for reporting
-                    max_metrics_data_for_reporting[metric_key] = {'value': -1, 'subnets': []}
-                    # Default for calculated_max_values already set
-            else:
-                logger.warning(f"Metric '{metric_key}' not found in threats DataFrame for max calculation.")
-                max_metrics_data_for_reporting[metric_key] = {'value': -1, 'subnets': []}
-    else:
-        logger.info("Threats DataFrame is empty. Cannot calculate overall maximums.")
-        for metric_key in metrics_to_track_for_max:
-             max_metrics_data_for_reporting[metric_key] = {'value': -1, 'subnets': []}
-
-    # --- Create Shared Context Parameters for Strategies ---
+    # --- Create Shared Context Parameters for Strategies (Initial) ---
+    # This context will be enriched by ThreatAnalyzer with specific maximums
     shared_context_params = {
         'analysis_duration_seconds': analysis_duration_seconds,
         'total_overall_requests': total_overall_requests,
         'system_load_avg': system_load_avg,
-        **calculated_max_values # Unpack all calculated max values
+        # Maximums like 'max_total_requests' will be calculated and added by ThreatAnalyzer
     }
-    logger.debug(f"Shared context parameters for strategies: {shared_context_params}")
+    logger.debug(f"Initial shared context parameters for ThreatAnalyzer: {shared_context_params}")
     # --- End Create Shared Context Parameters ---
 
-
     # --- Identify Threats ---
-    # Pass the config object (args) and shared_context_params to identify_threats
+    # ThreatAnalyzer will use the initial shared_context_params, calculate detailed metrics,
+    # then calculate maximums from those metrics, and pass an enriched context to the strategies.
     threats = analyzer.identify_threats(
         strategy_name=args.block_strategy,
         effective_min_requests=effective_min_requests,
-        shared_context_params=shared_context_params, # Pass the dictionary
+        shared_context_params=shared_context_params, # Pass the initial context
         config=args
     )
 
@@ -575,53 +520,31 @@ def main():
     if not threats:
         logger.info("No threats identified after analysis.")
         # threats is an empty list, proceed to reporting section which will handle it
-    # else: # threats is a list of dictionaries
 
-    # --- Calculate Overall Maximums using DataFrame ---
-    max_metrics_data = {}
-    # Define metrics to track and their display names - ADDED subnet_req_per_hour
-    metrics_to_track = [
-        'total_requests', 'ip_count',
-        # Removed IP RPMs
-        # Removed Subnet Total RPMs
-        'subnet_time_span',
-        # Removed subnet_req_per_min
-        'subnet_req_per_min_window',
-        'subnet_req_per_hour' # ADDED
-    ]
-    metric_names_map = {
-        'total_requests': 'Total Requests',
-        'ip_count': 'IP Count',
-        # Removed IP RPMs
-        # Removed Subnet Total RPMs
-        'subnet_time_span': 'Subnet Activity Timespan (%)',
-        # Removed subnet_req_per_min
-        'subnet_req_per_min_window': 'Subnet Req/Min (Window Avg)',
-        'subnet_req_per_hour': 'Subnet Req/Hour (Window Avg)' # ADDED
-    }
+    # --- Get DataFrame for Reporting (after threats are identified) ---
+    threats_df = analyzer.get_threats_df() # Returns DF indexed by string representation of subnet ID
 
+    # --- Calculate Overall Maximums for FINAL REPORTING (using the final threats_df) ---
+    max_metrics_data_for_reporting = {}
     if not threats_df.empty:
-        for metric in metrics_to_track:
-            if metric in threats_df.columns:
+        for metric_key in metrics_to_track_for_max: # Use pre-defined list
+            if metric_key in threats_df.columns:
                 try:
-                    max_value = threats_df[metric].max()
-                    # Find all subnets (index values) that achieved this max value
-                    max_subnets = threats_df[threats_df[metric] == max_value].index.tolist()
-                    max_metrics_data[metric] = {'value': max_value, 'subnets': max_subnets}
+                    max_value = threats_df[metric_key].max()
+                    # Store for reporting
+                    max_subnets = threats_df[threats_df[metric_key] == max_value].index.tolist()
+                    max_metrics_data_for_reporting[metric_key] = {'value': max_value, 'subnets': max_subnets}
                 except Exception as e:
-                    logger.warning(f"Could not calculate max for metric '{metric}': {e}")
-                    max_metrics_data[metric] = {'value': -1, 'subnets': []} # Indicate error or absence
+                    logger.warning(f"Could not calculate max for reporting metric '{metric_key}': {e}")
+                    max_metrics_data_for_reporting[metric_key] = {'value': -1, 'subnets': []}
             else:
-                logger.warning(f"Metric '{metric}' not found in threats DataFrame for max calculation.")
-                max_metrics_data[metric] = {'value': -1, 'subnets': []}
+                logger.warning(f"Metric '{metric_key}' not found in threats DataFrame for max reporting calculation.")
+                max_metrics_data_for_reporting[metric_key] = {'value': -1, 'subnets': []}
     else:
-        logger.info("Threats DataFrame is empty. Cannot calculate overall maximums.")
-        # Initialize max_metrics_data with defaults if needed elsewhere
-        for metric in metrics_to_track:
-             max_metrics_data[metric] = {'value': -1, 'subnets': []}
-
-    # --- End Calculate Overall Maximums ---
-
+        logger.info("Threats DataFrame is empty. Cannot calculate overall maximums for reporting.")
+        for metric_key in metrics_to_track_for_max: # Use pre-defined list
+             max_metrics_data_for_reporting[metric_key] = {'value': -1, 'subnets': []}
+    # --- End Calculate Overall Maximums for FINAL REPORTING ---
 
     # --- Blocking Logic ---
     blocked_targets_count = 0
