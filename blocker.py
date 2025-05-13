@@ -470,8 +470,8 @@ def main():
         # Normalize by number of CPU cores for a more comparable metric if desired,
         # but raw load average is also common. For now, raw 1-min average.
         load_averages = psutil.getloadavg()
-        system_load_avg = load_averages[0] # 0: 1-min, 1: 5-min, 2: 15-min
-        logger.info(f"System load average (1-minute): {system_load_avg:.2f}")
+        system_load_avg = load_averages[2] # 0: 1-min, 1: 5-min, 2: 15-min
+        logger.info(f"System load average (15-minutes): {system_load_avg:.2f}")
     except Exception as e:
         logger.warning(f"Could not retrieve system load average using psutil: {e}. Proceeding without it.")
     # --- End Get System Load Average ---
@@ -856,10 +856,19 @@ def main():
                 print("  -> Top IPs (by Max RPM):")
                 # Limit details shown in console report if desired
                 max_details_to_show = 5
-                for ip_detail in threat['details'][:max_details_to_show]:
-                     print(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})")
-                if len(threat['details']) > max_details_to_show:
-                     print(f"     ... and {len(threat['details']) - max_details_to_show} more.")
+                actual_details_list = threat['details']
+                num_printed_details = 0
+                for ip_detail_idx, ip_detail in enumerate(actual_details_list):
+                    if ip_detail_idx < max_details_to_show:
+                        print(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})")
+                        num_printed_details += 1
+                    else:
+                        break
+                
+                total_ip_count_for_subnet = threat.get('ip_count', 0)
+                if total_ip_count_for_subnet > num_printed_details:
+                    remaining_ips = total_ip_count_for_subnet - num_printed_details
+                    print(f"     ... and {remaining_ips} more IPs in this subnet.")
             else:
                  print("  -> No IP details available.")
 
@@ -956,15 +965,22 @@ def main():
                     if details and isinstance(details, list):
                         print("  -> Top IPs (by Max RPM):")
                         max_details_to_show = 3 # Show fewer details here?
-                        for ip_detail in details[:max_details_to_show]:
-                             # Ensure ip_detail is a dict before accessing keys
-                             if isinstance(ip_detail, dict):
-                                 print(f"     - IP: {ip_detail.get('ip','N/A')} ({ip_detail.get('total_requests',0)} reqs, AvgRPM: {ip_detail.get('avg_rpm',0):.2f}, MaxRPM: {ip_detail.get('max_rpm',0):.0f})")
-                             else:
-                                 print(f"     - Invalid detail format: {ip_detail}")
-                        if len(details) > max_details_to_show:
-                             # Corrected f-string: removed extra '}' inside len()
-                             print(f"     ... and {len(details) - max_details_to_show} more.")
+                        num_printed_details = 0
+                        for ip_detail_idx, ip_detail in enumerate(details):
+                            if ip_detail_idx < max_details_to_show:
+                                 # Ensure ip_detail is a dict before accessing keys
+                                 if isinstance(ip_detail, dict):
+                                     print(f"     - IP: {ip_detail.get('ip','N/A')} ({ip_detail.get('total_requests',0)} reqs, AvgRPM: {ip_detail.get('avg_rpm',0):.2f}, MaxRPM: {ip_detail.get('max_rpm',0):.0f})")
+                                     num_printed_details += 1
+                                 else:
+                                     print(f"     - Invalid detail format: {ip_detail}")
+                            else:
+                                break
+                        
+                        total_ip_count_for_subnet = threat_row.get('ip_count', 0)
+                        if total_ip_count_for_subnet > num_printed_details:
+                            remaining_ips = total_ip_count_for_subnet - num_printed_details
+                            print(f"     ... and {remaining_ips} more IPs in this subnet.")
                     # else:
                     #      print("  -> No IP details available.") # Redundant if details is empty list
 
