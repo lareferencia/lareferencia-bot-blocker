@@ -480,14 +480,14 @@ def main():
     # Pass the config object (args) to identify_threats
     # Also pass analysis_duration_seconds needed for req_per_hour calculation
     # Pass system_load_avg
-    threats = analyzer.identify_threats(
-        strategy_name=args.block_strategy,
-        effective_min_requests=effective_min_requests,
-        analysis_duration_seconds=analysis_duration_seconds,
-        total_overall_requests=total_overall_requests,
-        system_load_avg=system_load_avg, # Pass the system load average
-        config=args # Pass the config object here
-    )
+    # threats = analyzer.identify_threats( # OLD CALL - TO BE REMOVED/COMMENTED
+    #     strategy_name=args.block_strategy,
+    #     effective_min_requests=effective_min_requests,
+    #     analysis_duration_seconds=analysis_duration_seconds,
+    #     total_overall_requests=total_overall_requests,
+    #     system_load_avg=system_load_avg, # Pass the system load average
+    #     config=args # Pass the config object here
+    # )
 
     # --- Get DataFrame for Reporting ---
     # Use the analyzer's method to get the DataFrame after threats are identified
