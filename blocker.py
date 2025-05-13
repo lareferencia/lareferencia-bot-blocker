@@ -564,7 +564,7 @@ def main():
     threats = analyzer.identify_threats(
         strategy_name=args.block_strategy,
         effective_min_requests=effective_min_requests,
-        shared_context_params=shared_context_params, # MODIFIED
+        shared_context_params=shared_context_params, # Pass the dictionary
         config=args
     )
 
