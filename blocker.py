@@ -820,6 +820,19 @@ def main():
     else:
         logger.info("Blocking is disabled (--block not specified).")
 
+    # --- Export Results ---
+    if args.output:
+        logger.info(f"Exporting results to {args.output} in {args.format} format...")
+        export_success = analyzer.export_results(
+            format_type=args.format,
+            output_file=args.output,
+            config=args,
+            threats=threats
+        )
+        if export_success:
+            logger.info(f"Successfully exported results to {args.output}")
+        else:
+            logger.error(f"Failed to export results to {args.output}")
 
     # --- Reporting Logic ---
     # Suppress reporting if silent mode is active
@@ -982,8 +995,8 @@ def main():
 
                     print(f"\nSubnet: {subnet_id_str}{achieved_max_str}")
                     print(f"  Metrics: {metrics_summary}")
-                    # Optionally print top IPs again if desired, accessing 'details' from the row
-                    details = threat_row.get('details', [])
+                    # Optionally print top IPs again if desired, accessing 'details' from the threat
+                    details = threat.get('details', [])
                     if details and isinstance(details, list):
                         print("  -> Top IPs (by Max RPM):")
                         max_details_to_show = 3 # Show fewer details here?
@@ -999,7 +1012,7 @@ def main():
                             else:
                                 break
                         
-                        total_ip_count_for_subnet = threat_row.get('ip_count', 0)
+                        total_ip_count_for_subnet = threat.get('ip_count', 0)
                         if total_ip_count_for_subnet > num_printed_details:
                             remaining_ips = total_ip_count_for_subnet - num_printed_details
                             print(f"     ... and {remaining_ips} more IPs in this subnet.")
