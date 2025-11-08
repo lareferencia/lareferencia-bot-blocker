@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main script for log analysis and bot threat detection using Pandas and configurable strategies.
+Main script for log analysis and bot threat detection using native Python and configurable strategies.
 """
 import argparse
 import re
@@ -9,7 +9,6 @@ import sys
 import os
 import logging
 import ipaddress
-import pandas as pd
 import importlib # For dynamic strategy loading
 from collections import defaultdict # For grouping /16s
 import time # Import time module
@@ -18,12 +17,13 @@ import psutil # Import psutil for system load average
 # ADD pyarrow import for parquet export, handle potential ImportError
 try:
     import pyarrow
+    import pyarrow.parquet as pq
+    import pyarrow.lib as pa_lib
 except ImportError:
     pyarrow = None
 
 
 # Import own modules
-# Remove LogParser from import, keep functions
 from parser import get_subnet, is_ip_in_whitelist, load_log_into_dataframe
 # Import UFWManager and COMMENT_PREFIX directly if needed
 import ufw_handler
@@ -274,9 +274,9 @@ def main():
         '--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='INFO',
         help='Log detail level.'
     )
-    parser.add_argument( # NEW ARGUMENT
+    parser.add_argument(
         '--dump-data', action='store_true',
-        help='Dump the raw log data DataFrame used for analysis to a Parquet file in the script directory.'
+        help='Dump the raw log data used for analysis to a Parquet file in the script directory (requires pyarrow).'
     )
     # --- Utility Args ---
     parser.add_argument(
@@ -396,18 +396,18 @@ def main():
             whitelist=analyzer.whitelist # Pass the loaded whitelist from analyzer
         )
 
-        if log_df is None or log_df.empty:
-             logger.error("Failed to load or parse log data, or DataFrame is empty. Exiting.")
+        if log_df is None or not log_df:
+             logger.error("Failed to load or parse log data, or data is empty. Exiting.")
              sys.exit(1) # Exit if log loading failed
 
-        # Assign the loaded DataFrame to the analyzer instance
-        analyzer.log_df = log_df
-        logger.info(f"Successfully loaded {len(log_df)} log entries into DataFrame for analyzer.")
+        # Assign the loaded data to the analyzer instance
+        analyzer.log_data = log_df
+        logger.info(f"Successfully loaded {len(log_df)} log entries for analyzer.")
 
         total_overall_requests = len(log_df)
         logger.info(f"Total requests in analysis window: {total_overall_requests}")
 
-        # --- Dump DataFrame if requested ---
+        # --- Dump data if requested ---
         if args.dump_data:
             if pyarrow is None:
                 logger.warning("--dump-data specified, but 'pyarrow' library is not installed. Skipping dump. Please install it (`pip install pyarrow`).")
@@ -423,21 +423,26 @@ def main():
                     dump_filename = f"log_dump_{timestamp_str}_{period_str}.parquet"
                     dump_filepath = os.path.join(script_dir, dump_filename)
 
-                    # Log the columns being dumped for verification
-                    logger.info(f"Columns in DataFrame to be dumped: {log_df.columns.tolist()}")
-
-                    logger.info(f"Dumping loaded log DataFrame ({len(log_df)} rows) to Parquet file: {dump_filepath}")
-                    # Ensure index is saved if it's the timestamp, otherwise save without index
-                    save_index = isinstance(log_df.index, pd.DatetimeIndex)
-                    if not save_index:
-                        logger.info("Index is not DatetimeIndex. Saving Parquet file without index.")
-
-                    log_df.to_parquet(dump_filepath, index=save_index) # Save index only if it's datetime
+                    logger.info(f"Dumping loaded log data ({len(log_df)} entries) to Parquet file: {dump_filepath}")
+                    
+                    # Convert log data to PyArrow table for parquet export
+                    # Extract timestamps and IPs
+                    timestamps = [entry['timestamp'] for entry in log_df]
+                    ips = [entry['ip'] for entry in log_df]
+                    
+                    # Create PyArrow table
+                    table = pa_lib.table({
+                        'timestamp': timestamps,
+                        'ip': ips
+                    })
+                    
+                    # Write to parquet
+                    pq.write_table(table, dump_filepath)
 
                     logger.info(f"Successfully dumped data to {dump_filepath}")
                 except Exception as dump_err:
-                    logger.error(f"Failed to dump DataFrame to Parquet file: {dump_err}", exc_info=True)
-        # --- End Dump DataFrame ---
+                    logger.error(f"Failed to dump data to Parquet file: {dump_err}", exc_info=True)
+        # --- End Dump data ---
 
 
     except Exception as e:
@@ -537,28 +542,28 @@ def main():
         logger.info("No threats identified after analysis.")
         # threats is an empty list, proceed to reporting section which will handle it
 
-    # --- Get DataFrame for Reporting (after threats are identified) ---
-    threats_df = analyzer.get_threats_df() # Returns DF indexed by string representation of subnet ID
+    # --- Get threats dict for Reporting (after threats are identified) ---
+    threats_dict = analyzer.get_threats_df() # Returns dict indexed by string representation of subnet ID
 
-    # --- Calculate Overall Maximums for FINAL REPORTING (using the final threats_df) ---
+    # --- Calculate Overall Maximums for FINAL REPORTING (using the final threats) ---
     max_metrics_data_for_reporting = {}
-    if not threats_df.empty:
-        for metric_key in metrics_to_track_for_max: # Use pre-defined list
-            if metric_key in threats_df.columns:
-                try:
-                    max_value = threats_df[metric_key].max()
-                    # Store for reporting
-                    max_subnets = threats_df[threats_df[metric_key] == max_value].index.tolist()
+    if threats:
+        for metric_key in metrics_to_track_for_max:
+            try:
+                values = [t.get(metric_key, None) for t in threats if t.get(metric_key) is not None]
+                if values:
+                    max_value = max(values)
+                    # Find subnets with this max value
+                    max_subnets = [str(t.get('id')) for t in threats if t.get(metric_key) == max_value]
                     max_metrics_data_for_reporting[metric_key] = {'value': max_value, 'subnets': max_subnets}
-                except Exception as e:
-                    logger.warning(f"Could not calculate max for reporting metric '{metric_key}': {e}")
+                else:
                     max_metrics_data_for_reporting[metric_key] = {'value': -1, 'subnets': []}
-            else:
-                logger.warning(f"Metric '{metric_key}' not found in threats DataFrame for max reporting calculation.")
+            except Exception as e:
+                logger.warning(f"Could not calculate max for reporting metric '{metric_key}': {e}")
                 max_metrics_data_for_reporting[metric_key] = {'value': -1, 'subnets': []}
     else:
-        logger.info("Threats DataFrame is empty. Cannot calculate overall maximums for reporting.")
-        for metric_key in metrics_to_track_for_max: # Use pre-defined list
+        logger.info("Threats list is empty. Cannot calculate overall maximums for reporting.")
+        for metric_key in metrics_to_track_for_max:
              max_metrics_data_for_reporting[metric_key] = {'value': -1, 'subnets': []}
     # --- End Calculate Overall Maximums for FINAL REPORTING ---
 
@@ -835,7 +840,7 @@ def main():
 
             # Construct detailed metrics summary string (using .get() on the threat dict) - ADDED Req/Hour
             total_req_val = threat.get('total_requests', 0)
-            if total_req_val is None or pd.isna(total_req_val): total_req_val = 0
+            if total_req_val is None or (isinstance(total_req_val, float) and total_req_val != total_req_val): total_req_val = 0
             total_req_val = int(total_req_val)
 
             metrics_summary = (
@@ -907,13 +912,13 @@ def main():
         if not max_metrics_data_for_reporting or all(data['value'] == -1 for data in max_metrics_data_for_reporting.values()): # MODIFIED to use new dict name
             print("  No threat data available or maximums could not be determined.")
         else:
-            for metric_key, data in max_metrics_data_for_reporting.items(): # MODIFIED
+            for metric_key, data in max_metrics_data_for_reporting.items():
                 metric_name = metric_names_map.get(metric_key, metric_key)
                 value = data['value']
                 subnets = data['subnets'] # List of subnet ID strings
                 value_str = "N/A"
 
-                if value != -1 and pd.notna(value): # Check if metric was found and is valid
+                if value != -1 and value is not None and not (isinstance(value, float) and value != value):
                     if metric_key == 'subnet_time_span':
                         if analysis_duration_seconds > 0:
                             percentage = (value / analysis_duration_seconds) * 100
@@ -931,47 +936,48 @@ def main():
     # Suppress if silent
     if not args.silent:
         print(f"\n=== DETAILS FOR SUBNETS ACHIEVING MAXIMUMS ===")
-        if threats_df.empty:
+        if not threats_dict:
             print("  No data available to report maximum-achieving subnets.")
         else:
             # Collect unique subnet IDs (strings) that achieved any maximum
             max_achieving_subnet_ids = set()
-            for metric_key, data in max_metrics_data_for_reporting.items(): # MODIFIED
-                if data['value'] != -1 and pd.notna(data['value']):
+            for metric_key, data in max_metrics_data_for_reporting.items():
+                if data['value'] != -1 and data['value'] is not None and not (isinstance(data['value'], float) and data['value'] != data['value']):
                     max_achieving_subnet_ids.update(data['subnets'])
 
             if not max_achieving_subnet_ids:
                 print("  No subnets achieved any maximum values.")
             else:
                 logger.info(f"Reporting details for {len(max_achieving_subnet_ids)} subnets that achieved at least one maximum.")
-                # Filter the DataFrame to get only the rows for these subnets
-                max_subnets_df = threats_df[threats_df.index.isin(max_achieving_subnet_ids)]
+                # Filter the threats to get only the ones for these subnets
+                max_subnets = [threats_dict[sid] for sid in max_achieving_subnet_ids if sid in threats_dict]
 
-                # Sort by index (subnet string) for consistent reporting order
-                max_subnets_df = max_subnets_df.sort_index()
+                # Sort by subnet ID string for consistent reporting order
+                max_subnets.sort(key=lambda x: str(x['id']))
 
-                for subnet_id_str, threat_row in max_subnets_df.iterrows():
+                for threat in max_subnets:
+                    subnet_id_str = str(threat['id'])
                     # Find which maximums this subnet achieved
                     achieved_max_metrics = []
-                    for metric_key, data in max_metrics_data_for_reporting.items(): # MODIFIED
+                    for metric_key, data in max_metrics_data_for_reporting.items():
                         if subnet_id_str in data['subnets']:
                             achieved_max_metrics.append(metric_names_map.get(metric_key, metric_key))
                     achieved_max_str = f" [Achieved Max: {', '.join(achieved_max_metrics)}]" if achieved_max_metrics else ""
 
-                    # Reuse the metrics summary string generation from the DataFrame row - ADDED Req/Hour
-                    total_req_val = threat_row.get('total_requests', 0)
-                    if total_req_val is None or pd.isna(total_req_val): total_req_val = 0
+                    # Reuse the metrics summary string generation from the threat dict - ADDED Req/Hour
+                    total_req_val = threat.get('total_requests', 0)
+                    if total_req_val is None or (isinstance(total_req_val, float) and total_req_val != total_req_val): total_req_val = 0
                     total_req_val = int(total_req_val)
 
                     metrics_summary = (
                         f"{total_req_val:d} reqs, "
-                        f"{threat_row.get('ip_count', 0):d} IPs, "
+                        f"{threat.get('ip_count', 0):d} IPs, "
                         # Removed IP RPMs
                         # Removed Subnet Total RPMs
                         # Removed subnet_req_per_min
-                        f"Req/Min(Win): {threat_row.get('subnet_req_per_min_window', 0):.1f}, "
-                        f"Req/Hour(Win): {threat_row.get('subnet_req_per_hour', 0):.1f}, " # ADDED
-                        f"TimeSpan: {threat_row.get('subnet_time_span', 0):.0f}s"
+                        f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, "
+                        f"Req/Hour(Win): {threat.get('subnet_req_per_hour', 0):.1f}, " # ADDED
+                        f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
                     )
 
                     print(f"\nSubnet: {subnet_id_str}{achieved_max_str}")

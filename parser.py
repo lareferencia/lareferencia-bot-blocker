@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Module for parsing web server logs and loading them into Pandas DataFrames.
+Module for parsing web server logs into native Python data structures.
 """
 import re
 from datetime import datetime, timezone
 import ipaddress
 import logging
 import math
-import pandas as pd
 import os # Needed for _read_lines_reverse
 
 # Logger for this module
@@ -72,7 +71,7 @@ def parse_datetime_to_utc(dt_str):
 def load_log_into_dataframe(log_file, start_date_utc=None, whitelist=None):
     """
     Reads a log file, parses relevant fields, filters by date and whitelist,
-    and returns a Pandas DataFrame.
+    and returns a list of log entries.
 
     Args:
         log_file (str): Path to the log file.
@@ -80,8 +79,9 @@ def load_log_into_dataframe(log_file, start_date_utc=None, whitelist=None):
         whitelist (list, optional): List of IPs/subnets to exclude.
 
     Returns:
-        pd.DataFrame: DataFrame with columns ['ip', 'timestamp'] or None if error.
-                      'timestamp' column contains timezone-aware UTC datetime objects.
+        list: List of dictionaries with keys ['ip', 'timestamp'] or None if error.
+              'timestamp' values are timezone-aware UTC datetime objects.
+              Returns empty list if no valid entries found.
     """
     parsed_data = []
     total_lines = 0
@@ -155,15 +155,10 @@ def load_log_into_dataframe(log_file, start_date_utc=None, whitelist=None):
 
         if not parsed_data:
             logger.warning("No valid log entries found after filtering.")
-            return pd.DataFrame(columns=['ip', 'timestamp']) # Return empty DataFrame
+            return [] # Return empty list
 
-        # Create DataFrame
-        df = pd.DataFrame(parsed_data)
-        # Ensure timestamp column is datetime type
-        df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
-        logger.info(f"DataFrame created with {len(df)} entries.")
-
-        return df
+        logger.info(f"Log data loaded with {len(parsed_data)} entries.")
+        return parsed_data
 
     except FileNotFoundError:
         logger.error(f"File not found {log_file}")
