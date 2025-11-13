@@ -4,12 +4,12 @@
 >
 > This software is experimental. It is crucial to fully understand the implications of adding firewall restrictions based on log analysis before applying it to production environments. Incorrect parameterization of this script could block legitimate access. LA Referencia is not responsible for improper use or any consequences arising from its use. **Thorough testing in development environments is strongly recommended before production deployment.**
 
-This tool analyzes web server logs (e.g., Apache, Nginx) using Pandas to identify potential bot threats based on request patterns and activity levels. It groups suspicious activity by subnet and can optionally block identified threats using UFW (Uncomplicated Firewall) rules with automatic expiration. It also features a strike system to escalate block durations for repeat offenders.
+This tool analyzes web server logs (e.g., Apache, Nginx) using native Python data structures to identify potential bot threats based on request patterns and activity levels. It groups suspicious activity by subnet and can optionally block identified threats using UFW (Uncomplicated Firewall) rules with automatic expiration. It also features a strike system to escalate block durations for repeat offenders.
 
 ## Features
 
 -   ✅ **Log Analysis:** Parses common web server log formats.
--   ✅ **Pandas Integration:** Leverages Pandas DataFrames for efficient metric calculation (request counts, time spans, RPM, Req/Hour).
+-   ✅ **Lightweight Processing:** Uses native Python data structures for efficient metric calculation (request counts, time spans, RPM, Req/Hour) without heavy dependencies.
 -   ✅ **Threat Grouping:** Aggregates IP-level metrics by subnet (/24 for IPv4, /64 for IPv6) to identify coordinated activity.
 -   ✅ **Simplified Supernet Blocking:** Automatically blocks the encompassing /16 supernet (IPv4) if it contains >= 2 blockable /24 subnets, preventing redundant individual blocks.
 -   ✅ **Configurable Strategies:** Uses selectable strategies to score threats (/24 or /64) and determine blocking actions based on different criteria (volume, IP count, combined metrics).
@@ -30,7 +30,7 @@ While Fail2Ban is an excellent general-purpose intrusion prevention tool, this s
 -   **Subnet Aggregation:** Automatically groups related IPs by network to detect broader, potentially distributed activity from a single source network.
 -   **Strategy-Based Scoring:** Offers flexible, configurable strategies to define what constitutes a "threat" based on combinations of metrics.
 -   **Retrospective Analysis:** Easily analyze historical logs for specific time windows (e.g., "last day," "last hour").
--   **Pandas Efficiency:** Uses Pandas for potentially faster and more memory-efficient calculation of metrics on large datasets compared to iterative line-by-line processing for complex stats.
+-   **Lightweight & Fast:** Uses native Python data structures for faster startup and efficient memory usage on large datasets.
 
 This tool can complement Fail2Ban by focusing specifically on abusive web crawling/scraping patterns based on request metrics.
 
@@ -41,10 +41,10 @@ This tool can complement Fail2Ban by focusing specifically on abusive web crawli
     *   Lines with malformed dates are skipped.
     *   IPs/subnets present in the whitelist file are ignored.
     *   If `--start-date` or `--time-window` is used, only entries within the specified period are processed.
-3.  **IP Metrics Calculation (Pandas):**
-    *   The filtered log entries (IP, Timestamp) are loaded into a Pandas DataFrame.
+3.  **IP Metrics Calculation:**
+    *   The filtered log entries (IP, Timestamp) are stored in native Python data structures.
     *   For each unique IP address, the script calculates metrics like `total_requests`, `first_seen`, `last_seen`, `time_span_seconds`, average RPM during active minutes (`avg_rpm_activity`), peak RPM during active minutes (`max_rpm_activity`), and average requests per hour over the analysis window (`req_per_hour`).
-4.  **Subnet Aggregation (Pandas):**
+4.  **Subnet Aggregation:**
     *   IPs are grouped by their calculated subnet (/24 for IPv4, /64 for IPv6).
     *   For each subnet, the script aggregates metrics from the IPs within it: `total_requests` (sum), `ip_count` (unique IPs), `subnet_time_span` (overall duration), `subnet_req_per_min_window` (average requests per minute over the entire analysis window), and `subnet_req_per_hour` (average requests per hour over the entire analysis window).
 5.  **Strategy Application (/24 or /64):**
@@ -72,7 +72,7 @@ This tool can complement Fail2Ban by focusing specifically on abusive web crawli
 
 ## Installation
 
-Requires **Python 3.7+** (due to Pandas dependencies and f-string usage), **UFW** (for blocking), and **pyarrow** (for `--dump-data`).
+Requires **Python 3.7+** (for f-string usage), **UFW** (for blocking), and **pyarrow** (optional, for `--dump-data` feature only).
 
 ```bash
 # 1. Clone the repository
@@ -84,7 +84,9 @@ python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # 3. Install dependencies
-pip install -r requirements.txt # Installs pandas and pyarrow
+pip install -r requirements.txt # Installs psutil only
+# Optional: install pyarrow if you want to use --dump-data feature
+# pip install pyarrow
 ```
 
 ## Scheduled Execution with Cron
