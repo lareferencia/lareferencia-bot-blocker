@@ -201,57 +201,29 @@ def main():
         '--block', action='store_true',
         help='Enable blocking of detected threats using UFW.'
     )
-    parser.add_argument('--block-strategy', type=str, default='combined',
-                        choices=[
-                            'combined',
-                            'volume_coordination',
-                            ],
-                        help='Strategy to use for scoring and blocking decisions.')
+    # Unified strategy parameters
     parser.add_argument(
-        '--block-relative-threshold-percent', type=float, default=1, # Default might need adjustment based on typical max requests
-        help='Base threshold for initial consideration (most strategies). '
-             'Percentage of total requests in the window used to calculate a dynamic minimum. ' # UPDATED help
-             'The effective minimum is max(1, calculated_value, block_absolute_min_requests).' # UPDATED help
+        '--min-rpm-threshold', type=float, default=20.0,
+        help='Minimum requests per minute threshold for blocking.'
     )
     parser.add_argument(
-        '--block-absolute-min-requests', type=int, default=100, # NEW ARGUMENT
-        help='Absolute minimum request count threshold. Ensures effective_min_requests does not fall below this value, '
-             'even if the relative percentage calculation yields a lower number.'
+        '--min-sustained-percent', type=float, default=50.0,
+        help='Minimum percentage of analysis window duration a subnet must be active for blocking.'
     )
     parser.add_argument(
-        '--block-min-timespan-percent', type=float, default=50.0, # NEW ARGUMENT
-        help='Strategy threshold: Minimum percentage of analysis window duration a subnet must be active '
-             '(used by "combined" strategy Condition 1).'
+        '--max-cpu-load-threshold', type=float, default=5.0,
+        help='Maximum CPU load threshold (15-minute average) for blocking consideration.'
     )
-    parser.add_argument(
-        '--block-ip-count-threshold', type=int, default=1,
-        help='Strategy threshold: Minimum unique IPs (used by volume_coordination). Ignored by "combined" blocking logic.' # Clarified usage
-    )
-    parser.add_argument(
-        '--block-total-max-rpm-threshold', type=float, default=20, # Default might need adjustment
-        help='Strategy threshold: Minimum peak TOTAL SUBNET RPM (used by peak_total_rpm). '
-             'For "combined" strategy, used as the MANDATORY threshold for average Req/Min(Win) (Condition 3).' # Correcto
-    )
-    # --- REMOVED block-max-rpm-threshold ---
-    # --- REMOVED block-trigger-count ---
     parser.add_argument(
         '--block-duration', type=int, default=60,
-        help='Default duration of the UFW block in minutes (used if strike count < block_escalation_strikes).' # UPDATED help
+        help='Default duration of the UFW block in minutes (used if strike count < block_escalation_strikes).'
     )
     parser.add_argument(
-        '--block-ip-min-req-per-hour', type=int, default=400, # NEW ARGUMENT for IP blocking
-        help='Block individual IPs if their request rate (req/hour) over the analysis window exceeds this threshold.'
-    )
-    parser.add_argument(
-        '--block-ip-duration', type=int, default=1440, # NEW ARGUMENT for IP blocking duration (24h)
-        help='Duration (in minutes) for blocks applied to individual IPs exceeding the req/hour threshold.'
-    )
-    parser.add_argument(
-        '--block-escalation-strikes', type=int, default=4, # NEW ARGUMENT
+        '--block-escalation-strikes', type=int, default=4,
         help='Number of strikes within the history window required to trigger escalated block duration (1440 min).'
     )
     parser.add_argument(
-        '--strike-file', default=default_strike_file_path, # UPDATED default
+        '--strike-file', default=default_strike_file_path,
         help='Path to the JSON file for storing strike history (for escalating block duration).'
     )
     parser.add_argument(
@@ -359,7 +331,7 @@ def main():
 
 
     # --- Load Strategy ---
-    strategy_name = args.block_strategy
+    strategy_name = 'unified'  # Use unified strategy
     try:
         strategy_module = importlib.import_module(f"strategies.{strategy_name}")
         # Assumes each strategy module has a class named 'Strategy'
@@ -450,22 +422,9 @@ def main():
         sys.exit(1)
 
     # --- Determine Effective Request Threshold ---
-    effective_min_requests = 1 # Start with a minimum of 1
-    if total_overall_requests > 0:
-        # Calculate based on the relative threshold
-        relative_min = int(total_overall_requests * (args.block_relative_threshold_percent / 100.0))
-        # Apply the absolute minimum threshold, ensuring it's at least 1
-        effective_min_requests = max(1, relative_min, args.block_absolute_min_requests)
-        # UPDATED log message
-        logger.info(f"Calculated effective_min_requests = {effective_min_requests} "
-                    f"(based on {args.block_relative_threshold_percent}% of {total_overall_requests} -> {relative_min}, "
-                    f"absolute min: {args.block_absolute_min_requests}). Used by most strategies.")
-    else:
-        # If no requests, the threshold remains 1, but analysis likely stops anyway
-        # Apply absolute minimum here too, although it's unlikely to matter
-        effective_min_requests = max(1, args.block_absolute_min_requests)
-        logger.warning(f"Total requests in analysis window is 0. Effective minimum request threshold set to {effective_min_requests} "
-                       f"(based on absolute min: {args.block_absolute_min_requests}).")
+    # For unified strategy, force to 100
+    effective_min_requests = 100
+    logger.info(f"Using fixed effective_min_requests = {effective_min_requests} for unified strategy.")
 
     # --- Get System Load Average ---
     system_load_avg = -1.0 # Default if psutil fails or not available
@@ -501,15 +460,13 @@ def main():
     metrics_to_track_for_max = [
         'total_requests', 'ip_count',
         'subnet_time_span',
-        'subnet_req_per_min_window',
-        'subnet_req_per_hour'
+        'subnet_req_per_min_window'
     ]
     metric_names_map = {
         'total_requests': 'Total Requests',
         'ip_count': 'IP Count',
-        'subnet_time_span': 'Subnet Activity Timespan (%)',
-        'subnet_req_per_min_window': 'Subnet Req/Min (Window Avg)',
-        'subnet_req_per_hour': 'Subnet Req/Hour (Window Avg)'
+        'subnet_time_span': 'Subnet Activity Timespan (s)',
+        'subnet_req_per_min_window': 'Subnet Req/Min (Window Avg)'
     }
     # --- End Define metrics_to_track_for_max ---
 
@@ -528,7 +485,7 @@ def main():
     # ThreatAnalyzer will use the initial shared_context_params, calculate detailed metrics,
     # then calculate maximums from those metrics, and pass an enriched context to the strategies.
     threats = analyzer.identify_threats(
-        strategy_name=args.block_strategy,
+        strategy_name='unified',  # Use unified strategy
         effective_min_requests=effective_min_requests,
         shared_context_params=shared_context_params, # Pass the initial context
         config=args
@@ -583,51 +540,7 @@ def main():
         strike_history = load_strike_history(args.strike_file)
         # --- End Load Strike History ---
 
-        # 0. Block Individual IPs with High Request Rate (req/hour)
-        if args.block_ip_min_req_per_hour > 0 and analyzer.ip_metrics_df is not None and 'req_per_hour' in analyzer.ip_metrics_df.columns:
-            logger.info(f"Checking for individual IPs exceeding {args.block_ip_min_req_per_hour} req/hour...")
-            high_rpm_ips_df = analyzer.ip_metrics_df[analyzer.ip_metrics_df['req_per_hour'] >= args.block_ip_min_req_per_hour]
-
-            if not high_rpm_ips_df.empty:
-                logger.info(f"Found {len(high_rpm_ips_df)} IPs exceeding the threshold. Processing blocks...")
-                for ip_str, ip_metrics in high_rpm_ips_df.iterrows():
-                    try:
-                        ip_obj = ipaddress.ip_address(ip_str)
-                        target_to_block_obj = ip_obj
-                        target_type = "High RPM IP"
-                        # Use specific duration for these IPs, NO strike escalation here
-                        block_duration = args.block_ip_duration
-                        reason = f"exceeded {args.block_ip_min_req_per_hour} req/hour ({ip_metrics['req_per_hour']:.1f})"
-
-                        logger.info(f"Processing block for {target_type}: {target_to_block_obj}. Reason: {reason}")
-                        success = ufw_manager_instance.block_target(
-                            subnet_or_ip_obj=target_to_block_obj,
-                            block_duration_minutes=block_duration
-                        )
-                        if success:
-                            blocked_targets_count += 1
-                            blocked_ips_high_rpm.add(target_to_block_obj) # Add the ipaddress object
-                            action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
-                            timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                            # ALWAYS PRINT block actions, format based on silent mode
-                            if args.silent:
-                                print(f"{timestamp_str} {action} {target_type}: {target_to_block_obj} for {block_duration}m. Reason: {reason}.")
-                            else:
-                                print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes. Reason: {reason}.")
-                        else:
-                            # Only print failure if not silent
-                            if not args.silent:
-                                action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
-                                print(f" -> {action} {target_type}: {target_to_block_obj}.")
-                    except ValueError:
-                        logger.warning(f"Could not parse IP address '{ip_str}' for high RPM blocking.")
-                    except Exception as e:
-                        logger.error(f"Error processing high RPM block for IP '{ip_str}': {e}")
-            else:
-                logger.info("No individual IPs exceeded the req/hour threshold.")
-        else:
-            logger.info("Individual IP blocking based on req/hour is disabled or IP metrics are unavailable.")
-
+        # High-rate IP blocking removed in simplified version
 
         # 1. Identify and Block /16 Supernets (Simplified Logic)
         supernets_to_block = defaultdict(list)
@@ -769,7 +682,6 @@ def main():
                         ip_count_val = _safe_get_int(threat.get('ip_count'))
                         strategy_score_val = _safe_get_float(threat.get('strategy_score'))
                         subnet_req_min_win_val = _safe_get_float(threat.get('subnet_req_per_min_window'))
-                        subnet_req_hour_val = _safe_get_float(threat.get('subnet_req_per_hour'))
                         subnet_time_span_val = _safe_get_float(threat.get('subnet_time_span'))
 
                         metrics_summary = (
@@ -778,7 +690,6 @@ def main():
                             f"{ip_count_val:d} IPs, "
                             f"Score: {strategy_score_val:.1f}, "
                             f"Req/Min(Win): {subnet_req_min_win_val:.1f}, "
-                            f"Req/Hour(Win): {subnet_req_hour_val:.1f}, "
                             f"TimeSpan: {subnet_time_span_val:.0f}s"
                         )
                     except Exception as e:
@@ -859,10 +770,7 @@ def main():
             metrics_summary = (
                 f"{total_req_val:d} reqs, "
                 f"{threat.get('ip_count', 0):d} IPs, "
-                # Removed IP RPMs
-                # Removed Subnet Total RPMs
                 f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, "
-                f"Req/Hour(Win): {threat.get('subnet_req_per_hour', 0):.1f}, "
                 f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
             )
 
@@ -884,27 +792,6 @@ def main():
 
             print(f"\n#{i} Subnet: {target_id_str} - {strat_score_str}{block_info}")
             print(f"  Metrics: {metrics_summary}")
-
-            # Use details from the threat dictionary
-            if threat.get('details'):
-                print("  -> Top IPs (by Max RPM):")
-                # Limit details shown in console report if desired
-                max_details_to_show = 5
-                actual_details_list = threat['details']
-                num_printed_details = 0
-                for ip_detail_idx, ip_detail in enumerate(actual_details_list):
-                    if ip_detail_idx < max_details_to_show:
-                        print(f"     - IP: {ip_detail['ip']} ({ip_detail['total_requests']} reqs, AvgRPM: {ip_detail['avg_rpm']:.2f}, MaxRPM: {ip_detail['max_rpm']:.0f})")
-                        num_printed_details += 1
-                    else:
-                        break
-                
-                total_ip_count_for_subnet = threat.get('ip_count', 0)
-                if total_ip_count_for_subnet > num_printed_details:
-                    remaining_ips = total_ip_count_for_subnet - num_printed_details
-                    print(f"     ... and {remaining_ips} more IPs in this subnet.")
-            else:
-                 print("  -> No IP details available.")
 
     # --- Final Summary ---
     # Print simplified summary in silent mode
@@ -985,39 +872,12 @@ def main():
                     metrics_summary = (
                         f"{total_req_val:d} reqs, "
                         f"{threat.get('ip_count', 0):d} IPs, "
-                        # Removed IP RPMs
-                        # Removed Subnet Total RPMs
-                        # Removed subnet_req_per_min
                         f"Req/Min(Win): {threat.get('subnet_req_per_min_window', 0):.1f}, "
-                        f"Req/Hour(Win): {threat.get('subnet_req_per_hour', 0):.1f}, " # ADDED
                         f"TimeSpan: {threat.get('subnet_time_span', 0):.0f}s"
                     )
 
                     print(f"\nSubnet: {subnet_id_str}{achieved_max_str}")
                     print(f"  Metrics: {metrics_summary}")
-                    # Optionally print top IPs again if desired, accessing 'details' from the threat
-                    details = threat.get('details', [])
-                    if details and isinstance(details, list):
-                        print("  -> Top IPs (by Max RPM):")
-                        max_details_to_show = 3 # Show fewer details here?
-                        num_printed_details = 0
-                        for ip_detail_idx, ip_detail in enumerate(details):
-                            if ip_detail_idx < max_details_to_show:
-                                 # Ensure ip_detail is a dict before accessing keys
-                                 if isinstance(ip_detail, dict):
-                                     print(f"     - IP: {ip_detail.get('ip','N/A')} ({ip_detail.get('total_requests',0)} reqs, AvgRPM: {ip_detail.get('avg_rpm',0):.2f}, MaxRPM: {ip_detail.get('max_rpm',0):.0f})")
-                                     num_printed_details += 1
-                                 else:
-                                     print(f"     - Invalid detail format: {ip_detail}")
-                            else:
-                                break
-                        
-                        total_ip_count_for_subnet = threat.get('ip_count', 0)
-                        if total_ip_count_for_subnet > num_printed_details:
-                            remaining_ips = total_ip_count_for_subnet - num_printed_details
-                            print(f"     ... and {remaining_ips} more IPs in this subnet.")
-                    # else:
-                    #      print("  -> No IP details available.") # Redundant if details is empty list
 
     # --- End Report Details for Subnets Achieving Maximums ---
 

@@ -105,7 +105,7 @@ class ThreatAnalyzer:
         return len(self.log_data)
 
     def _calculate_ip_metrics(self, analysis_duration_seconds=None):
-        """Calculates metrics per IP address using native Python data structures."""
+        """Calculates simplified metrics per IP address using native Python data structures."""
         if self.log_data is None or not self.log_data:
             logger.warning("Log data is not loaded or empty. Cannot calculate IP metrics.")
             return False
@@ -117,7 +117,7 @@ class ThreatAnalyzer:
         for entry in self.log_data:
             ip_groups[entry['ip']].append(entry['timestamp'])
 
-        # Calculate metrics for each IP
+        # Calculate simplified metrics for each IP
         self.ip_metrics = {}
         for ip, timestamps in ip_groups.items():
             # Sort timestamps for accurate calculations
@@ -129,36 +129,6 @@ class ThreatAnalyzer:
             time_span_seconds = (last_seen - first_seen).total_seconds()
             time_span_seconds = max(0, time_span_seconds)
 
-            # Calculate requests per hour (using analysis window duration)
-            if analysis_duration_seconds and analysis_duration_seconds > 0:
-                analysis_duration_hours = analysis_duration_seconds / 3600.0
-                req_per_hour = total_requests / analysis_duration_hours
-            else:
-                req_per_hour = 0.0
-                if 'req_per_hour' not in getattr(self, '_warning_logged', set()):
-                    logger.warning("Analysis duration is zero or unknown. 'req_per_hour' for IPs set to 0.")
-                    if not hasattr(self, '_warning_logged'):
-                        self._warning_logged = set()
-                    self._warning_logged.add('req_per_hour')
-
-            # Calculate RPM metrics (average and max during active minutes)
-            avg_rpm_activity = 0.0
-            max_rpm_activity = 0.0
-            
-            if total_requests > 1:  # Need at least 2 requests for meaningful RPM
-                # Group requests by minute
-                minute_buckets = defaultdict(int)
-                for ts in timestamps:
-                    # Create minute bucket key (truncate to minute)
-                    minute_key = ts.replace(second=0, microsecond=0)
-                    minute_buckets[minute_key] += 1
-                
-                # Calculate RPM metrics from active minutes only
-                if minute_buckets:
-                    rpm_values = list(minute_buckets.values())
-                    avg_rpm_activity = sum(rpm_values) / len(rpm_values)
-                    max_rpm_activity = max(rpm_values)
-
             # Get subnet for this IP
             subnet = get_subnet(ip)
             
@@ -167,9 +137,6 @@ class ThreatAnalyzer:
                 'first_seen': first_seen,
                 'last_seen': last_seen,
                 'time_span_seconds': time_span_seconds,
-                'req_per_hour': req_per_hour,
-                'avg_rpm_activity': avg_rpm_activity,
-                'max_rpm_activity': max_rpm_activity,
                 'subnet': subnet
             }
 
@@ -213,21 +180,17 @@ class ThreatAnalyzer:
             subnet_time_span = (subnet_last_seen - subnet_first_seen).total_seconds()
             subnet_time_span = max(0, subnet_time_span)
 
-            # Calculate requests per minute and per hour over the entire analysis window
+            # Calculate requests per minute over the entire analysis window
             if analysis_duration_seconds and analysis_duration_seconds > 0:
                 subnet_req_per_min_window = total_requests / (analysis_duration_seconds / 60.0)
-                analysis_duration_hours = analysis_duration_seconds / 3600.0
-                subnet_req_per_hour = total_requests / analysis_duration_hours
             else:
                 subnet_req_per_min_window = 0.0
-                subnet_req_per_hour = 0.0
 
             self.subnet_metrics[subnet] = {
                 'total_requests': total_requests,
                 'ip_count': ip_count,
                 'subnet_time_span': subnet_time_span,
-                'subnet_req_per_min_window': subnet_req_per_min_window,
-                'subnet_req_per_hour': subnet_req_per_hour
+                'subnet_req_per_min_window': subnet_req_per_min_window
             }
 
         logger.info(f"Finished aggregating metrics for {len(self.subnet_metrics)} subnets.")
@@ -301,8 +264,7 @@ class ThreatAnalyzer:
                 'total_requests': 0,
                 'ip_count': 0,
                 'subnet_time_span': 0.0,
-                'subnet_req_per_min_window': 0.0,
-                'subnet_req_per_hour': 0.0
+                'subnet_req_per_min_window': 0.0
             }
             for metric_key, default_value in metrics_for_max_calc.items():
                 values = [m.get(metric_key, default_value) for m in self.subnet_metrics.values()]
@@ -316,41 +278,12 @@ class ThreatAnalyzer:
             logger.warning("Subnet metrics empty. Strategies will receive initial shared_context_params without calculated maximums.")
             for metric_key, default_value in {
                 'max_total_requests': 0, 'max_ip_count': 0, 'max_subnet_time_span': 0.0,
-                'max_subnet_req_per_min_window': 0.0, 'max_subnet_req_per_hour': 0.0
+                'max_subnet_req_per_min_window': 0.0
             }.items():
                  if metric_key not in strategy_context:
                      strategy_context[metric_key] = default_value
 
-        # --- Prepare Top IP Details ---
-        top_ips_details = {}
-        if self.ip_metrics:
-            logger.debug("Preparing top IP details per subnet...")
-            try:
-                # Group IPs by subnet
-                subnet_ips = defaultdict(list)
-                for ip, metrics in self.ip_metrics.items():
-                    subnet = metrics.get('subnet')
-                    if subnet:
-                        subnet_ips[subnet].append((ip, metrics))
-                
-                # For each subnet, get top 5 IPs by max_rpm_activity
-                for subnet, ip_list in subnet_ips.items():
-                    # Sort by max_rpm_activity descending
-                    sorted_ips = sorted(ip_list, key=lambda x: x[1].get('max_rpm_activity', 0), reverse=True)
-                    top_5 = sorted_ips[:5]
-                    
-                    details_list = []
-                    for ip, ip_metrics in top_5:
-                        details_list.append({
-                            'ip': str(ip),
-                            'total_requests': int(ip_metrics.get('total_requests', 0)),
-                            'avg_rpm': round(ip_metrics.get('avg_rpm_activity', 0), 2),
-                            'max_rpm': round(ip_metrics.get('max_rpm_activity', 0), 2),
-                        })
-                    top_ips_details[subnet] = details_list
-                logger.debug(f"Prepared details for {len(top_ips_details)} subnets.")
-            except Exception as e:
-                logger.error(f"Error preparing top IP details: {e}", exc_info=True)
+        # --- IP Details collection removed for simplification ---
 
         # --- Apply strategy and build results list ---
         results = []
@@ -379,8 +312,6 @@ class ThreatAnalyzer:
                      'ip_count': int(threat_data.get('ip_count', 0)),
                      'subnet_time_span': round(threat_data.get('subnet_time_span', 0), 2),
                      'subnet_req_per_min_window': round(threat_data.get('subnet_req_per_min_window', 0), 2),
-                     'subnet_req_per_hour': round(threat_data.get('subnet_req_per_hour', 0), 2),
-                     'details': top_ips_details.get(subnet_obj, []),
                      'strategy_score': score,
                      'should_block': should_block,
                      'block_reason': reason
@@ -432,9 +363,7 @@ class ThreatAnalyzer:
                 'id', 'strategy_score', 'should_block', 'block_reason',
                 'total_requests', 'ip_count',
                 'subnet_req_per_min_window',
-                'subnet_req_per_hour',
-                'subnet_time_span',
-                'details'
+                'subnet_time_span'
             ]
 
             if format_type == 'csv':
