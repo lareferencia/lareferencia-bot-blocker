@@ -114,147 +114,50 @@ class ThreatAnalyzer:
 
         return len(self.log_df)
 
-    def _calculate_ip_metrics(self, analysis_duration_seconds=None): # Add analysis_duration_seconds parameter
-        """Calculates metrics per IP address using the loaded DataFrame."""
+    def _calculate_ip_metrics(self, analysis_duration_seconds=None):
+        """Calculates simplified metrics per IP address - only essential data for blocking."""
         if self.log_df is None or self.log_df.empty:
             logger.warning("Log DataFrame is not loaded or empty. Cannot calculate IP metrics.")
             return False
-        # Ensure 'timestamp' column exists and is datetime
-        # Use the DataFrame index if it's already datetime
-        if isinstance(self.log_df.index, pd.DatetimeIndex):
-             ts_col = self.log_df.index
-             logger.debug("Using DataFrame index as timestamp source.")
-        elif 'timestamp' in self.log_df.columns and pd.api.types.is_datetime64_any_dtype(self.log_df['timestamp']):
-             ts_col = self.log_df['timestamp']
-             logger.debug("Using 'timestamp' column as timestamp source.")
-        else:
-             logger.error("Log DataFrame missing a usable datetime index or 'timestamp' column.")
-             # Attempt conversion if 'timestamp' column exists but isn't datetime
-             if 'timestamp' in self.log_df.columns:
-                 try:
-                     self.log_df['timestamp'] = pd.to_datetime(self.log_df['timestamp'], utc=True)
-                     if pd.api.types.is_datetime64_any_dtype(self.log_df['timestamp']):
-                          logger.warning("Converted 'timestamp' column to datetime.")
-                          ts_col = self.log_df['timestamp']
-                     else:
-                          raise ValueError("Conversion failed")
-                 except Exception as e:
-                     logger.error(f"Failed to convert 'timestamp' column to datetime: {e}", exc_info=True)
-                     return False
-             else:
-                 return False # Cannot proceed without timestamps
 
-        logger.info("Calculating metrics per IP...")
+        logger.info("Calculating simplified IP metrics...")
 
-        # 1. Basic Aggregations (Total Requests, First/Last Seen, Time Span)
-        logger.debug("Calculating total requests, first/last seen, time span per IP...")
         try:
-            # Group by IP and aggregate directly
-            # Use the identified timestamp source (ts_col might be index or column)
-            # If ts_col is the index, we need to aggregate based on it.
-            # If ts_col is a column, we aggregate based on it.
-            # Let's ensure 'timestamp' column exists for simplicity here.
-            if isinstance(ts_col, pd.Index):
-                 # If timestamp is index, temporarily reset it for consistent aggregation
-                 temp_df = self.log_df.reset_index()
-                 ts_col_name = temp_df.columns[0] # Get the name of the reset index column
+            # Use DataFrame index if it's datetime, otherwise use timestamp column
+            if isinstance(self.log_df.index, pd.DatetimeIndex):
+                temp_df = self.log_df.reset_index()
+                ts_col_name = temp_df.columns[0]
             else:
-                 temp_df = self.log_df
-                 ts_col_name = 'timestamp'
+                temp_df = self.log_df
+                ts_col_name = 'timestamp'
 
+            # Calculate only essential IP metrics: total requests and req/hour
             basic_agg = temp_df.groupby('ip').agg(
-                total_requests=('ip', 'count'),
-                first_seen=(ts_col_name, 'min'),
-                last_seen=(ts_col_name, 'max')
+                total_requests=('ip', 'count')
             )
-            # Calculate time span directly on the aggregated result
-            basic_agg['time_span_seconds'] = (basic_agg['last_seen'] - basic_agg['first_seen']).dt.total_seconds().fillna(0).clip(lower=0)
 
-            # Calculate Requests per Hour (using analysis window duration)
+            # Calculate Requests per Hour (for high-rate IP blocking)
             if analysis_duration_seconds and analysis_duration_seconds > 0:
                 analysis_duration_hours = analysis_duration_seconds / 3600.0
                 basic_agg['req_per_hour'] = basic_agg['total_requests'] / analysis_duration_hours
             else:
-                basic_agg['req_per_hour'] = 0.0 # Cannot calculate if duration is unknown or zero
-                logger.warning("Analysis duration is zero or unknown. 'req_per_hour' for IPs set to 0.")
+                basic_agg['req_per_hour'] = 0.0
+                logger.warning("Analysis duration unknown. 'req_per_hour' for IPs set to 0.")
 
+            # Add Subnet Information
+            basic_agg['subnet'] = basic_agg.index.map(get_subnet)
+            rows_before = len(basic_agg)
+            basic_agg = basic_agg.dropna(subset=['subnet'])
+            if rows_before > len(basic_agg):
+                logger.warning(f"Dropped {rows_before - len(basic_agg)} IPs due to missing subnet.")
 
-        except Exception as e:
-             logger.error(f"Error during basic IP aggregation: {e}", exc_info=True)
-             return False
-        logger.debug(f"Calculated basic aggregations for {len(basic_agg)} IPs.")
-
-
-        # 2. RPM Metrics (Average and Max during active minutes)
-        logger.debug("Calculating RPM metrics (avg/max during activity)...")
-        rpm_metrics = pd.DataFrame(index=basic_agg.index, columns=['avg_rpm_activity', 'max_rpm_activity']).fillna(0.0) # Initialize with correct index and default float
-        try:
-            # Ensure log_df has datetime index for resampling
-            if not isinstance(self.log_df.index, pd.DatetimeIndex):
-                 # If 'timestamp' column exists and is datetime, set it as index
-                 if 'timestamp' in self.log_df.columns and pd.api.types.is_datetime64_any_dtype(self.log_df['timestamp']):
-                     log_df_indexed = self.log_df.set_index('timestamp')
-                     if not isinstance(log_df_indexed.index, pd.DatetimeIndex):
-                          raise ValueError("Index is not datetime after set_index.")
-                 else:
-                      # This case should have been caught earlier, but double-check
-                      raise ValueError("Cannot create datetime index for RPM calculation.")
-            else:
-                 log_df_indexed = self.log_df # Already has datetime index
-
-            # Resample per minute, count requests per IP, filter inactive minutes
-            # Use observed=True if pandas version >= 1.5 for potential performance improvement with categorical IPs
-            rpm_counts = log_df_indexed.groupby('ip', observed=True).resample('T').size()
-            rpm_counts = rpm_counts[rpm_counts > 0] # Keep only minutes with activity
-
-            if not rpm_counts.empty:
-                # Calculate avg and max RPM for IPs that had activity
-                # Group by the 'ip' level of the MultiIndex
-                grouped_rpm = rpm_counts.groupby(level='ip')
-                avg_rpm = grouped_rpm.mean()
-                max_rpm = grouped_rpm.max()
-
-                # Create DataFrame with results
-                rpm_metrics_calculated = pd.DataFrame({
-                    'avg_rpm_activity': avg_rpm,
-                    'max_rpm_activity': max_rpm
-                })
-                # Update the initialized rpm_metrics DataFrame, keeping IPs with no multi-minute activity at 0
-                rpm_metrics.update(rpm_metrics_calculated)
-                logger.debug(f"Calculated RPM metrics for {len(rpm_metrics_calculated)} IPs with multi-minute activity.")
-            else:
-                 logger.debug("No multi-minute activity found for RPM calculation.")
+            self.ip_metrics_df = basic_agg
+            logger.info(f"Calculated simplified metrics for {len(self.ip_metrics_df)} IPs.")
+            return True
 
         except Exception as e:
-            logger.error(f"Error calculating RPM metrics: {e}", exc_info=True)
-            # Continue with RPM metrics as 0, but log the error
-
-        # 3. Combine Metrics
-        logger.debug("Combining basic and RPM metrics...")
-        self.ip_metrics_df = basic_agg.join(rpm_metrics, how='left')
-        # Fill any potential NaNs from join (though initialization should prevent this)
-        # Keep avg_rpm_activity and max_rpm_activity
-        self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity', 'req_per_hour']] = self.ip_metrics_df[['avg_rpm_activity', 'max_rpm_activity', 'req_per_hour']].fillna(0) # Add req_per_hour to fillna
-        logger.debug("Metrics combined.")
-
-        # 4. Add Subnet Information
-        logger.debug("Adding subnet information...")
-        try:
-            # Use the IP index to map to subnets
-            self.ip_metrics_df['subnet'] = self.ip_metrics_df.index.map(get_subnet)
-            # Drop IPs where subnet couldn't be determined (e.g., invalid IP format somehow)
-            rows_before_drop = len(self.ip_metrics_df)
-            self.ip_metrics_df = self.ip_metrics_df.dropna(subset=['subnet'])
-            rows_after_drop = len(self.ip_metrics_df)
-            if rows_before_drop > rows_after_drop:
-                 logger.warning(f"Dropped {rows_before_drop - rows_after_drop} IPs due to missing subnet information.")
-            logger.debug("Subnet information added.")
-        except Exception as e:
-             logger.error(f"Error adding subnet information to ip_metrics_df: {e}", exc_info=True)
-             return False # Subnet info is crucial for aggregation
-
-        logger.info(f"Finished calculating metrics for {len(self.ip_metrics_df)} IPs.")
-        return True
+            logger.error(f"Error during IP metrics calculation: {e}", exc_info=True)
+            return False
 
     def _calculate_subnet_rpm_metrics(self):
         """Calculates total RPM metrics per Subnet. (REMOVED - No longer needed for current strategies)"""
@@ -264,131 +167,72 @@ class ThreatAnalyzer:
         return pd.DataFrame(columns=[]) # No columns needed anymore
 
     def _aggregate_subnet_metrics(self, analysis_duration_seconds=None):
-        """Aggregates IP metrics using a more robust join approach. (Removed some metrics)"""
+        """Aggregates simplified metrics by subnet."""
         if self.ip_metrics_df is None or self.ip_metrics_df.empty:
             logger.warning("IP metrics DataFrame not available. Cannot aggregate subnet metrics.")
             return False
 
-        logger.info("Aggregating metrics by subnet...")
+        logger.info("Aggregating simplified metrics by subnet...")
+        
         if 'subnet' not in self.ip_metrics_df.columns:
-             logger.error("'subnet' column missing from ip_metrics_df. Cannot proceed.")
-             return False
-
-        # --- 1. Calculate Aggregations from ip_metrics_df ---
-        logger.debug("Calculating primary aggregations from ip_metrics_df...")
-        try:
-            # Use observed=True if pandas version supports it
-            grouped_ips = self.ip_metrics_df.groupby('subnet', observed=True)
-
-            agg_funcs = {
-                'total_requests': 'sum',
-                'first_seen': 'min',
-                'last_seen': 'max',
-                # Remove aggregation of IP RPMs
-                # 'avg_rpm_activity': 'mean', # Avg of IP avgs - REMOVED
-                # 'max_rpm_activity': 'max'   # Max of IP maxs - REMOVED
-            }
-            # Calculate ip_count separately
-            ip_counts = grouped_ips.size().rename('ip_count')
-
-            # Perform main aggregations
-            agg_main = grouped_ips.agg(agg_funcs)
-
-            # Join ip_counts
-            agg1 = agg_main.join(ip_counts, how='left').fillna({'ip_count': 0}) # Ensure ip_count is filled if join fails unexpectedly
-            agg1['ip_count'] = agg1['ip_count'].astype(int)
-
-            # Rename columns for clarity before calculating derived metrics
-            agg1 = agg1.rename(columns={
-                # Removed IP RPM renames
-                'first_seen': 'subnet_first_seen',
-                'last_seen': 'subnet_last_seen'
-            })
-
-            # Calculate subnet_time_span (vectorized)
-            agg1['subnet_time_span'] = (agg1['subnet_last_seen'] - agg1['subnet_first_seen']).dt.total_seconds().fillna(0).clip(lower=0)
-
-            # Calculate Requests per Minute over the entire analysis window (vectorized)
-            if analysis_duration_seconds and analysis_duration_seconds > 0:
-                agg1['subnet_req_per_min_window'] = agg1['total_requests'] / (analysis_duration_seconds / 60.0)
-                # Calculate Requests per Hour over the entire analysis window (vectorized)
-                analysis_duration_hours = analysis_duration_seconds / 3600.0
-                agg1['subnet_req_per_hour'] = agg1['total_requests'] / analysis_duration_hours
-            else:
-                agg1['subnet_req_per_min_window'] = 0.0 # Or np.nan if preferred
-                agg1['subnet_req_per_hour'] = 0.0 # Or np.nan if preferred
-
-
-            # Drop intermediate timestamp columns
-            agg1 = agg1.drop(columns=['subnet_first_seen', 'subnet_last_seen'], errors='ignore')
-
-            # Ensure index is the correct type (ipaddress object)
-            agg1.index = agg1.index.map(lambda x: ip_network(x, strict=False) if not isinstance(x, (IPv4Network, IPv6Network)) else x)
-
-            logger.debug(f"Primary aggregation complete for {len(agg1)} subnets.")
-
-        except Exception as e:
-            logger.error(f"Error during primary aggregation: {e}", exc_info=True)
+            logger.error("'subnet' column missing from ip_metrics_df.")
             return False
 
-        # --- 2. Calculate Subnet Total RPM metrics from log_df ---
-        # logger.debug("Calculating Subnet Total RPM metrics from log_df...") # SKIPPED
-        agg2 = self._calculate_subnet_rpm_metrics() # Returns empty DF
-
-        # --- 3. Combine the aggregations ---
-        logger.debug("Joining aggregated metrics...")
         try:
-            # Start with the primary aggregation
-            self.subnet_metrics_df = agg1
+            grouped = self.ip_metrics_df.groupby('subnet', observed=True)
 
-            # Join the subnet total RPM metrics (agg2 is empty, so join won't add columns)
-            if not agg2.empty:
-                 agg2_reindexed = agg2.reindex(self.subnet_metrics_df.index).fillna(0.0)
-                 self.subnet_metrics_df = self.subnet_metrics_df.join(agg2_reindexed, how='left')
+            # Calculate essential subnet metrics only
+            subnet_agg = grouped.agg({
+                'total_requests': 'sum'
+            })
+            
+            # Add IP count
+            subnet_agg['ip_count'] = grouped.size()
 
-            # Fill any remaining NaNs that might have occurred
-            numeric_cols = self.subnet_metrics_df.select_dtypes(include=np.number).columns
-            self.subnet_metrics_df[numeric_cols] = self.subnet_metrics_df[numeric_cols].fillna(0)
+            # Get first and last seen for timespan calculation
+            if isinstance(self.log_df.index, pd.DatetimeIndex):
+                log_indexed = self.log_df
+            else:
+                log_indexed = self.log_df.set_index('timestamp')
+            
+            # Calculate timespan per subnet from log data
+            subnet_times = log_indexed.groupby('subnet').agg(
+                first_seen=('ip', lambda x: x.index.min()),
+                last_seen=('ip', lambda x: x.index.max())
+            )
+            subnet_agg = subnet_agg.join(subnet_times)
+            subnet_agg['subnet_time_span'] = (
+                subnet_agg['last_seen'] - subnet_agg['first_seen']
+            ).dt.total_seconds().fillna(0).clip(lower=0)
+            subnet_agg = subnet_agg.drop(columns=['first_seen', 'last_seen'])
 
-            logger.debug(f"Final combined subnet metrics (before type conversion):\n{self.subnet_metrics_df.head()}")
+            # Calculate RPM over analysis window
+            if analysis_duration_seconds and analysis_duration_seconds > 0:
+                subnet_agg['subnet_req_per_min_window'] = (
+                    subnet_agg['total_requests'] / (analysis_duration_seconds / 60.0)
+                )
+            else:
+                subnet_agg['subnet_req_per_min_window'] = 0.0
+
+            # Ensure correct data types
+            subnet_agg['total_requests'] = subnet_agg['total_requests'].astype(int)
+            subnet_agg['ip_count'] = subnet_agg['ip_count'].astype(int)
+            subnet_agg['subnet_time_span'] = subnet_agg['subnet_time_span'].astype(float)
+            subnet_agg['subnet_req_per_min_window'] = subnet_agg['subnet_req_per_min_window'].astype(float)
+
+            # Convert index to ipaddress objects
+            from ipaddress import ip_network, IPv4Network, IPv6Network
+            subnet_agg.index = subnet_agg.index.map(
+                lambda x: ip_network(x, strict=False) if not isinstance(x, (IPv4Network, IPv6Network)) else x
+            )
+
+            self.subnet_metrics_df = subnet_agg
+            logger.info(f"Aggregated metrics for {len(self.subnet_metrics_df)} subnets.")
+            return True
 
         except Exception as e:
-             logger.error(f"Error joining aggregated subnet metrics: {e}", exc_info=True)
-             return False
-
-        # --- 4. Ensure correct data types ---
-        logger.debug("Ensuring correct data types...")
-        try:
-            expected_types = {
-                'total_requests': int,
-                'ip_count': int,
-                # Removed IP RPMs
-                'subnet_time_span': float,
-                # Removed subnet_req_per_min
-                'subnet_req_per_min_window': float,
-                'subnet_req_per_hour': float, # ADDED subnet_req_per_hour
-                # Removed Subnet Total RPMs
-            }
-            for col, dtype in expected_types.items():
-                if col in self.subnet_metrics_df.columns:
-                    # Ensure column is numeric before converting, coercing errors
-                    self.subnet_metrics_df[col] = pd.to_numeric(self.subnet_metrics_df[col], errors='coerce').fillna(0)
-                    # Convert to the target type
-                    if dtype == int:
-                         self.subnet_metrics_df[col] = self.subnet_metrics_df[col].astype(int)
-                    else:
-                         self.subnet_metrics_df[col] = self.subnet_metrics_df[col].astype(float)
-                else:
-                    logger.warning(f"Column '{col}' missing before type conversion. Adding as {dtype}(0).")
-                    self.subnet_metrics_df[col] = dtype(0) # Add column with default value
-
-        except Exception as e:
-             logger.error(f"Error converting data types for subnet metrics: {e}", exc_info=True)
-             # Continue, but data types might be incorrect
-
-        logger.info(f"Finished aggregating metrics for {len(self.subnet_metrics_df)} subnets.")
-        logger.debug(f"Final combined subnet metrics (after type conversion):\n{self.subnet_metrics_df.head()}")
-        return True
+            logger.error(f"Error aggregating subnet metrics: {e}", exc_info=True)
+            return False
 
     def identify_threats(self,
                          strategy_name,
@@ -453,205 +297,131 @@ class ThreatAnalyzer:
              return None
 
         # --- Calculate Maximums from self.subnet_metrics_df for strategy context ---
-        # These will be added to the context passed to the strategy
-        strategy_context = shared_context_params.copy() # Start with what blocker provided
+        strategy_context = shared_context_params.copy()
 
         if self.subnet_metrics_df is not None and not self.subnet_metrics_df.empty:
-            logger.debug("Calculating maximums from subnet_metrics_df for strategy context...")
-            # Metrics that strategies might need max values for
-            metrics_for_max_calc = {
+            logger.debug("Calculating maximums for strategy context...")
+            # Only calculate max for essential metrics
+            metrics_for_max = {
                 'total_requests': 0,
                 'ip_count': 0,
                 'subnet_time_span': 0.0,
-                'subnet_req_per_min_window': 0.0,
-                'subnet_req_per_hour': 0.0
+                'subnet_req_per_min_window': 0.0
             }
-            for metric_key, default_value in metrics_for_max_calc.items():
+            for metric_key, default_value in metrics_for_max.items():
                 if metric_key in self.subnet_metrics_df.columns:
                     max_val = self.subnet_metrics_df[metric_key].max()
                     if pd.notna(max_val):
-                        # Convert to Python native types
                         if isinstance(default_value, int):
                             strategy_context[f'max_{metric_key}'] = int(max_val)
-                        elif isinstance(default_value, float):
-                            strategy_context[f'max_{metric_key}'] = float(max_val)
                         else:
-                            strategy_context[f'max_{metric_key}'] = max_val # Keep original type if not int/float
+                            strategy_context[f'max_{metric_key}'] = float(max_val)
                     else:
                         strategy_context[f'max_{metric_key}'] = default_value
                 else:
-                    logger.warning(f"Metric '{metric_key}' not found in subnet_metrics_df for max calculation. Using default for strategy context.")
                     strategy_context[f'max_{metric_key}'] = default_value
-            logger.debug(f"Strategy context enriched with maximums: {strategy_context}")
         else:
-            logger.warning("Subnet metrics DataFrame is empty. Strategies will receive initial shared_context_params without calculated maximums.")
-            # Ensure default max keys are present if strategies expect them
-            for metric_key, default_value in {
-                'max_total_requests': 0, 'max_ip_count': 0, 'max_subnet_time_span': 0.0,
-                'max_subnet_req_per_min_window': 0.0, 'max_subnet_req_per_hour': 0.0
-            }.items():
-                 if metric_key not in strategy_context:
-                     strategy_context[metric_key] = default_value
-
-
-        # --- Prepare Top IP Details (Efficiently) ---
-        top_ips_details = {}
-        if self.ip_metrics_df is not None and not self.ip_metrics_df.empty:
-            logger.debug("Preparing top IP details per subnet...")
-            try:
-                # Sort IPs by max_rpm_activity descending, group by subnet, take top 5
-                top_ips_per_subnet = self.ip_metrics_df.sort_values('max_rpm_activity', ascending=False) \
-                                                    .groupby('subnet', observed=True) \
-                                                    .head(5) # Get top 5 rows per group
-
-                # Convert these top IPs into the desired dictionary format per subnet
-                for subnet, group_df in top_ips_per_subnet.groupby('subnet', observed=True):
-                    details_list = []
-                    for ip, ip_metrics in group_df.iterrows():
-                        details_list.append({
-                            'ip': str(ip), # Ensure IP is string
-                            'total_requests': int(ip_metrics.get('total_requests', 0)),
-                            'avg_rpm': round(ip_metrics.get('avg_rpm_activity', 0), 2),
-                            'max_rpm': round(ip_metrics.get('max_rpm_activity', 0), 2),
-                        })
-                    top_ips_details[subnet] = details_list
-                logger.debug(f"Prepared details for {len(top_ips_details)} subnets.")
-            except Exception as e:
-                logger.error(f"Error preparing top IP details: {e}", exc_info=True)
-                # Continue without details if preparation fails
+            logger.warning("Subnet metrics DataFrame is empty.")
+            for key in ['max_total_requests', 'max_ip_count', 'max_subnet_time_span', 'max_subnet_req_per_min_window']:
+                if key not in strategy_context:
+                    strategy_context[key] = 0 if 'count' in key or 'requests' in key else 0.0
 
 
         # --- Apply strategy and build results list ---
         results = []
         if self.subnet_metrics_df is None or self.subnet_metrics_df.empty:
-             logger.warning("Subnet metrics DataFrame is empty. Skipping strategy application.")
+            logger.warning("Subnet metrics DataFrame is empty. Skipping strategy application.")
         else:
-             logger.info(f"Applying '{strategy_name}' strategy to {len(self.subnet_metrics_df)} subnets...")
-             start_time = time.time()
-             for subnet_obj, metrics_row in self.subnet_metrics_df.iterrows():
-                 threat_data = metrics_row.to_dict()
-                 threat_data['id'] = subnet_obj # Ensure subnet_id object is in the dict
+            logger.info(f"Applying '{strategy_name}' strategy to {len(self.subnet_metrics_df)} subnets...")
+            start_time = time.time()
+            for subnet_obj, metrics_row in self.subnet_metrics_df.iterrows():
+                threat_data = metrics_row.to_dict()
+                threat_data['id'] = subnet_obj
 
-                 # Calculate score and block decision using the strategy
-                 score, should_block, reason = strategy_instance.calculate_threat_score_and_block(
-                     threat_data=threat_data,
-                     config=config, # Pass command line args directly
-                     effective_min_requests=effective_min_requests,
-                     shared_context_params=strategy_context # MODIFIED: Pass the enriched context
-                 )
+                # Calculate score and block decision using the strategy
+                score, should_block, reason = strategy_instance.calculate_threat_score_and_block(
+                    threat_data=threat_data,
+                    config=config,
+                    effective_min_requests=effective_min_requests,
+                    shared_context_params=strategy_context
+                )
 
-                 # Build the final dictionary for this threat
-                 threat_result = {
-                     'type': 'subnet',
-                     'id': subnet_obj, # Keep as object for now, convert during export
-                     'total_requests': int(threat_data.get('total_requests', 0)),
-                     'ip_count': int(threat_data.get('ip_count', 0)),
-                     'subnet_time_span': round(threat_data.get('subnet_time_span', 0), 2),
-                     'subnet_req_per_min_window': round(threat_data.get('subnet_req_per_min_window', 0), 2),
-                     'subnet_req_per_hour': round(threat_data.get('subnet_req_per_hour', 0), 2), # ADDED: Include subnet_req_per_hour
-                     'details': top_ips_details.get(subnet_obj, []), # Get pre-calculated details
-                     'strategy_score': score, # Use calculated score
-                     'should_block': should_block, # Use calculated decision
-                     'block_reason': reason # Use calculated reason
-                 }
-                 results.append(threat_result)
-             logger.info(f"Strategy application took {time.time() - start_time:.2f} seconds.")
+                # Build simplified result
+                threat_result = {
+                    'type': 'subnet',
+                    'id': subnet_obj,
+                    'total_requests': int(threat_data.get('total_requests', 0)),
+                    'ip_count': int(threat_data.get('ip_count', 0)),
+                    'subnet_time_span': round(threat_data.get('subnet_time_span', 0), 2),
+                    'subnet_req_per_min_window': round(threat_data.get('subnet_req_per_min_window', 0), 2),
+                    'strategy_score': score,
+                    'should_block': should_block,
+                    'block_reason': reason
+                }
+                results.append(threat_result)
+            logger.info(f"Strategy application took {time.time() - start_time:.2f} seconds.")
 
         # --- Sort Results ---
         results.sort(key=lambda x: x.get('strategy_score', 0), reverse=True)
 
         # --- Store final list ---
-        self.unified_threats = results # Store the results list
+        self.unified_threats = results
 
         logger.info(f"Threat identification complete. Found {len(self.unified_threats)} subnet threats.")
         return self.unified_threats
 
     def export_results(self, format_type, output_file, config=None, threats=None):
-        """
-        Exports the identified threats to a specified format.
-        Accepts the primary threats list. Handles data type serialization.
-        """
+        """Exports the identified threats to a specified format (simplified)."""
         if threats is None:
-             # Use self.unified_threats if available
-             threats = self.unified_threats
-             if not threats:
-                 logger.error("No threat data available (checked input and self.unified_threats). Cannot export.")
-                 return False
+            threats = self.unified_threats
+            if not threats:
+                logger.error("No threat data available. Cannot export.")
+                return False
 
-        logger.info(f"Preparing to export {len(threats)} threats to {output_file} in {format_type} format.")
+        logger.info(f"Exporting {len(threats)} threats to {output_file} in {format_type} format.")
 
-        # Convert threat data for export (handle ipaddress, datetime, numpy types)
+        # Convert threat data for export
         export_data = []
         for threat in threats:
-             # Create a copy to avoid modifying the original dict
-             threat_copy = threat.copy()
-             # Convert specific fields
-             for key, value in threat_copy.items():
-                 if isinstance(value, (ipaddress.IPv4Network, ipaddress.IPv6Network, ipaddress.IPv4Address, ipaddress.IPv6Address)):
-                     threat_copy[key] = str(value)
-                 elif isinstance(value, (datetime, pd.Timestamp)):
-                     # Ensure timezone info is handled correctly if present
-                     if value.tzinfo:
-                         threat_copy[key] = value.isoformat()
-                     else:
-                         # If somehow naive, assume UTC or local? Let's assume UTC for consistency.
-                         threat_copy[key] = value.replace(tzinfo=timezone.utc).isoformat()
-                 elif isinstance(value, (np.integer, np.int64)):
-                     threat_copy[key] = int(value)
-                 elif isinstance(value, (np.floating, np.float64)):
-                     threat_copy[key] = float(value)
-                 elif isinstance(value, np.bool_):
-                      threat_copy[key] = bool(value)
-                 # Ensure details list is serializable (IPs should be strings already, but double-check)
-                 elif key == 'details' and isinstance(value, list):
-                      # Assuming details were already prepared with string IPs
-                      threat_copy[key] = value # Keep as is if already serializable
-                      # If details might contain non-serializable types, add conversion here:
-                      # threat_copy[key] = [
-                      #     {k: str(v) if isinstance(v, ...) else v for k, v in detail.items()}
-                      #     for detail in value
-                      # ]
-
-             export_data.append(threat_copy)
-
+            threat_copy = threat.copy()
+            # Convert ipaddress objects to strings
+            for key, value in threat_copy.items():
+                if isinstance(value, (ipaddress.IPv4Network, ipaddress.IPv6Network, 
+                                     ipaddress.IPv4Address, ipaddress.IPv6Address)):
+                    threat_copy[key] = str(value)
+                elif isinstance(value, (np.integer, np.int64)):
+                    threat_copy[key] = int(value)
+                elif isinstance(value, (np.floating, np.float64)):
+                    threat_copy[key] = float(value)
+                elif isinstance(value, np.bool_):
+                    threat_copy[key] = bool(value)
+            export_data.append(threat_copy)
 
         try:
             df_export = pd.DataFrame(export_data)
-            # Reorder columns for clarity - REMOVED metrics
+            # Simplified column ordering
             cols_order = [
                 'id', 'strategy_score', 'should_block', 'block_reason',
                 'total_requests', 'ip_count',
-                'subnet_req_per_min_window',
-                'subnet_req_per_hour', # ADDED: Include subnet_req_per_hour
-                'subnet_time_span',
-                'details'
+                'subnet_req_per_min_window', 'subnet_time_span'
             ]
-            # Get columns present in the DataFrame, maintaining the desired order
-            cols_present = [col for col in df_export.columns if col in cols_order]
-            # Add any remaining columns not in the desired order list
+            cols_present = [col for col in cols_order if col in df_export.columns]
             remaining_cols = [col for col in df_export.columns if col not in cols_present]
             df_export = df_export[cols_present + remaining_cols]
 
-
             if format_type == 'csv':
-                # Handle list in 'details' column for CSV export by converting to JSON string
-                if 'details' in df_export.columns:
-                    df_export['details'] = df_export['details'].apply(lambda x: json.dumps(x) if isinstance(x, list) else x)
-                df_export.to_csv(output_file, index=False, quoting=csv.QUOTE_NONNUMERIC) # Ensure proper quoting
+                df_export.to_csv(output_file, index=False, quoting=csv.QUOTE_NONNUMERIC)
             elif format_type == 'json':
-                # Use records orientation for a list of JSON objects
-                df_export.to_json(output_file, orient='records', indent=4, date_format='iso') # Ensure ISO date format
+                df_export.to_json(output_file, orient='records', indent=4)
             elif format_type == 'text':
-                # Basic text output, similar to console but to file
                 with open(output_file, 'w') as f:
-                    # Use pandas to_string with adjusted width for better readability
                     f.write(df_export.to_string(index=False, max_colwidth=100))
             else:
                 logger.error(f"Unsupported export format: {format_type}")
                 return False
             return True
         except Exception as e:
-            logger.error(f"Failed to export results to {output_file}: {e}", exc_info=True)
+            logger.error(f"Failed to export results: {e}", exc_info=True)
             return False
 
     def get_threats_df(self):
