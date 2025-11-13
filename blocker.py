@@ -878,18 +878,6 @@ def main():
 
                     print(f"\nSubnet: {subnet_id_str}{achieved_max_str}")
                     print(f"  Metrics: {metrics_summary}")
-                                     num_printed_details += 1
-                                 else:
-                                     print(f"     - Invalid detail format: {ip_detail}")
-                            else:
-                                break
-                        
-                        total_ip_count_for_subnet = threat.get('ip_count', 0)
-                        if total_ip_count_for_subnet > num_printed_details:
-                            remaining_ips = total_ip_count_for_subnet - num_printed_details
-                            print(f"     ... and {remaining_ips} more IPs in this subnet.")
-                    # else:
-                    #      print("  -> No IP details available.") # Redundant if details is empty list
 
     # --- End Report Details for Subnets Achieving Maximums ---
 
