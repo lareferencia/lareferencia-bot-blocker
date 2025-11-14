@@ -84,23 +84,16 @@ class Strategy:
         base_min_sustained_percent = getattr(config, 'min_sustained_percent', DEFAULT_MIN_SUSTAINED_PERCENT)
         max_cpu_load_threshold = getattr(config, 'max_cpu_load_threshold', DEFAULT_MAX_CPU_LOAD_THRESHOLD)
         
-        # Get current CPU load (15-minute average)
+        # Get current CPU utilization percentage (0-100%)
+        # Use CPU percentage instead of load average for more intuitive values
         current_cpu_load = 0.0
         try:
-            current_cpu_load = psutil.getloadavg()[2]
+            # Get CPU utilization over a short interval
+            # interval=1 means measure over 1 second for more accurate reading
+            current_cpu_load = psutil.cpu_percent(interval=1)
+            cpu_load_percent = current_cpu_load
         except (AttributeError, OSError) as e:
-            logger.warning(f"Could not get system load average for dynamic threshold calculation: {e}")
-            current_cpu_load = 0.0
-        
-        # Convert CPU load to percentage (normalize by number of CPU cores)
-        try:
-            cpu_count = psutil.cpu_count()
-            if cpu_count and cpu_count > 0:
-                cpu_load_percent = (current_cpu_load / cpu_count) * 100.0
-            else:
-                cpu_load_percent = 0.0
-        except Exception as e:
-            logger.warning(f"Could not calculate CPU load percentage: {e}")
+            logger.warning(f"Could not get CPU utilization percentage for dynamic threshold calculation: {e}")
             cpu_load_percent = 0.0
         
         # Apply CPU-based dynamic threshold adjustment
@@ -136,9 +129,9 @@ class Strategy:
             min_rpm_threshold = base_min_rpm_threshold * rpm_factor
             min_sustained_percent = base_min_sustained_percent * sustained_factor
             
-            logger.info(f"CPU load {cpu_load_percent:.1f}% > {max_cpu_load_threshold:.1f}%: "
-                       f"Applying aggressive thresholds (RPM factor={rpm_factor:.2f}, Sustained factor={sustained_factor:.2f}): "
-                       f"RPM={min_rpm_threshold:.2f}, Sustained={min_sustained_percent:.1f}%")
+            logger.debug(f"CPU load {cpu_load_percent:.1f}% > {max_cpu_load_threshold:.1f}%: "
+                        f"Applying aggressive thresholds (RPM factor={rpm_factor:.2f}, Sustained factor={sustained_factor:.2f}): "
+                        f"RPM={min_rpm_threshold:.2f}, Sustained={min_sustained_percent:.1f}%")
         else:
             logger.debug(f"CPU load {cpu_load_percent:.1f}% <= {max_cpu_load_threshold:.1f}%: "
                         f"Using base thresholds: RPM={min_rpm_threshold:.1f}, Sustained={min_sustained_percent:.1f}%")
