@@ -31,8 +31,8 @@ The unified strategy evaluates two conditions for each subnet with CPU-based dyn
 - **High load (80-100% CPU):** Progressively reduces thresholds:
   - At 80%: 5 req/min (50%), 12.5% time window
   - At 90%: 2.5 req/min (25%), 6.25% time window
-  - At 100%: 0 req/min (0%), 0% time window
-  - Linear interpolation between 80-100%
+  - At 100%: 2.5 req/min (fixed), 3% time window (minimum)
+  - Linear interpolation between threshold points
 
 **Blocking occurs when conditions 1 AND 2 are met** (score >= 2.0). All subnets exceeding thresholds are blocked, not just a limited number.
 
@@ -153,8 +153,8 @@ System CPU load (15-minute average) is used to dynamically adjust blocking thres
 - **>80% CPU:** Aggressive mode - progressively reduce thresholds
   - 80%: 5 req/min (50%), 12.5% time window
   - 90%: 2.5 req/min (25%), 6.25% time window
-  - 100%: 0 req/min (0%), 0% time window
-  - Linear interpolation between 80-100%
+  - 100%: 2.5 req/min (fixed), 3% time window (minimum)
+  - Linear interpolation between threshold points
 
 **Blocking decision:** Score >= 2.0 (conditions 1 AND 2 met)
 

@@ -9,8 +9,8 @@ CPU-Based Dynamic Thresholds:
 - Base defaults (CPU load <= 80%): 10 req/min, 25% time window
 - At 80% CPU: 5 req/min (50%), 12.5% time window (50%)
 - At 90% CPU: 2.5 req/min (25%), 6.25% time window (25%)
-- At 100% CPU: 0 req/min (0%), 0% time window (0%)
-- Linear interpolation between 80-100% CPU load
+- At 100% CPU: 2.5 req/min (fixed), 3% time window (minimum)
+- Linear interpolation between 80-100% CPU load for time window, RPM stays at 2.5 above 90%
 
 Blocks when RPM AND sustained activity conditions are met (score >= 2.0).
 """
@@ -65,8 +65,8 @@ class Strategy:
         - At CPU <= 80%: use default thresholds (10 req/min, 25% time window)
         - At CPU = 80%: reduce to 50% of defaults (5 req/min, 12.5%)
         - At CPU = 90%: reduce to 25% of defaults (2.5 req/min, 6.25%)
-        - At CPU = 100%: reduce to 0% (0 req/min, 0%)
-        - Linear interpolation between 80-100% CPU
+        - At CPU = 100%: RPM stays at 2.5 req/min, time window at 3% (12% of 25%)
+        - Linear interpolation for ranges
         
         Decides blocking if score >= 2.0 (conditions 1 AND 2 met).
         """
@@ -109,38 +109,35 @@ class Strategy:
         
         if cpu_load_percent > max_cpu_load_threshold:
             # Calculate reduction factor based on CPU load
-            # At 80%: factor = 1.0 (100% of base = no reduction yet, we apply 50% at the threshold)
-            # At 90%: factor = 0.5 (50% reduction from 80% value)
-            # At 100%: factor = 0.0 (100% reduction)
-            
-            # Actually, the requirement states:
+            # Requirements:
             # At 80% CPU: use 5 req/min (50% of default 10) and 12.5% (50% of 25%)
             # At 90% CPU: use 2.5 req/min (25% of default 10) and 6.25% (25% of 25%)
-            # At 100% CPU: use 0 req/min and 0%
+            # At 100% CPU: use 2.5 req/min (keep at 25%) and 3% time window (12% of 25%)
             
-            # So the factor at 80% should be 0.5, at 90% should be 0.25, at 100% should be 0.0
-            # Linear interpolation: factor = 1.0 - ((cpu_load_percent - 80) / (100 - 80))
-            # But that would give us factor = 0.0 at 100%, 0.5 at 90%, 1.0 at 80%
-            # We need: at 80% -> 0.5, at 90% -> 0.25, at 100% -> 0.0
-            # So: factor = 1.0 - ((cpu_load_percent - 80) / 40)
-            # At 80%: factor = 1.0 - 0 = 1.0, but we want 0.5
-            # Let me recalculate:
-            # At 80%: factor should be 0.5 (50% of base)
-            # At 90%: factor should be 0.25 (25% of base)
-            # At 100%: factor should be 0.0 (0% of base)
-            # This is: factor = 0.5 * (1 - (cpu_load_percent - 80) / 20)
-            # At 80%: factor = 0.5 * (1 - 0/20) = 0.5 ✓
-            # At 90%: factor = 0.5 * (1 - 10/20) = 0.5 * 0.5 = 0.25 ✓
-            # At 100%: factor = 0.5 * (1 - 20/20) = 0.5 * 0 = 0.0 ✓
+            # For RPM: reduce from 50% at 80% to 25% at 90%, then keep at 25% from 90% to 100%
+            if cpu_load_percent >= 90.0:
+                rpm_factor = 0.25  # Keep at 25% for 90-100%
+            else:
+                # Linear interpolation from 80% to 90%: 0.5 to 0.25
+                # factor = 0.5 - (cpu_load_percent - 80) * 0.025
+                rpm_factor = 0.5 - ((cpu_load_percent - max_cpu_load_threshold) / 10.0) * 0.25
             
-            reduction_factor = 0.5 * (1.0 - ((cpu_load_percent - max_cpu_load_threshold) / 20.0))
-            reduction_factor = max(0.0, min(0.5, reduction_factor))  # Clamp between 0.0 and 0.5
+            # For sustained percent: reduce from 50% at 80% to 25% at 90%, then to 12% at 100%
+            if cpu_load_percent >= 90.0:
+                # Linear interpolation from 90% to 100%: 25% to 12%
+                # At 90%: 0.25, at 100%: 0.12
+                # factor = 0.25 - (cpu_load_percent - 90) * 0.013
+                sustained_factor = 0.25 - ((cpu_load_percent - 90.0) / 10.0) * 0.13
+                sustained_factor = max(0.12, sustained_factor)  # Floor at 12% (3% of 25%)
+            else:
+                # Linear interpolation from 80% to 90%: 50% to 25%
+                sustained_factor = 0.5 - ((cpu_load_percent - max_cpu_load_threshold) / 10.0) * 0.25
             
-            min_rpm_threshold = base_min_rpm_threshold * reduction_factor
-            min_sustained_percent = base_min_sustained_percent * reduction_factor
+            min_rpm_threshold = base_min_rpm_threshold * rpm_factor
+            min_sustained_percent = base_min_sustained_percent * sustained_factor
             
             logger.info(f"CPU load {cpu_load_percent:.1f}% > {max_cpu_load_threshold:.1f}%: "
-                       f"Applying aggressive thresholds (factor={reduction_factor:.2f}): "
+                       f"Applying aggressive thresholds (RPM factor={rpm_factor:.2f}, Sustained factor={sustained_factor:.2f}): "
                        f"RPM={min_rpm_threshold:.2f}, Sustained={min_sustained_percent:.1f}%")
         else:
             logger.debug(f"CPU load {cpu_load_percent:.1f}% <= {max_cpu_load_threshold:.1f}%: "
