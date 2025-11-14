@@ -885,6 +885,27 @@ def main():
 
     # --- End Report Details for Subnets Achieving Maximums ---
 
+    # --- Report Parameters Used ---
+    # Always print parameter summary (even in silent mode for transparency)
+    print(f"\n=== PARAMETERS USED ===")
+    print(f"  Analysis Strategy: {strategy_name}")
+    print(f"  Time Window: {args.time_window}")
+    if analysis_duration_seconds > 0:
+        print(f"  Analysis Duration: {analysis_duration_seconds:.0f}s ({analysis_duration_seconds/60:.1f} min)")
+    print(f"  Base RPM Threshold: {args.min_rpm_threshold:.1f} req/min")
+    print(f"  Base Sustained Activity: {args.min_sustained_percent:.1f}%")
+    print(f"  CPU Load Threshold: {args.max_cpu_load_threshold:.1f}%")
+    if args.block:
+        print(f"  Blocking Enabled: Yes")
+        print(f"  Block Duration: {args.block_duration} min (default)")
+        print(f"  Escalation Threshold: {args.block_escalation_strikes} strikes")
+        print(f"  Escalated Duration: 1440 min (24 hours)")
+        print(f"  Dry Run: {'Yes' if args.dry_run else 'No'}")
+    else:
+        print(f"  Blocking Enabled: No")
+    print(f"  Log Level: {args.log_level}")
+    # --- End Report Parameters Used ---
+
 
 if __name__ == '__main__':
     main()
