@@ -16,7 +16,6 @@ Blocks when RPM AND sustained activity conditions are met (score >= 2.0).
 """
 
 import logging
-import psutil
 
 logger = logging.getLogger(__name__)
 
@@ -84,17 +83,9 @@ class Strategy:
         base_min_sustained_percent = getattr(config, 'min_sustained_percent', DEFAULT_MIN_SUSTAINED_PERCENT)
         max_cpu_load_threshold = getattr(config, 'max_cpu_load_threshold', DEFAULT_MAX_CPU_LOAD_THRESHOLD)
         
-        # Get current CPU utilization percentage (0-100%)
-        # Use CPU percentage instead of load average for more intuitive values
-        current_cpu_load = 0.0
-        try:
-            # Get CPU utilization over a short interval
-            # interval=1 means measure over 1 second for more accurate reading
-            current_cpu_load = psutil.cpu_percent(interval=1)
-            cpu_load_percent = current_cpu_load
-        except (AttributeError, OSError) as e:
-            logger.warning(f"Could not get CPU utilization percentage for dynamic threshold calculation: {e}")
-            cpu_load_percent = 0.0
+        # Get pre-calculated CPU load percentage from shared context
+        # This was calculated once at the beginning of the analysis in blocker.py
+        cpu_load_percent = shared_context_params.get('cpu_load_percent', 0.0)
         
         # Apply CPU-based dynamic threshold adjustment
         min_rpm_threshold = base_min_rpm_threshold

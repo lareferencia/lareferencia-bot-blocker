@@ -426,8 +426,9 @@ def main():
     effective_min_requests = 100
     logger.info(f"Using fixed effective_min_requests = {effective_min_requests} for unified strategy.")
 
-    # --- Get System Load Average ---
+    # --- Get System Load Average and CPU Load Percentage ---
     system_load_avg = -1.0 # Default if psutil fails or not available
+    cpu_load_percent = 0.0 # Default CPU load percentage
     try:
         # getloadavg() returns a tuple of (1min, 5min, 15min) load averages
         # We'll use the 1-minute average.
@@ -438,6 +439,16 @@ def main():
         logger.info(f"System load average (15-minutes): {system_load_avg:.2f}")
     except Exception as e:
         logger.warning(f"Could not retrieve system load average using psutil: {e}. Proceeding without it.")
+    
+    # Calculate CPU load percentage once for the entire analysis
+    try:
+        # Get CPU utilization over a short interval
+        # interval=1 means measure over 1 second for accurate reading
+        cpu_load_percent = psutil.cpu_percent(interval=1)
+        logger.info(f"CPU load percentage: {cpu_load_percent:.1f}%")
+    except (AttributeError, OSError) as e:
+        logger.warning(f"Could not get CPU utilization percentage: {e}. Proceeding with 0%.")
+        cpu_load_percent = 0.0
     
     # Always print system load average, format based on silent mode
     if system_load_avg != -1.0:
@@ -454,7 +465,7 @@ def main():
         timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         print(f"{timestamp_str} WARNING: Could not retrieve system load average.")
 
-    # --- End Get System Load Average ---
+    # --- End Get System Load Average and CPU Load Percentage ---
 
     # --- Define metrics_to_track_for_max and metric_names_map earlier for use later ---
     metrics_to_track_for_max = [
@@ -476,6 +487,7 @@ def main():
         'analysis_duration_seconds': analysis_duration_seconds,
         'total_overall_requests': total_overall_requests,
         'system_load_avg': system_load_avg,
+        'cpu_load_percent': cpu_load_percent,
         # Maximums like 'max_total_requests' will be calculated and added by ThreatAnalyzer
     }
     logger.debug(f"Initial shared context parameters for ThreatAnalyzer: {shared_context_params}")
