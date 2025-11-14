@@ -183,14 +183,14 @@ def main():
         help='Analyze logs from this date. Format: dd/mmm/yyyy:HH:MM:SS.'
     )
     parser.add_argument(
-        '--time-window', '-tw', required=False,
+        '--time-window', '-tw', required=False, default='hour',
         choices=['hour', '6hour', 'day', 'week'], # Add '6hour' choice
-        help='Analyze logs from the last hour, 6 hours, day, or week (overrides --start-date).'
+        help='Analyze logs from the last hour (default), 6 hours, day, or week (overrides --start-date).'
     )
     # --- Analysis Args ---
     parser.add_argument(
         '--top', '-n', type=int, default=10,
-        help='Number of top threats (/24 or /64) to display/consider for blocking.'
+        help='Number of threats to display in report (0 = show all). All threats exceeding thresholds are processed for blocking.'
     )
     parser.add_argument(
         '--whitelist', '-w',
@@ -203,16 +203,16 @@ def main():
     )
     # Unified strategy parameters
     parser.add_argument(
-        '--min-rpm-threshold', type=float, default=20.0,
+        '--min-rpm-threshold', type=float, default=10.0,
         help='Minimum requests per minute threshold for blocking.'
     )
     parser.add_argument(
-        '--min-sustained-percent', type=float, default=50.0,
+        '--min-sustained-percent', type=float, default=25.0,
         help='Minimum percentage of analysis window duration a subnet must be active for blocking.'
     )
     parser.add_argument(
-        '--max-cpu-load-threshold', type=float, default=5.0,
-        help='Maximum CPU load threshold (15-minute average) for blocking consideration.'
+        '--max-cpu-load-threshold', type=float, default=80.0,
+        help='CPU load percentage threshold for aggressive mode (80-100%% triggers dynamic threshold reduction).'
     )
     parser.add_argument(
         '--block-duration', type=int, default=60,
@@ -601,10 +601,10 @@ def main():
                         print(f" -> {action} {target_type}: {target_to_block_obj}.")
 
 
-        # 2. Process individual /24 or /64 Blocks (Top N from the *original* sorted list)
-        logger.info(f"Processing top {args.top} individual threat blocks (/24 or /64) based on strategy '{strategy_name}'...")
-        top_threats_to_consider = threats[:args.top] # Use the original list for blocking logic
-        for threat in top_threats_to_consider:
+        # 2. Process individual /24 or /64 Blocks (ALL threats that should be blocked)
+        blockable_threats = [t for t in threats if t.get('should_block')]
+        logger.info(f"Processing {len(blockable_threats)} individual threat blocks (/24 or /64) that exceed thresholds based on strategy '{strategy_name}'...")
+        for threat in blockable_threats:
             target_id_obj = threat['id'] # ipaddress object
 
             # Skip if this subnet was already covered by a /16 block (compare ipaddress objects)
@@ -748,16 +748,20 @@ def main():
     # --- Reporting Logic ---
     # Suppress reporting if silent mode is active
     if not args.silent:
-        top_count = min(args.top, len(threats))
-        print(f"\n=== TOP {top_count} INDIVIDUAL THREATS DETECTED (/24 or /64) (Sorted by Strategy Score: '{strategy_name}') ===")
+        # Show threats that should be blocked (exceeding thresholds), limited by --top for display
+        blockable_threats_for_display = [t for t in threats if t.get('should_block')]
+        display_count = min(args.top, len(blockable_threats_for_display)) if args.top else len(blockable_threats_for_display)
+        threats_to_display = blockable_threats_for_display[:display_count]
+        
+        print(f"\n=== THREATS EXCEEDING THRESHOLDS (Sorted by Strategy Score: '{strategy_name}') ===")
+        print(f"Total threats exceeding thresholds: {len(blockable_threats_for_display)}")
+        print(f"Displaying: {display_count} (use --top to limit display)")
         if args.block:
             action = "Blocked" if not args.dry_run else "[DRY RUN] Marked for blocking"
-            print(f"--- {action} based on strategy '{strategy_name}' criteria applied to top {args.top} threats ---")
+            print(f"--- {action} based on strategy '{strategy_name}' criteria applied to ALL {len(blockable_threats_for_display)} threats exceeding thresholds ---")
             print(f"--- NOTE: /16 supernets containing >= 2 blockable /24s may have been blocked instead ---")
 
-        top_threats_report = threats[:top_count] # Use original list for reporting top N
-
-        for i, threat in enumerate(top_threats_report, 1):
+        for i, threat in enumerate(threats_to_display, 1):
             target_id_obj = threat['id'] # ipaddress object
             target_id_str = str(target_id_obj)
             strat_score_str = f"Score: {threat.get('strategy_score', 0):.2f}"
@@ -777,13 +781,12 @@ def main():
             block_info = ""
             # Determine block status for reporting (using ipaddress object for check)
             is_blockable = threat.get('should_block', False)
-            is_top_n = i <= args.top
             covered_by_supernet = target_id_obj in blocked_subnets_via_supernet # Check using object
 
             if args.block:
                 if covered_by_supernet:
                     block_info = f" [COVERED BY /16 BLOCK]"
-                elif is_blockable and is_top_n:
+                elif is_blockable:
                     # Block status is already printed during the blocking phase, maybe add reason here?
                     block_reason_str = f" ({threat.get('block_reason', 'No reason')})" if threat.get('block_reason') else ""
                     # Indicate it was processed for blocking
@@ -798,10 +801,11 @@ def main():
     if not args.silent:
         print(f"\nAnalysis completed using strategy '{strategy_name}'.")
     # Always print the blocked count summary
+    blockable_count = len([t for t in threats if t.get('should_block')])
     print(f"{blocked_targets_count} unique targets (subnets/IPs or /16 supernets) {'blocked' if not args.dry_run else 'marked for blocking'} in this execution.")
     if not args.silent:
         # Use len(threats) which is the original list count
-        print(f"From a total of {len(threats)} detected individual threats.")
+        print(f"From a total of {len(threats)} analyzed subnets, {blockable_count} exceeded thresholds.")
         if args.block:
             print(f"Use '--clean-rules' periodically to remove expired rules.")
 

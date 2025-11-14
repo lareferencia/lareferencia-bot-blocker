@@ -21,13 +21,20 @@ This tool analyzes web server logs (e.g., Apache, Nginx) to identify potential b
 
 ## How It Works
 
-The unified strategy evaluates three conditions for each subnet:
+The unified strategy evaluates two conditions for each subnet with CPU-based dynamic adjustment:
 
-1. **RPM Threshold:** Request rate per minute (default: 20 req/min)
-2. **Sustained Activity:** Percentage of analysis window subnet was active (default: 50%)
-3. **CPU Load:** System 15-minute load average (default: 5.0)
+1. **RPM Threshold:** Request rate per minute (default: 10 req/min at normal CPU load)
+2. **Sustained Activity:** Percentage of analysis window subnet was active (default: 25% at normal CPU load)
 
-**Blocking occurs when conditions 1 AND 2 are met** (score >= 2.0). CPU load is monitored but not required for blocking.
+**CPU-Based Dynamic Thresholds:**
+- **Normal load (≤80% CPU):** Uses base thresholds (10 req/min, 25% time window)
+- **High load (80-100% CPU):** Progressively reduces thresholds:
+  - At 80%: 5 req/min (50%), 12.5% time window
+  - At 90%: 2.5 req/min (25%), 6.25% time window
+  - At 100%: 2.5 req/min (fixed), 3% time window (minimum)
+  - Linear interpolation between threshold points
+
+**Blocking occurs when conditions 1 AND 2 are met** (score >= 2.0). All subnets exceeding thresholds are blocked, not just a limited number.
 
 ## Installation
 
@@ -51,11 +58,14 @@ pip install -r requirements.txt  # Installs psutil
 ### Basic Analysis (No Blocking)
 
 ```bash
-# Analyze entire log, show top 10 threats
+# Analyze entire log, show top 10 threats exceeding thresholds
 python3 blocker.py -f /var/log/apache2/access.log
 
-# Analyze last hour, show top 20 threats
-python3 blocker.py -f /var/log/nginx/access.log --time-window hour --top 20
+# Analyze last hour (default), show top 20 threats
+python3 blocker.py -f /var/log/nginx/access.log --top 20
+
+# Analyze last 6 hours, show all threats exceeding thresholds
+python3 blocker.py -f /var/log/nginx/access.log --time-window 6hour --top 0
 ```
 
 ### Analysis and Blocking
@@ -63,18 +73,17 @@ python3 blocker.py -f /var/log/nginx/access.log --time-window hour --top 20
 **Requires `sudo` or appropriate permissions.**
 
 ```bash
-# Analyze last day, block top threats
+# Analyze last day, block all threats exceeding thresholds
 sudo python3 blocker.py -f /var/log/apache2/access.log \
     --time-window day \
     --block \
-    --min-rpm-threshold 20.0 \
-    --min-sustained-percent 50.0 \
-    --max-cpu-load-threshold 5.0 \
+    --min-rpm-threshold 10.0 \
+    --min-sustained-percent 25.0 \
+    --max-cpu-load-threshold 80.0 \
     --block-duration 120
 
-# Dry run to see what would be blocked
+# Dry run to see what would be blocked (last hour by default)
 sudo python3 blocker.py -f /var/log/nginx/access.log \
-    --time-window hour \
     --block \
     --dry-run
 ```
@@ -112,13 +121,13 @@ sudo python3 blocker.py --clean-rules --dry-run
 | :----------------------------- | :------------------------------------------------------------------------------------------------------- | :------------------------ |
 | `--file, -f`                   | Path to the log file to analyze (required unless `--clean-rules`).                                      | `None`                    |
 | `--start-date, -s`             | Analyze logs from this date/time (Format: `dd/Mmm/YYYY:HH:MM:SS`).                                      | `None`                    |
-| `--time-window, -tw`           | Analyze logs from the `hour`, `6hour`, `day`, or `week` (overrides `--start-date`).                     | `None`                    |
-| `--top, -n`                    | Number of top threats (/24 or /64) to display and consider for blocking.                                | `10`                      |
+| `--time-window, -tw`           | Analyze logs from the `hour` (default), `6hour`, `day`, or `week` (overrides `--start-date`).           | `hour`                    |
+| `--top, -n`                    | Number of threats to display in report (0 = show all). All threats exceeding thresholds are blocked.    | `10`                      |
 | `--whitelist, -w`              | Path to a file containing IPs/subnets to exclude (one per line, `#` for comments).                      | `None`                    |
 | `--block`                      | Enable blocking of threats using UFW. Requires appropriate permissions.                                 | `False`                   |
-| `--min-rpm-threshold`          | Minimum requests per minute threshold for blocking.                                                     | `20.0`                    |
-| `--min-sustained-percent`      | Minimum percentage of analysis window duration a subnet must be active for blocking.                    | `50.0`                    |
-| `--max-cpu-load-threshold`     | Maximum CPU load threshold (15-minute average) for blocking consideration.                              | `5.0`                     |
+| `--min-rpm-threshold`          | Minimum requests per minute threshold for blocking (base value, adjusted by CPU load).                  | `10.0`                    |
+| `--min-sustained-percent`      | Minimum percentage of analysis window duration a subnet must be active (base value, adjusted by CPU).   | `25.0`                    |
+| `--max-cpu-load-threshold`     | CPU load percentage threshold for aggressive mode (80-100% triggers dynamic reduction).                 | `80.0`                    |
 | `--block-duration`             | Default duration (minutes) for UFW blocks (used if strike count < escalation threshold).               | `60`                      |
 | `--block-escalation-strikes`   | Number of strikes within history window required to trigger escalated block duration (1440 min).       | `4`                       |
 | `--strike-file`                | Path to the JSON file for storing strike history.                                                       | `strike_history.json`     |
@@ -135,13 +144,21 @@ sudo python3 blocker.py --clean-rules --dry-run
 
 The simplified strategy evaluates:
 
-1. **RPM >= min_rpm_threshold** - Sustained request rate check
-2. **Sustained activity >= min_sustained_percent** - Activity persistence over analysis window
-3. **CPU load <= max_cpu_load_threshold** - System resource impact (informational)
+1. **RPM >= min_rpm_threshold** - Sustained request rate check (base: 10 req/min)
+2. **Sustained activity >= min_sustained_percent** - Activity persistence over analysis window (base: 25%)
+
+**CPU-Based Dynamic Thresholds:**
+System CPU load (15-minute average) is used to dynamically adjust blocking thresholds:
+- **≤80% CPU:** Normal mode - use base thresholds (10 req/min, 25%)
+- **>80% CPU:** Aggressive mode - progressively reduce thresholds
+  - 80%: 5 req/min (50%), 12.5% time window
+  - 90%: 2.5 req/min (25%), 6.25% time window
+  - 100%: 2.5 req/min (fixed), 3% time window (minimum)
+  - Linear interpolation between threshold points
 
 **Blocking decision:** Score >= 2.0 (conditions 1 AND 2 met)
 
-This replaces the previous multi-strategy system with a single, focused evaluation method.
+**All subnets exceeding thresholds are blocked**, not just a limited number. The `--top` parameter only controls how many are displayed in reports.
 
 ## Strike System
 
@@ -158,8 +175,8 @@ For periodic analysis and blocking, use `cron`. Ensure you use absolute paths.
 # Open crontab editor (requires sudo for UFW access)
 sudo crontab -e
 
-# Analyze last hour every hour and block threats
-0 * * * * /path/to/venv/bin/python3 /path/to/blocker.py -f /var/log/apache2/access.log --time-window hour --block --whitelist /etc/bot-blocker/whitelist.txt --strike-file /var/log/bot-blocker/strikes.json --silent >> /var/log/bot-blocker-cron.log 2>&1
+# Analyze last hour every hour and block all threats exceeding thresholds (default time window is now 1 hour)
+0 * * * * /path/to/venv/bin/python3 /path/to/blocker.py -f /var/log/apache2/access.log --block --whitelist /etc/bot-blocker/whitelist.txt --strike-file /var/log/bot-blocker/strikes.json --silent >> /var/log/bot-blocker-cron.log 2>&1
 
 # Clean up expired rules every 30 minutes
 */30 * * * * /path/to/venv/bin/python3 /path/to/blocker.py --clean-rules >> /var/log/bot-blocker-clean.log 2>&1
