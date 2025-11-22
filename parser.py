@@ -68,26 +68,25 @@ def parse_datetime_to_utc(dt_str):
             logger.warning(f"Skipping line due to malformed date: {dt_str}")
             return None
 
-def load_log_into_dataframe(log_file, start_date_utc=None, whitelist=None):
+def stream_log_entries(log_file, start_date_utc=None, whitelist=None):
     """
     Reads a log file, parses relevant fields, filters by date and whitelist,
-    and returns a list of log entries.
+    and yields log entries one by one.
 
     Args:
         log_file (str): Path to the log file.
         start_date_utc (datetime, optional): Aware UTC datetime. Only entries >= this date are kept.
         whitelist (list, optional): List of IPs/subnets to exclude.
 
-    Returns:
-        list: List of dictionaries with keys ['ip', 'timestamp'] or None if error.
+    Yields:
+        dict: Dictionary with keys ['ip', 'timestamp'] or None if error.
               'timestamp' values are timezone-aware UTC datetime objects.
-              Returns empty list if no valid entries found.
     """
-    parsed_data = []
     total_lines = 0
     skipped_date = 0
     skipped_whitelist = 0
     skipped_parsing = 0
+    yielded_count = 0
 
     log_source = None
     reading_mode = ""
@@ -143,33 +142,29 @@ def load_log_into_dataframe(log_file, start_date_utc=None, whitelist=None):
                     skipped_date += 1
                     continue
 
-            # Append relevant data
-            parsed_data.append({'ip': ip, 'timestamp': timestamp_utc})
+            # Yield relevant data
+            yield {'ip': ip, 'timestamp': timestamp_utc}
+            yielded_count += 1
 
             # Log progress periodically
             if total_lines % 50000 == 0:
                  logger.info(f"Processed {total_lines} lines...")
 
         logger.info(f"Finished reading log file. Total lines: {total_lines}")
-        logger.info(f"Entries added: {len(parsed_data)}, Skipped (Parsing): {skipped_parsing}, Skipped (Date): {skipped_date}, Skipped (Whitelist): {skipped_whitelist}")
-
-        if not parsed_data:
-            logger.warning("No valid log entries found after filtering.")
-            return [] # Return empty list
-
-        logger.info(f"Log data loaded with {len(parsed_data)} entries.")
-        return parsed_data
+        logger.info(f"Entries yielded: {yielded_count}, Skipped (Parsing): {skipped_parsing}, Skipped (Date): {skipped_date}, Skipped (Whitelist): {skipped_whitelist}")
 
     except FileNotFoundError:
         logger.error(f"File not found {log_file}")
-        return None
+        return
     except Exception as e:
         logger.error(f"Error processing log file {log_file}: {e}", exc_info=True)
-        return None
+        return
     finally:
         # Only close if it's a file object (not a generator) and it's open
         if log_source and hasattr(log_source, 'close') and callable(log_source.close) and not getattr(log_source, 'closed', True):
             log_source.close()
+
+
 
 
 # --- Functions kept from previous version ---

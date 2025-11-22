@@ -24,7 +24,7 @@ except ImportError:
 
 
 # Import own modules
-from parser import get_subnet, is_ip_in_whitelist, load_log_into_dataframe
+from parser import get_subnet, is_ip_in_whitelist, stream_log_entries
 # Import UFWManager and COMMENT_PREFIX directly if needed
 import ufw_handler
 from threat_analyzer import ThreatAnalyzer
@@ -356,27 +356,23 @@ def main():
 
     logger.info(f"Starting analysis of {args.file}...")
     total_overall_requests = 0 # Initialize
-    log_df = None # Initialize log_df
 
     try:
-        # --- Load and Parse Log Data using the function ---
-        logger.info(f"Loading and parsing log file: {args.file}")
-        # Call the function directly instead of using a class
-        log_df = load_log_into_dataframe(
+        # --- Load and Parse Log Data using the analyzer directly ---
+        # The analyzer now handles streaming and metric calculation internally
+        total_overall_requests = analyzer.analyze_log_file(
             log_file=args.file,
-            start_date_utc=start_date_utc,
-            whitelist=analyzer.whitelist # Pass the loaded whitelist from analyzer
+            start_date_utc=start_date_utc
         )
 
-        if log_df is None or not log_df:
-             logger.error("Failed to load or parse log data, or data is empty. Exiting.")
-             sys.exit(1) # Exit if log loading failed
+        if total_overall_requests == -1:
+             logger.error("Failed to analyze log data. Exiting.")
+             sys.exit(1)
+        
+        if total_overall_requests == 0:
+             logger.warning("No log entries found or all filtered out. Exiting.")
+             sys.exit(0)
 
-        # Assign the loaded data to the analyzer instance
-        analyzer.log_data = log_df
-        logger.info(f"Successfully loaded {len(log_df)} log entries for analyzer.")
-
-        total_overall_requests = len(log_df)
         logger.info(f"Total requests in analysis window: {total_overall_requests}")
 
         # --- Dump data if requested ---
@@ -395,26 +391,49 @@ def main():
                     dump_filename = f"log_dump_{timestamp_str}_{period_str}.parquet"
                     dump_filepath = os.path.join(script_dir, dump_filename)
 
-                    logger.info(f"Dumping loaded log data ({len(log_df)} entries) to Parquet file: {dump_filepath}")
+                    logger.info(f"Dumping log data to Parquet file: {dump_filepath}")
+                    logger.info("Re-reading log file for dump (streaming mode active)...")
                     
-                    # Convert log data to PyArrow table for parquet export
-                    # Extract timestamps and IPs
-                    timestamps = [entry['timestamp'] for entry in log_df]
-                    ips = [entry['ip'] for entry in log_df]
+                    # Re-stream for dumping to avoid holding data in memory during analysis
+                    # We need to import stream_log_entries locally or ensure it's imported
+                    from parser import stream_log_entries
                     
-                    # Create PyArrow table
-                    table = pa_lib.table({
-                        'timestamp': timestamps,
-                        'ip': ips
-                    })
+                    dump_stream = stream_log_entries(args.file, start_date_utc, analyzer.whitelist)
                     
-                    # Write to parquet
-                    pq.write_table(table, dump_filepath)
+                    # Collect data for parquet (this WILL use memory, but only if dump is requested)
+                    # For very large files, even this might be risky, but it's an explicit user request.
+                    # A better approach for huge files would be writing in batches, but pyarrow table creation usually needs arrays.
+                    # We'll collect lists.
+                    timestamps = []
+                    ips = []
+                    
+                    count = 0
+                    for entry in dump_stream:
+                        timestamps.append(entry['timestamp'])
+                        ips.append(entry['ip'])
+                        count += 1
+                    
+                    if count > 0:
+                        # Create PyArrow table
+                        table = pa_lib.table({
+                            'timestamp': timestamps,
+                            'ip': ips
+                        })
+                        
+                        # Write to parquet
+                        pq.write_table(table, dump_filepath)
+                        logger.info(f"Successfully dumped {count} entries to {dump_filepath}")
+                    else:
+                        logger.warning("No entries found to dump.")
 
-                    logger.info(f"Successfully dumped data to {dump_filepath}")
                 except Exception as dump_err:
                     logger.error(f"Failed to dump data to Parquet file: {dump_err}", exc_info=True)
         # --- End Dump data ---
+
+
+    except Exception as e:
+        logger.error(f"Error during analysis execution: {e}", exc_info=True)
+        sys.exit(1)
 
 
     except Exception as e:
@@ -431,23 +450,25 @@ def main():
     cpu_load_percent = 0.0 # Default CPU load percentage
     try:
         # getloadavg() returns a tuple of (1min, 5min, 15min) load averages
-        # We'll use the 1-minute average.
-        # Normalize by number of CPU cores for a more comparable metric if desired,
-        # but raw load average is also common. For now, raw 1-min average.
         load_averages = psutil.getloadavg()
-        system_load_avg = load_averages[2] # 0: 1-min, 1: 5-min, 2: 15-min
-        logger.info(f"System load average (15-minutes): {system_load_avg:.2f}")
+        system_load_avg = load_averages[2] # 15-min avg for logging/reference
+        load_avg_1min = load_averages[0]   # 1-min avg for dynamic threshold calculation
+        
+        # Get CPU count to normalize load average to a percentage
+        cpu_count = psutil.cpu_count()
+        if cpu_count and cpu_count > 0:
+            # Calculate percentage: (Load Avg / CPU Count) * 100
+            # This represents the system load relative to capacity.
+            # It can exceed 100% if the system is overloaded.
+            cpu_load_percent = (load_avg_1min / cpu_count) * 100.0
+            logger.info(f"System Load Avg (1min): {load_avg_1min:.2f}, CPUs: {cpu_count}")
+            logger.info(f"CPU Load Percentage (Normalized Load Avg): {cpu_load_percent:.1f}%")
+        else:
+            logger.warning("Could not determine CPU count. Defaulting CPU load to 0%.")
+            cpu_load_percent = 0.0
+
     except Exception as e:
         logger.warning(f"Could not retrieve system load average using psutil: {e}. Proceeding without it.")
-    
-    # Calculate CPU load percentage once for the entire analysis
-    try:
-        # Get CPU utilization over a short interval
-        # interval=1 means measure over 1 second for accurate reading
-        cpu_load_percent = psutil.cpu_percent(interval=1)
-        logger.info(f"CPU load percentage: {cpu_load_percent:.1f}%")
-    except (AttributeError, OSError) as e:
-        logger.warning(f"Could not get CPU utilization percentage: {e}. Proceeding with 0%.")
         cpu_load_percent = 0.0
     
     # Always print system load average, format based on silent mode
@@ -457,9 +478,6 @@ def main():
             timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             print(f"{timestamp_str} INFO: {load_avg_message}")
         else:
-            # For non-silent mode, it's already logged by logger.info above.
-            # Optionally, could print here as well if consistent "always print" behavior is desired.
-            # For now, relying on the logger.info for non-silent.
             pass # logger.info already covers non-silent
     elif args.silent: # If psutil failed and in silent mode, print a message
         timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')

@@ -16,7 +16,7 @@ import time # Ensure time is imported
 
 # Import from parser
 from parser import (
-    load_log_into_dataframe, get_subnet, is_ip_in_whitelist
+    stream_log_entries, get_subnet, is_ip_in_whitelist
 )
 
 # Logger for this module
@@ -41,7 +41,7 @@ class ThreatAnalyzer:
                     self.whitelist.append(item)
 
         # Native data structures for analysis
-        self.log_data = None          # Raw log data (list of dicts with ip, timestamp)
+        # self.log_data removed in streaming refactor
         self.ip_metrics = None        # Metrics calculated per IP (dict)
         self.subnet_metrics = None    # Metrics aggregated per subnet (dict)
 
@@ -71,82 +71,77 @@ class ThreatAnalyzer:
 
     def analyze_log_file(self, log_file, start_date_utc=None):
         """
-        Loads log data into native Python structures, applying date and whitelist filters.
+        Streams log data, applying filters and calculating IP metrics on the fly.
+        Does NOT store raw log data in memory.
 
         Args:
             log_file (str): Path to the log file.
             start_date_utc (datetime, optional): Aware UTC datetime filter.
 
         Returns:
-            int: Number of entries loaded, or -1 on error.
+            int: Number of entries processed, or -1 on error.
         """
-        logger.info("Loading log data...")
-        self.log_data = load_log_into_dataframe(log_file, start_date_utc, self.whitelist)
+        logger.info("Streaming and analyzing log data...")
+        
+        # Initialize metrics storage
+        self.ip_metrics = {}
+        processed_count = 0
+        
+        try:
+            # Get the generator
+            log_stream = stream_log_entries(log_file, start_date_utc, self.whitelist)
+            
+            if log_stream is None:
+                logger.error("Failed to initialize log stream.")
+                return -1
 
-        if self.log_data is None:
-            logger.error("Failed to load log data.")
+            for entry in log_stream:
+                processed_count += 1
+                ip = entry['ip']
+                timestamp = entry['timestamp']
+                
+                # Calculate/Update IP metrics incrementally
+                if ip not in self.ip_metrics:
+                    self.ip_metrics[ip] = {
+                        'total_requests': 0,
+                        'first_seen': timestamp,
+                        'last_seen': timestamp,
+                        'subnet': get_subnet(ip)
+                    }
+                
+                metrics = self.ip_metrics[ip]
+                metrics['total_requests'] += 1
+                
+                # Update timestamps
+                if timestamp < metrics['first_seen']:
+                    metrics['first_seen'] = timestamp
+                if timestamp > metrics['last_seen']:
+                    metrics['last_seen'] = timestamp
+
+                # Log progress periodically
+                if processed_count % 50000 == 0:
+                     logger.info(f"Analyzed {processed_count} entries...")
+
+            # Finalize metrics (calculate time_span)
+            for ip, metrics in self.ip_metrics.items():
+                time_span = (metrics['last_seen'] - metrics['first_seen']).total_seconds()
+                metrics['time_span_seconds'] = max(0, time_span)
+
+            if processed_count == 0:
+                logger.warning("No valid log entries found after filtering.")
+                return 0
+
+            logger.info(f"Successfully analyzed {processed_count} log entries. Metrics calculated for {len(self.ip_metrics)} IPs.")
+            return processed_count
+
+        except Exception as e:
+            logger.error(f"Error during log analysis: {e}", exc_info=True)
             return -1
 
-        if not self.log_data:  # Empty list
-            logger.warning("Log data is empty after loading and initial filtering.")
-            return 0
-
-        logger.info(f"Successfully loaded {len(self.log_data)} log entries.")
-        
-        # Add subnet information to each log entry
-        logger.debug("Adding subnet information to log data...")
-        for entry in self.log_data:
-            entry['subnet'] = get_subnet(entry['ip'])
-        
-        # Remove entries where subnet couldn't be determined
-        self.log_data = [entry for entry in self.log_data if entry['subnet'] is not None]
-        logger.debug("Subnet information added.")
-
-        return len(self.log_data)
-
     def _calculate_ip_metrics(self, analysis_duration_seconds=None):
-        """Calculates simplified metrics per IP address using native Python data structures."""
-        if self.log_data is None or not self.log_data:
-            logger.warning("Log data is not loaded or empty. Cannot calculate IP metrics.")
-            return False
-
-        logger.info("Calculating metrics per IP...")
-
-        # Group log entries by IP
-        ip_groups = defaultdict(list)
-        for entry in self.log_data:
-            ip_groups[entry['ip']].append(entry['timestamp'])
-
-        # Calculate simplified metrics for each IP
-        self.ip_metrics = {}
-        for ip, timestamps in ip_groups.items():
-            # Sort timestamps for accurate calculations
-            timestamps.sort()
-            
-            total_requests = len(timestamps)
-            first_seen = timestamps[0]
-            last_seen = timestamps[-1]
-            time_span_seconds = (last_seen - first_seen).total_seconds()
-            time_span_seconds = max(0, time_span_seconds)
-
-            # Get subnet for this IP
-            subnet = get_subnet(ip)
-            
-            self.ip_metrics[ip] = {
-                'total_requests': total_requests,
-                'first_seen': first_seen,
-                'last_seen': last_seen,
-                'time_span_seconds': time_span_seconds,
-                'subnet': subnet
-            }
-
-        logger.info(f"Finished calculating metrics for {len(self.ip_metrics)} IPs.")
+        """Deprecated. Metrics are now calculated in analyze_log_file."""
+        logger.warning("_calculate_ip_metrics is deprecated and should not be called directly.")
         return True
-
-    def _calculate_subnet_rpm_metrics(self):
-        """Subnet total RPM calculation is no longer needed for current strategies."""
-        logger.debug("Subnet total RPM calculation skipped (metrics removed).")
-        return {}  # Return empty dict instead of DataFrame
 
     def _aggregate_subnet_metrics(self, analysis_duration_seconds=None):
         """Aggregates IP metrics by subnet using native Python data structures."""
@@ -202,38 +197,19 @@ class ThreatAnalyzer:
                          shared_context_params,
                          config):
         """
-        Orchestrates the calculation of IP metrics, aggregation by subnet,
+        Orchestrates the aggregation by subnet,
         strategy application, and formatting the final threat list.
-        Requires self.log_data to be set externally.
+        Assumes analyze_log_file has already populated self.ip_metrics.
         """
         # --- Extract necessary parameters from shared_context_params ---
         analysis_duration_seconds = shared_context_params.get('analysis_duration_seconds', 0)
 
-        # --- Ensure log data is available ---
-        if self.log_data is None or not self.log_data:
-             logger.error("log_data is not set or is empty. Cannot identify threats.")
-             return None # Return None to indicate failure
+        # --- Ensure IP metrics are available ---
+        if self.ip_metrics is None:
+             logger.error("IP metrics not calculated. Call analyze_log_file first.")
+             return None
 
-        # Subnet column should already be added in analyze_log_file, but verify
-        if any('subnet' not in entry for entry in self.log_data):
-            logger.info("Adding 'subnet' information to log_data...")
-            for entry in self.log_data:
-                if 'subnet' not in entry:
-                    entry['subnet'] = get_subnet(entry['ip'])
-            # Remove entries without subnet
-            initial_count = len(self.log_data)
-            self.log_data = [e for e in self.log_data if e.get('subnet') is not None]
-            dropped_count = initial_count - len(self.log_data)
-            if dropped_count > 0:
-                logger.warning(f"Dropped {dropped_count} entries due to missing subnet information.")
-
-        # --- Calculate Metrics ---
-        start_time = time.time()
-        if not self._calculate_ip_metrics(analysis_duration_seconds=analysis_duration_seconds):
-            logger.error("Failed during IP metrics calculation.")
-            return None
-        logger.info(f"IP metrics calculation took {time.time() - start_time:.2f} seconds.")
-
+        # --- Aggregate Subnet Metrics ---
         start_time = time.time()
         if not self._aggregate_subnet_metrics(analysis_duration_seconds=analysis_duration_seconds):
             logger.error("Failed during subnet metrics aggregation.")
