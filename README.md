@@ -8,9 +8,9 @@ This tool analyzes web server logs (e.g., Apache, Nginx) to identify potential b
 
 ## Features
 
--   ✅ **Log Analysis:** Parses common web server log formats.
--   ✅ **Lightweight Processing:** Uses native Python data structures for efficient metric calculation.
--   ✅ **Unified Strategy:** Simple evaluation based on request rate, sustained activity, and CPU load.
+-   ✅ **Log Analysis:** Parses common web server log formats using **streaming generators** for memory efficiency.
+-   ✅ **Lightweight Processing:** Uses native Python data structures and streaming to handle large log files with minimal RAM.
+-   ✅ **Unified Strategy:** Simple evaluation based on request rate, sustained activity, and **System Load Average**.
 -   ✅ **Threat Grouping:** Aggregates IP-level metrics by subnet (/24 for IPv4, /64 for IPv6).
 -   ✅ **Simplified Supernet Blocking:** Automatically blocks /16 supernet if it contains >= 2 blockable /24 subnets.
 -   ✅ **Automated Blocking:** Integrates with UFW to insert temporary `deny` rules with expiration time.
@@ -21,18 +21,20 @@ This tool analyzes web server logs (e.g., Apache, Nginx) to identify potential b
 
 ## How It Works
 
-The unified strategy evaluates two conditions for each subnet with CPU-based dynamic adjustment:
+The unified strategy evaluates two conditions for each subnet with **Load Average-based** dynamic adjustment:
 
-1. **RPM Threshold:** Request rate per minute (default: 10 req/min at normal CPU load)
-2. **Sustained Activity:** Percentage of analysis window subnet was active (default: 25% at normal CPU load)
+1. **RPM Threshold:** Request rate per minute (default: 10 req/min at normal system load)
+2. **Sustained Activity:** Percentage of analysis window subnet was active (default: 25% at normal system load)
 
-**CPU-Based Dynamic Thresholds:**
-- **Normal load (≤80% CPU):** Uses base thresholds (10 req/min, 25% time window)
-- **High load (80-100% CPU):** Progressively reduces thresholds:
+**System Load-Based Dynamic Thresholds:**
+- **Normal load (≤80% Normalized Load Avg):** Uses base thresholds (10 req/min, 25% time window)
+- **High load (80-100% Normalized Load Avg):** Progressively reduces thresholds:
   - At 80%: 5 req/min (50%), 12.5% time window
   - At 90%: 2.5 req/min (25%), 6.25% time window
   - At 100%: 2.5 req/min (fixed), 3% time window (minimum)
   - Linear interpolation between threshold points
+
+*Note: Load Average is normalized by the number of CPUs (Load Avg 1min / CPU Count * 100).*
 
 **Blocking occurs when conditions 1 AND 2 are met** (score >= 2.0). All subnets exceeding thresholds are blocked, not just a limited number.
 
@@ -50,7 +52,7 @@ python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # 3. Install dependencies
-pip install -r requirements.txt  # Installs psutil
+pip install -r requirements.txt  # Installs psutil, pyarrow
 ```
 
 ## Usage
@@ -147,10 +149,10 @@ The simplified strategy evaluates:
 1. **RPM >= min_rpm_threshold** - Sustained request rate check (base: 10 req/min)
 2. **Sustained activity >= min_sustained_percent** - Activity persistence over analysis window (base: 25%)
 
-**CPU-Based Dynamic Thresholds:**
-System CPU load (15-minute average) is used to dynamically adjust blocking thresholds:
-- **≤80% CPU:** Normal mode - use base thresholds (10 req/min, 25%)
-- **>80% CPU:** Aggressive mode - progressively reduce thresholds
+**System Load-Based Dynamic Thresholds:**
+System **Load Average (1-minute, normalized)** is used to dynamically adjust blocking thresholds:
+- **≤80% Load:** Normal mode - use base thresholds (10 req/min, 25%)
+- **>80% Load:** Aggressive mode - progressively reduce thresholds
   - 80%: 5 req/min (50%), 12.5% time window
   - 90%: 2.5 req/min (25%), 6.25% time window
   - 100%: 2.5 req/min (fixed), 3% time window (minimum)
