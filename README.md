@@ -10,7 +10,8 @@ This tool analyzes web server logs (e.g., Apache, Nginx) to identify potential b
 
 -   ✅ **Log Analysis:** Parses common web server log formats using **streaming generators** for memory efficiency.
 -   ✅ **Lightweight Processing:** Uses native Python data structures and streaming to handle large log files with minimal RAM.
--   ✅ **Unified Strategy:** Simple evaluation based on request rate, sustained activity, and **System Load Average**.
+-   ✅ **Unified Strategy:** Evaluation based on request rate, sustained activity, and **System Load Average** with **gradual scoring**.
+-   ✅ **Gradual Threat Scoring:** Ranks threats using bonus points for RPM intensity, request volume, and IP diversity.
 -   ✅ **Threat Grouping:** Aggregates IP-level metrics by subnet (/24 for IPv4, /64 for IPv6).
 -   ✅ **Simplified Supernet Blocking:** Automatically blocks /16 supernet if it contains >= 2 blockable /24 subnets.
 -   ✅ **Automated Blocking:** Integrates with UFW to insert temporary `deny` rules with expiration time.
@@ -52,7 +53,7 @@ python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # 3. Install dependencies
-pip install -r requirements.txt  # Installs psutil, pyarrow
+pip install -r requirements.txt  # Installs psutil
 ```
 
 ## Usage
@@ -133,18 +134,18 @@ sudo python3 blocker.py --clean-rules --dry-run
 | `--block-duration`             | Default duration (minutes) for UFW blocks (used if strike count < escalation threshold).               | `60`                      |
 | `--block-escalation-strikes`   | Number of strikes within history window required to trigger escalated block duration (1440 min).       | `4`                       |
 | `--strike-file`                | Path to the JSON file for storing strike history.                                                       | `strike_history.json`     |
+| `--strike-max-age-hours`       | Strike history entries older than this many hours are purged on load.                                   | `48`                      |
 | `--dry-run`                    | Show UFW commands that would be executed, but do not execute them.                                      | `False`                   |
 | `--output, -o`                 | File path to save the analysis results.                                                                 | `None`                    |
 | `--format`                     | Output format for the results file (`json`, `csv`, `text`).                                             | `text`                    |
 | `--log-file`                   | File path to save execution logs.                                                                       | `None`                    |
 | `--log-level`                  | Logging detail level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).                                 | `INFO`                    |
-| `--dump-data`                  | Dump raw log data to Parquet file (requires `pyarrow`).                                                 | `False`                   |
 | `--clean-rules`                | Run cleanup of expired UFW rules and exit. Requires permissions.                                        | `False`                   |
 | `--silent`                     | Suppress most console output (except block actions and final summary).                                  | `False`                   |
 
 ## Unified Strategy
 
-The simplified strategy evaluates:
+The strategy evaluates two base conditions:
 
 1. **RPM >= min_rpm_threshold** - Sustained request rate check (base: 10 req/min)
 2. **Sustained activity >= min_sustained_percent** - Activity persistence over analysis window (base: 25%)
@@ -158,14 +159,25 @@ System **Load Average (1-minute, normalized)** is used to dynamically adjust blo
   - 100%: 2.5 req/min (fixed), 3% time window (minimum)
   - Linear interpolation between threshold points
 
-**Blocking decision:** Score >= 2.0 (conditions 1 AND 2 met)
+**Blocking decision:** Both conditions 1 AND 2 must be met.
+
+### Gradual Scoring System
+
+Threats are ranked using a gradual score (0-4) for better prioritization:
+
+| Component | Range | Description |
+|-----------|-------|-------------|
+| Base score | 0-2 | +1 for each condition met (RPM, Sustained) |
+| Bonus RPM intensity | 0-1.0 | Higher bonus if RPM greatly exceeds threshold |
+| Bonus volume | 0-0.5 | Higher bonus for larger total request count |
+| Bonus IP diversity | 0-0.5 | Higher bonus if multiple IPs in same /24 (indicates distributed bot) |
 
 **All subnets exceeding thresholds are blocked**, not just a limited number. The `--top` parameter only controls how many are displayed in reports.
 
 ## Strike System
 
 -   **History Storage:** Maintains block events in JSON file specified by `--strike-file`
--   **48-Hour Window:** Automatically discards timestamps older than 48 hours
+-   **Configurable Window:** Automatically discards timestamps older than `--strike-max-age-hours` (default: 48)
 -   **Escalation:** If strike count >= `--block-escalation-strikes` (default 4), block duration escalates to 1440 minutes (24 hours)
 -   **Default Duration:** Otherwise uses `--block-duration` (default 60 minutes)
 

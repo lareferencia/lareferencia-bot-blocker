@@ -1,7 +1,7 @@
 """
 Unified Blocking Strategy
 
-This simplified strategy evaluates two conditions with CPU-based dynamic adjustment:
+Evaluates two base conditions with CPU-based dynamic adjustment:
 1. RPM (Requests per Minute) threshold - sustained rate check
 2. Sustained activity % over analysis window - persistence check
 
@@ -10,12 +10,18 @@ CPU-Based Dynamic Thresholds:
 - At 80% CPU: 5 req/min (50%), 12.5% time window (50%)
 - At 90% CPU: 2.5 req/min (25%), 6.25% time window (25%)
 - At 100% CPU: 2.5 req/min (fixed), 3% time window (minimum)
-- Linear interpolation between 80-100% CPU load for time window, RPM stays at 2.5 above 90%
 
-Blocks when RPM AND sustained activity conditions are met (score >= 2.0).
+Score Calculation (for ranking, max = 4.0):
+- Base score: 0-2 (conditions met)
+- Bonus RPM intensity: 0-1.0 (how much above threshold)
+- Bonus volume: 0-0.5 (total request count)
+- Bonus IP diversity: 0-0.5 (multiple IPs in /24 = likely botnet)
+
+Blocks when BOTH base conditions are met (RPM AND sustained).
 """
 
 import logging
+from strategies.base_strategy import BaseStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +35,7 @@ BLOCKING_SCORE_THRESHOLD = 2.0
 CPU_AGGRESSIVE_THRESHOLD = 80.0  # CPU % at which aggressive mode starts
 CPU_MAX_THRESHOLD = 100.0  # CPU % at maximum aggressiveness
 
-class Strategy:
+class Strategy(BaseStrategy):
     """
     Unified strategy evaluating:
     - Request rate per minute (RPM) - dynamically adjusted based on CPU load
@@ -53,7 +59,6 @@ class Strategy:
     def calculate_threat_score_and_block(self,
                                          threat_data,
                                          config,
-                                         effective_min_requests,
                                          shared_context_params):
         """
         Calculates score (0-2) based on meeting conditions:
@@ -160,19 +165,47 @@ class Strategy:
                 f"Sustained % check skipped (duration={analysis_duration_seconds})"
             )
 
-        # --- Final Block Decision and Score Calculation ---
-        score = float(conditions_met_count)
+        # --- Bonus Scores for Better Ranking ---
+        
+        # Bonus 1: RPM intensity (how much above threshold)
+        bonus_rpm = 0.0
+        if rpm_condition_met and min_rpm_threshold > 0:
+            rpm_ratio = current_rpm / min_rpm_threshold
+            if rpm_ratio > 1.0:
+                # Scale: 2x threshold = +0.5, 3x+ threshold = +1.0
+                bonus_rpm = min(1.0, (rpm_ratio - 1.0) * 0.5)
+        
+        # Bonus 2: Total request volume
+        bonus_volume = 0.0
+        total_requests = threat_data.get('total_requests', 0)
+        if total_requests >= 100:
+            # Scale: 100 req = 0.05, 500 req = 0.25, 1000+ req = 0.5
+            bonus_volume = min(0.5, total_requests / 1000 * 0.5)
+        
+        # Bonus 3: IP diversity (multiple IPs in same /24 = likely distributed bot)
+        bonus_ip_diversity = 0.0
+        ip_count = threat_data.get('ip_count', 1)
+        if ip_count >= 3:
+            # Scale: 3 IPs = 0.1, 5 IPs = 0.2, 10+ IPs = 0.5
+            bonus_ip_diversity = min(0.5, (ip_count - 1) / 10 * 0.5)
 
-        # Block if RPM AND sustained conditions are met (score >= 2.0)
+        # --- Final Score Calculation ---
+        # Base score (0-2) + bonuses (0-2) = max theoretical score of 4.0
+        base_score = float(conditions_met_count)
+        total_bonus = bonus_rpm + bonus_volume + bonus_ip_diversity
+        score = base_score + total_bonus
+
+        # --- Block Decision (unchanged: requires both base conditions) ---
         if rpm_condition_met and sustained_condition_met:
             should_block = True
             met_reasons = [r for r in block_decision_reasons if ">=" in r]
-            reason = f"Block: Score {score:.1f} >= {BLOCKING_SCORE_THRESHOLD:.1f}. Met ({', '.join(met_reasons)})"
+            bonus_info = f"Bonuses: RPM={bonus_rpm:.2f}, Vol={bonus_volume:.2f}, IPs={bonus_ip_diversity:.2f}"
+            reason = f"Block: Base {base_score:.0f} + Bonus {total_bonus:.2f} = Score {score:.2f}. Met ({', '.join(met_reasons)}). {bonus_info}"
         else:
             should_block = False
             failed_reasons = [r for r in block_decision_reasons if "<" in r and ">=" not in r]
             met_reasons = [r for r in block_decision_reasons if ">=" in r]
-            reason = f"No Block: Score {score:.1f}. "
+            reason = f"No Block: Score {score:.2f}. "
             if met_reasons:
                 reason += f"Met ({', '.join(met_reasons)}). "
             if failed_reasons:

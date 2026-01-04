@@ -22,6 +22,9 @@ from parser import (
 # Logger for this module
 logger = logging.getLogger('botstats.analyzer')
 
+# Default whitelist entries (localhost addresses)
+DEFAULT_WHITELIST = ['127.0.0.1', '::1']
+
 class ThreatAnalyzer:
     """
     Analyzes log data using native Python data structures to detect threats based on IP and subnet activity.
@@ -34,7 +37,7 @@ class ThreatAnalyzer:
         Args:
             whitelist (list): List of additional IPs or subnets that should never be blocked.
         """
-        self.whitelist = ['127.0.0.1', '::1']
+        self.whitelist = list(DEFAULT_WHITELIST)
         if whitelist:
             for item in whitelist:
                 if item not in self.whitelist:
@@ -138,10 +141,7 @@ class ThreatAnalyzer:
             logger.error(f"Error during log analysis: {e}", exc_info=True)
             return -1
 
-    def _calculate_ip_metrics(self, analysis_duration_seconds=None):
-        """Deprecated. Metrics are now calculated in analyze_log_file."""
-        logger.warning("_calculate_ip_metrics is deprecated and should not be called directly.")
-        return True
+
 
     def _aggregate_subnet_metrics(self, analysis_duration_seconds=None):
         """Aggregates IP metrics by subnet using native Python data structures."""
@@ -193,7 +193,6 @@ class ThreatAnalyzer:
 
     def identify_threats(self,
                          strategy_name,
-                         effective_min_requests,
                          shared_context_params,
                          config):
         """
@@ -276,7 +275,6 @@ class ThreatAnalyzer:
                  score, should_block, reason = strategy_instance.calculate_threat_score_and_block(
                      threat_data=threat_data,
                      config=config,
-                     effective_min_requests=effective_min_requests,
                      shared_context_params=strategy_context
                  )
 
@@ -390,9 +388,8 @@ class ThreatAnalyzer:
             logger.error(f"Failed to export results to {output_file}: {e}", exc_info=True)
             return False
 
-    def get_threats_df(self):
-        """Returns the identified threats as a dictionary indexed by subnet string.
-        Kept for backward compatibility but now returns a dict instead of DataFrame."""
+    def get_threats_dict(self):
+        """Returns the identified threats as a dictionary indexed by subnet string."""
         if not self.unified_threats:
             logger.warning("No threats identified or stored in unified_threats list.")
             return {}

@@ -146,10 +146,6 @@ def stream_log_entries(log_file, start_date_utc=None, whitelist=None):
             yield {'ip': ip, 'timestamp': timestamp_utc}
             yielded_count += 1
 
-            # Log progress periodically
-            if total_lines % 50000 == 0:
-                 logger.info(f"Processed {total_lines} lines...")
-
         logger.info(f"Finished reading log file. Total lines: {total_lines}")
         logger.info(f"Entries yielded: {yielded_count}, Skipped (Parsing): {skipped_parsing}, Skipped (Date): {skipped_date}, Skipped (Whitelist): {skipped_whitelist}")
 

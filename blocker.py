@@ -9,18 +9,12 @@ import sys
 import os
 import logging
 import ipaddress
-import importlib # For dynamic strategy loading
-from collections import defaultdict # For grouping /16s
-import time # Import time module
-import json # Import json module
-import psutil # Import psutil for system load average
-# ADD pyarrow import for parquet export, handle potential ImportError
-try:
-    import pyarrow
-    import pyarrow.parquet as pq
-    import pyarrow.lib as pa_lib
-except ImportError:
-    pyarrow = None
+import importlib
+from collections import defaultdict
+import time
+import json
+import psutil
+import fcntl  # For file locking (UNIX systems)
 
 
 # Import own modules
@@ -35,11 +29,17 @@ LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 # --- Helper Functions for Strike History ---
 
-STRIKE_HISTORY_MAX_AGE_HOURS = 48
+# Default value for strike history max age (can be overridden via CLI)
+DEFAULT_STRIKE_HISTORY_MAX_AGE_HOURS = 48
 
-def load_strike_history(filepath):
-    """Loads strike history from JSON, cleans old entries."""
-    logger = logging.getLogger('botstats.strike_history') # Get logger instance
+def load_strike_history(filepath, max_age_hours=DEFAULT_STRIKE_HISTORY_MAX_AGE_HOURS):
+    """Loads strike history from JSON, cleans old entries.
+    
+    Args:
+        filepath: Path to the strike history JSON file.
+        max_age_hours: Strike entries older than this are purged.
+    """
+    logger = logging.getLogger('botstats.strike_history')
     history = {}
     if not filepath or not os.path.exists(filepath):
         logger.info(f"Strike history file not found or not specified ('{filepath}'). Starting fresh.")
@@ -47,7 +47,11 @@ def load_strike_history(filepath):
 
     try:
         with open(filepath, 'r') as f:
-            history = json.load(f)
+            fcntl.flock(f, fcntl.LOCK_SH)  # Shared lock for reading
+            try:
+                history = json.load(f)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
         logger.info(f"Loaded strike history for {len(history)} targets from {filepath}.")
     except json.JSONDecodeError:
         logger.warning(f"Could not decode JSON from strike history file: {filepath}. Starting fresh.")
@@ -59,7 +63,7 @@ def load_strike_history(filepath):
     # Clean old timestamps
     cleaned_history = {}
     now_utc = datetime.now(timezone.utc)
-    cutoff_time = now_utc - timedelta(hours=STRIKE_HISTORY_MAX_AGE_HOURS)
+    cutoff_time = now_utc - timedelta(hours=max_age_hours)
     cleaned_count = 0
     kept_count = 0
 
@@ -80,32 +84,28 @@ def load_strike_history(filepath):
             cleaned_history[target_id] = valid_timestamps
 
     if cleaned_count > 0:
-        logger.info(f"Removed {cleaned_count} strike entries older than {STRIKE_HISTORY_MAX_AGE_HOURS} hours.")
+        logger.info(f"Removed {cleaned_count} strike entries older than {max_age_hours} hours.")
     logger.debug(f"Strike history loaded and cleaned. Kept {kept_count} recent strikes for {len(cleaned_history)} targets.")
     return cleaned_history
 
 def save_strike_history(filepath, history):
-    """Saves strike history to JSON safely."""
-    logger = logging.getLogger('botstats.strike_history') # Get logger instance
+    """Saves strike history to JSON safely with file locking."""
+    logger = logging.getLogger('botstats.strike_history')
     if not filepath:
         logger.warning("Strike history file path not specified. Cannot save history.")
         return False
-    temp_filepath = filepath + ".tmp"
+    
     try:
-        with open(temp_filepath, 'w') as f:
-            json.dump(history, f, indent=2) # Use indent for readability
-        # Atomically replace the old file with the new one
-        os.replace(temp_filepath, filepath)
+        with open(filepath, 'w') as f:
+            fcntl.flock(f, fcntl.LOCK_EX)  # Exclusive lock for writing
+            try:
+                json.dump(history, f, indent=2)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
         logger.info(f"Successfully saved strike history for {len(history)} targets to {filepath}.")
         return True
     except Exception as e:
         logger.error(f"Error saving strike history to {filepath}: {e}")
-        # Clean up temp file if it exists
-        if os.path.exists(temp_filepath):
-            try:
-                os.remove(temp_filepath)
-            except OSError as rm_err:
-                logger.error(f"Could not remove temporary strike file {temp_filepath}: {rm_err}")
         return False
 
 # --- End Helper Functions ---
@@ -227,6 +227,10 @@ def main():
         help='Path to the JSON file for storing strike history (for escalating block duration).'
     )
     parser.add_argument(
+        '--strike-max-age-hours', type=int, default=48,
+        help='Strike history entries older than this many hours are purged on load.'
+    )
+    parser.add_argument(
         '--dry-run', action='store_true',
         help='Show UFW commands without executing them.'
     )
@@ -245,10 +249,6 @@ def main():
     parser.add_argument(
         '--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='INFO',
         help='Log detail level.'
-    )
-    parser.add_argument(
-        '--dump-data', action='store_true',
-        help='Dump the raw log data used for analysis to a Parquet file in the script directory (requires pyarrow).'
     )
     # --- Utility Args ---
     parser.add_argument(
@@ -330,22 +330,8 @@ def main():
         logger.info("No time window or start date specified. Analyzing entire file. Dynamic timespan check in 'coordinated_sustained' will be skipped.")
 
 
-    # --- Load Strategy ---
-    strategy_name = 'unified'  # Use unified strategy
-    try:
-        strategy_module = importlib.import_module(f"strategies.{strategy_name}")
-        # Assumes each strategy module has a class named 'Strategy'
-        strategy_instance = strategy_module.Strategy()
-        logger.info(f"Using blocking strategy: {strategy_name}")
-        # Optional: Validate required config keys?
-        # required_keys = strategy_instance.get_required_config_keys()
-        # Check if args has all required_keys...
-    except ImportError:
-        logger.error(f"Could not load strategy module: strategies.{strategy_name}.py")
-        sys.exit(1)
-    except AttributeError:
-        logger.error(f"Strategy module strategies.{strategy_name}.py does not contain a 'Strategy' class.")
-        sys.exit(1)
+    # Strategy name used for analysis (loaded by ThreatAnalyzer internally)
+    strategy_name = 'unified'
 
 
     # --- Analysis ---
@@ -375,75 +361,11 @@ def main():
 
         logger.info(f"Total requests in analysis window: {total_overall_requests}")
 
-        # --- Dump data if requested ---
-        if args.dump_data:
-            if pyarrow is None:
-                logger.warning("--dump-data specified, but 'pyarrow' library is not installed. Skipping dump. Please install it (`pip install pyarrow`).")
-            else:
-                try:
-                    timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    period_str = "full_log" # Default if no time filter
-                    if args.time_window:
-                        period_str = args.time_window
-                    elif args.start_date:
-                        period_str = "custom_start"
-
-                    dump_filename = f"log_dump_{timestamp_str}_{period_str}.parquet"
-                    dump_filepath = os.path.join(script_dir, dump_filename)
-
-                    logger.info(f"Dumping log data to Parquet file: {dump_filepath}")
-                    logger.info("Re-reading log file for dump (streaming mode active)...")
-                    
-                    # Re-stream for dumping to avoid holding data in memory during analysis
-                    # We need to import stream_log_entries locally or ensure it's imported
-                    from parser import stream_log_entries
-                    
-                    dump_stream = stream_log_entries(args.file, start_date_utc, analyzer.whitelist)
-                    
-                    # Collect data for parquet (this WILL use memory, but only if dump is requested)
-                    # For very large files, even this might be risky, but it's an explicit user request.
-                    # A better approach for huge files would be writing in batches, but pyarrow table creation usually needs arrays.
-                    # We'll collect lists.
-                    timestamps = []
-                    ips = []
-                    
-                    count = 0
-                    for entry in dump_stream:
-                        timestamps.append(entry['timestamp'])
-                        ips.append(entry['ip'])
-                        count += 1
-                    
-                    if count > 0:
-                        # Create PyArrow table
-                        table = pa_lib.table({
-                            'timestamp': timestamps,
-                            'ip': ips
-                        })
-                        
-                        # Write to parquet
-                        pq.write_table(table, dump_filepath)
-                        logger.info(f"Successfully dumped {count} entries to {dump_filepath}")
-                    else:
-                        logger.warning("No entries found to dump.")
-
-                except Exception as dump_err:
-                    logger.error(f"Failed to dump data to Parquet file: {dump_err}", exc_info=True)
-        # --- End Dump data ---
-
 
     except Exception as e:
         logger.error(f"Error during analysis execution: {e}", exc_info=True)
         sys.exit(1)
 
-
-    except Exception as e:
-        logger.error(f"Error loading/parsing log file: {e}", exc_info=True)
-        sys.exit(1)
-
-    # --- Determine Effective Request Threshold ---
-    # For unified strategy, force to 100
-    effective_min_requests = 100
-    logger.info(f"Using fixed effective_min_requests = {effective_min_requests} for unified strategy.")
 
     # --- Get System Load Average and CPU Load Percentage ---
     system_load_avg = -1.0 # Default if psutil fails or not available
@@ -515,9 +437,8 @@ def main():
     # ThreatAnalyzer will use the initial shared_context_params, calculate detailed metrics,
     # then calculate maximums from those metrics, and pass an enriched context to the strategies.
     threats = analyzer.identify_threats(
-        strategy_name='unified',  # Use unified strategy
-        effective_min_requests=effective_min_requests,
-        shared_context_params=shared_context_params, # Pass the initial context
+        strategy_name='unified',
+        shared_context_params=shared_context_params,
         config=args
     )
 
@@ -530,7 +451,7 @@ def main():
         # threats is an empty list, proceed to reporting section which will handle it
 
     # --- Get threats dict for Reporting (after threats are identified) ---
-    threats_dict = analyzer.get_threats_df() # Returns dict indexed by string representation of subnet ID
+    threats_dict = analyzer.get_threats_dict()
 
     # --- Calculate Overall Maximums for FINAL REPORTING (using the final threats) ---
     max_metrics_data_for_reporting = {}
@@ -567,7 +488,7 @@ def main():
         ufw_manager_instance = ufw_handler.UFWManager(args.dry_run)
 
         # --- Load Strike History ---
-        strike_history = load_strike_history(args.strike_file)
+        strike_history = load_strike_history(args.strike_file, args.strike_max_age_hours)
         # --- End Load Strike History ---
 
         # High-rate IP blocking removed in simplified version

@@ -10,7 +10,6 @@ class BaseStrategy(ABC):
     def calculate_threat_score_and_block(self,
                                          threat_data,
                                          config,
-                                         effective_min_requests,
                                          shared_context_params):
         """
         Calculates a threat score and determines if the threat should be blocked.
@@ -21,7 +20,6 @@ class BaseStrategy(ABC):
                                 'subnet_avg_ip_rpm', 'subnet_max_ip_rpm', 'details' (list of top IP dicts), etc.
             config (argparse.Namespace): Parsed command-line arguments containing strategy-specific thresholds
                                          (e.g., config.block_danger_threshold).
-            effective_min_requests (int): The calculated minimum request threshold (absolute or relative).
             shared_context_params (dict): Dictionary containing shared parameters and overall maximums/context.
                                           Expected keys like 'analysis_duration_seconds', 'total_overall_requests',
                                           'system_load_avg', 'max_total_requests', 'max_ip_count', etc.
