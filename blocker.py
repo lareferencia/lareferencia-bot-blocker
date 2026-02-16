@@ -24,8 +24,8 @@ import ufw_handler
 from threat_analyzer import ThreatAnalyzer
 
 # Logging configuration
-LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
-LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+LOG_FORMAT = '%(asctime)s %(levelname)s %(name)s: %(message)s'
+LOG_DATE_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
 
 # --- Helper Functions for Strike History ---
 
@@ -121,17 +121,21 @@ def setup_logging(log_file=None, log_level=logging.INFO):
     """
     handlers = []
     
+    # UTC ISO timestamps for clearer operational correlation.
+    formatter = logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT)
+    formatter.converter = time.gmtime
+
     # Always add console handler
     console = logging.StreamHandler()
     console.setLevel(log_level)
-    console.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
+    console.setFormatter(formatter)
     handlers.append(console)
     
     # Add file handler if specified
     if (log_file):
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(log_level)
-        file_handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
+        file_handler.setFormatter(formatter)
         handlers.append(file_handler)
     
     # Configure root logger
@@ -141,6 +145,35 @@ def setup_logging(log_file=None, log_level=logging.INFO):
         datefmt=LOG_DATE_FORMAT,
         handlers=handlers
     )
+
+
+def utc_now_str():
+    """Returns current UTC timestamp in compact ISO format."""
+    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def compact_block_line(action, target_type, target, duration_minutes, strike_count,
+                       req=None, ips=None, rpm=None, span=None, mode_tag=None):
+    """Build a compact single-line block event message."""
+    parts = [
+        utc_now_str(),
+        action,
+        target_type,
+        str(target),
+        f"dur={duration_minutes}m",
+        f"strikes={strike_count}"
+    ]
+    if req is not None:
+        parts.append(f"req={int(req)}")
+    if ips is not None:
+        parts.append(f"ips={int(ips)}")
+    if rpm is not None:
+        parts.append(f"rpm={float(rpm):.2f}")
+    if span is not None:
+        parts.append(f"span={float(span):.0f}s")
+    if mode_tag:
+        parts.append(mode_tag)
+    return " ".join(parts)
 
 def calculate_start_date(time_window):
     """
@@ -500,13 +533,11 @@ def main():
     if system_load_avg != -1.0:
         load_avg_message = f"System load average (15-min): {system_load_avg:.2f}"
         if args.silent:
-            timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            print(f"{timestamp_str} INFO: {load_avg_message}")
+            print(f"{utc_now_str()} INFO: {load_avg_message}")
         else:
             pass # logger.info already covers non-silent
     elif args.silent: # If psutil failed and in silent mode, print a message
-        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        print(f"{timestamp_str} WARNING: Could not retrieve system load average.")
+        print(f"{utc_now_str()} WARNING: Could not retrieve system load average.")
 
     # --- End Get System Load Average and CPU Load Percentage ---
 
@@ -664,9 +695,10 @@ def main():
                 )
 
                 logger.info(
-                    "Processing block for %s: %s. Reason: %s. Duration: %dm %s",
-                    target_type, target_to_block_obj, reason, block_duration, duration_info
+                    "Processing block for %s: %s. Duration: %dm %s",
+                    target_type, target_to_block_obj, block_duration, duration_info
                 )
+                logger.debug("Block reason detail: %s", reason)
                 success = ufw_manager_instance.block_target(
                     subnet_or_ip_obj=target_to_block_obj,
                     block_duration_minutes=block_duration
@@ -675,11 +707,22 @@ def main():
                     distributed_supernets_blocked += 1
                     blocked_targets_count += 1
                     action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
-                    timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    compact_line = compact_block_line(
+                        action=action,
+                        target_type=target_type,
+                        target=target_to_block_obj,
+                        duration_minutes=block_duration,
+                        strike_count=strike_count,
+                        req=data.get('total_requests'),
+                        ips=data.get('total_ips'),
+                        rpm=data.get('total_rpm'),
+                        span=data.get('max_subnet_time_span'),
+                        mode_tag="distributed"
+                    )
                     if args.silent:
-                        print(f"{timestamp_str} {action} {target_type}: {target_to_block_obj} for {block_duration}m {duration_info}. Reason: {reason}.")
+                        print(compact_line)
                     else:
-                        print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}. Reason: {reason}.")
+                        print(f" -> {compact_line}")
 
                     if not args.dry_run:
                         now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -748,7 +791,8 @@ def main():
 
                 block_reason = threat.get('block_reason', 'Strategy threshold met') # Get reason
 
-                logger.info(f"Processing block for {target_type}: {target_to_block_obj}. Reason: {block_reason}. Duration: {block_duration}m {duration_info}")
+                logger.info(f"Processing block for {target_type}: {target_to_block_obj}. Duration: {block_duration}m {duration_info}")
+                logger.debug("Block reason detail: %s", block_reason)
                 success = ufw_manager_instance.block_target(
                     subnet_or_ip_obj=target_to_block_obj,
                     block_duration_minutes=block_duration # Use general duration for strategy blocks
@@ -756,48 +800,21 @@ def main():
                 if success:
                     blocked_targets_count += 1
                     action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
-                    timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-                    # --- Construct metrics summary string for block message ---
-                    try:
-                        # Helper functions for safe numeric retrieval and conversion
-                        def _safe_get_float(val, default=0.0):
-                            if val is None: return default
-                            if isinstance(val, (int, float)): return float(val)
-                            try: return float(val) # Attempt conversion if string or other
-                            except (ValueError, TypeError): return default
-
-                        def _safe_get_int(val, default=0):
-                            if val is None: return default
-                            if isinstance(val, (int, float)): return int(val) # Handles float to int conversion
-                            try: return int(float(val)) # Attempt conversion to float first, then int
-                            except (ValueError, TypeError): return default
-
-                        total_requests_val = _safe_get_int(threat.get('total_requests'))
-                        ip_count_val = _safe_get_int(threat.get('ip_count'))
-                        strategy_score_val = _safe_get_float(threat.get('strategy_score'))
-                        subnet_req_min_win_val = _safe_get_float(threat.get('subnet_req_per_min_window'))
-                        subnet_time_span_val = _safe_get_float(threat.get('subnet_time_span'))
-
-                        metrics_summary = (
-                            f"Metrics: "
-                            f"{total_requests_val:d} reqs, "
-                            f"{ip_count_val:d} IPs, "
-                            f"Score: {strategy_score_val:.1f}, "
-                            f"Req/Min(Win): {subnet_req_min_win_val:.1f}, "
-                            f"TimeSpan: {subnet_time_span_val:.0f}s"
-                        )
-                    except Exception as e:
-                         logger.warning(f"Could not format metrics for block message of {target_to_block_obj}: {e}", exc_info=True)
-                         metrics_summary = "Metrics: N/A"
-                    # --- End metrics summary string ---
-
-                    # ALWAYS PRINT block actions, format based on silent mode
+                    compact_line = compact_block_line(
+                        action=action,
+                        target_type=target_type,
+                        target=target_to_block_obj,
+                        duration_minutes=block_duration,
+                        strike_count=strike_count,
+                        req=threat.get('total_requests'),
+                        ips=threat.get('ip_count'),
+                        rpm=threat.get('subnet_req_per_min_window'),
+                        span=threat.get('subnet_time_span')
+                    )
                     if args.silent:
-                        print(f"{timestamp_str} {action} {target_type}: {target_to_block_obj} for {block_duration}m {duration_info}. Reason: {block_reason}. {metrics_summary}")
+                        print(compact_line)
                     else:
-                        # Append the metrics_summary and duration_info to the print statement for non-silent
-                        print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}. Reason: {block_reason}. {metrics_summary}")
+                        print(f" -> {compact_line}")
 
                     # --- Record Strike (only if not dry run) ---
                     if not args.dry_run:
@@ -985,33 +1002,34 @@ def main():
 
     # --- End Report Details for Subnets Achieving Maximums ---
 
-    # --- Report Parameters Used ---
-    # Always print parameter summary (even in silent mode for transparency)
-    print(f"\n=== PARAMETERS USED ===")
-    print(f"  Analysis Strategy: {strategy_name}")
-    print(f"  Time Window: {args.time_window}")
-    if analysis_duration_seconds > 0:
-        print(f"  Analysis Duration: {analysis_duration_seconds:.0f}s ({analysis_duration_seconds/60:.1f} min)")
-    print(f"  Base RPM Threshold: {args.min_rpm_threshold:.1f} req/min")
-    print(f"  Base Sustained Activity: {args.min_sustained_percent:.1f}%")
-    print(f"  CPU Load Threshold: {args.max_cpu_load_threshold:.1f}%")
-    print(f"  IP Swarm Threshold: {args.ip_swarm_threshold} IPs")
-    print(f"  IP Swarm RPM Factor: {args.ip_swarm_rpm_factor:.2f}")
-    print(f"  IP Swarm Bonus Max: {args.ip_swarm_bonus_max:.2f}")
-    print(f"  Effective RPM Threshold: {effective_rpm_threshold:.2f} req/min")
-    print(f"  Effective Sustained Activity: {effective_sustained_percent:.2f}%")
+    # --- Report Parameters Used (compact single line) ---
+    params_parts = [
+        f"{utc_now_str()}",
+        "PARAMS",
+        f"strategy={strategy_name}",
+        f"tw={args.time_window}",
+        f"dur_s={analysis_duration_seconds:.0f}" if analysis_duration_seconds > 0 else "dur_s=na",
+        f"rpm_base={args.min_rpm_threshold:.2f}",
+        f"sust_base={args.min_sustained_percent:.2f}%",
+        f"cpu_thr={args.max_cpu_load_threshold:.1f}%",
+        f"swarm_ips={args.ip_swarm_threshold}",
+        f"swarm_rpmf={args.ip_swarm_rpm_factor:.2f}",
+        f"swarm_bonus={args.ip_swarm_bonus_max:.2f}",
+        f"rpm_eff={effective_rpm_threshold:.2f}",
+        f"sust_eff={effective_sustained_percent:.2f}%",
+        f"block={'yes' if args.block else 'no'}",
+        f"dry_run={'yes' if args.dry_run else 'no'}",
+        f"log={args.log_level}"
+    ]
     if args.block:
-        print(f"  Blocking Enabled: Yes")
-        print(f"  Block Duration: {args.block_duration} min (default)")
-        print(f"  Escalation Threshold: {args.block_escalation_strikes} strikes")
-        print(f"  Escalated Duration: 1440 min (24 hours)")
-        print(f"  Distributed /16 Min RPM Total: {args.supernet_min_rpm_total:.2f}")
-        print(f"  Distributed /16 Min IP Count: {args.supernet_min_ip_count}")
-        print(f"  Distributed /16 Min Requests: {args.supernet_min_requests}")
-        print(f"  Dry Run: {'Yes' if args.dry_run else 'No'}")
-    else:
-        print(f"  Blocking Enabled: No")
-    print(f"  Log Level: {args.log_level}")
+        params_parts.extend([
+            f"block_dur_m={args.block_duration}",
+            f"esc_strikes={args.block_escalation_strikes}",
+            f"super16_rpm={args.supernet_min_rpm_total:.2f}",
+            f"super16_ips={args.supernet_min_ip_count}",
+            f"super16_req={args.supernet_min_requests}"
+        ])
+    print(" ".join(params_parts))
     # --- End Report Parameters Used ---
 
 

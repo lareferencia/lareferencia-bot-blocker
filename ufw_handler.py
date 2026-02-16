@@ -5,15 +5,24 @@ Module for handling interactions with the UFW firewall using ISO 8601 comments.
 import re
 import subprocess
 import sys
+import os
 from datetime import datetime, timezone, timedelta
 import ipaddress
 import logging
+from collections import defaultdict
 
 # Logger for this module
 logger = logging.getLogger('botstats.ufw')
 
 # Comment prefix for rules added by this script
 COMMENT_PREFIX = "blocked_by_stats_py_until_"
+
+# Cleanup heuristic constants (intentionally fixed, no CLI flags).
+CLEANUP_GRACE_MINUTES = 45
+CLEANUP_MAX_DELETE_PER_RUN = 24
+CLEANUP_PER_FAMILY_DELETE_CAP = 2
+CLEANUP_HIGH_LOAD_RATIO = 1.5
+CLEANUP_HIGH_LOAD_MAX_DELETE = 8
 
 class UFWManager:
     """
@@ -77,6 +86,58 @@ class UFWManager:
             except Exception as e:
                 logger.error(f"Error executing UFW command '{command_str}': {e}")
                 return subprocess.CompletedProcess(args=final_command, returncode=1, stdout="", stderr=str(e))
+
+    @staticmethod
+    def _extract_target_network(line):
+        """Extracts blocked source token from a UFW status line and parses it as network."""
+        line_no_comment = line.split('#', 1)[0]
+        patterns = [
+            r"\bDENY\b(?:\s+IN)?\s+([0-9A-Fa-f:\./]+)\b",
+            r"\bfrom\s+([0-9A-Fa-f:\./]+)\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, line_no_comment, re.IGNORECASE)
+            if not match:
+                continue
+            token = match.group(1).strip()
+            try:
+                return ipaddress.ip_network(token, strict=False)
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
+    def _network_family_key(network_obj):
+        """Groups networks into cleanup families to avoid bulk release from one origin."""
+        if network_obj is None:
+            return None
+
+        try:
+            if isinstance(network_obj, ipaddress.IPv4Network):
+                if network_obj.prefixlen >= 16:
+                    return str(network_obj.supernet(new_prefix=16))
+                return str(network_obj)
+
+            if isinstance(network_obj, ipaddress.IPv6Network):
+                if network_obj.prefixlen >= 48:
+                    return str(network_obj.supernet(new_prefix=48))
+                return str(network_obj)
+        except ValueError:
+            return str(network_obj)
+
+        return str(network_obj)
+
+    @staticmethod
+    def _system_load_ratio():
+        """Returns normalized 1-minute load ratio (load1 / cpu_count), or None if unavailable."""
+        try:
+            load_1m = os.getloadavg()[0]
+            cpu_count = os.cpu_count() or 1
+            if cpu_count <= 0:
+                return None
+            return float(load_1m) / float(cpu_count)
+        except Exception:
+            return None
 
 
     def block_target(self, subnet_or_ip_obj, block_duration_minutes):
@@ -157,7 +218,9 @@ class UFWManager:
 
             now_utc = datetime.now(timezone.utc)
             logger.debug(f"Current UTC time for comparison: {now_utc}")
-            rules_to_delete = []
+            parsed_rules = []
+            expired_count = 0
+            held_by_grace = 0
 
             lines = result.stdout.splitlines()
             logger.debug(f"Processing {len(lines)} lines from UFW status.")
@@ -171,35 +234,109 @@ class UFWManager:
                         expiry_time_naive = datetime.strptime(expiry_timestamp_str, '%Y%m%dT%H%M%SZ')
                         expiry_time_utc = expiry_time_naive.replace(tzinfo=timezone.utc)
                         logger.debug(f"Rule {rule_number}: Parsed expiry UTC={expiry_time_utc}")
+                        target_network = self._extract_target_network(line)
+                        family_key = self._network_family_key(target_network)
 
                         if now_utc >= expiry_time_utc:
-                            logger.info(f"Rule {rule_number} EXPIRED at {expiry_time_utc}. Marked for deletion.")
-                            rules_to_delete.append(rule_number)
+                            expired_count += 1
+                            age_seconds = (now_utc - expiry_time_utc).total_seconds()
+                            age_minutes = age_seconds / 60.0
+                            is_eligible = age_minutes >= CLEANUP_GRACE_MINUTES
+                            if not is_eligible:
+                                held_by_grace += 1
+
+                            parsed_rules.append({
+                                'rule_number': rule_number,
+                                'expiry_time_utc': expiry_time_utc,
+                                'age_minutes': age_minutes,
+                                'eligible': is_eligible,
+                                'target_network': target_network,
+                                'family_key': family_key,
+                            })
                         else:
-                             logger.debug(f"Rule {rule_number} has not expired yet.")
+                            logger.debug(f"Rule {rule_number} has not expired yet.")
                     except ValueError as e:
                         logger.warning(f"Could not parse timestamp for rule {rule_number_str} ('{expiry_timestamp_str}') - Error: {e}")
                     except Exception as e:
                          logger.error(f"Error processing rule details for rule {rule_number_str} - Error: {e}")
 
-            # Delete rules by number, in descending order
-            if rules_to_delete:
-                 logger.info(f"Attempting to delete {len(rules_to_delete)} expired rules...")
-                 for rule_num in sorted(rules_to_delete, reverse=True):
-                     delete_result = self._run_ufw_command(['delete', str(rule_num)])
-                     if delete_result.returncode == 0 and not self.dry_run:
-                         if "Deleting:" in delete_result.stdout and f"rule {rule_num}" in delete_result.stdout:
-                              logger.info(f"Successfully deleted rule {rule_num} (confirmed by stdout).")
-                              deleted_count += 1
-                         elif "Skipping" not in delete_result.stdout:
-                              logger.info(f"Successfully executed delete command for rule {rule_num} (return code 0).")
-                              deleted_count += 1
-                         else:
-                              logger.warning(f"Delete command for rule {rule_num} returned 0 but stdout indicates skipping: {delete_result.stdout}")
-                     elif self.dry_run:
-                          deleted_count += 1
-            else:
-                 logger.info("No expired rules found matching the criteria.")
+            if expired_count == 0:
+                logger.info("No expired rules found matching the criteria.")
+                return 0
+
+            eligible_rules = [r for r in parsed_rules if r['eligible']]
+            eligible_count = len(eligible_rules)
+            if eligible_count == 0:
+                logger.info(
+                    "Cleanup heuristic held all expired rules in grace period (expired=%d, grace=%dm).",
+                    expired_count,
+                    CLEANUP_GRACE_MINUTES
+                )
+                return 0
+
+            # Heuristic cap: if host is still under pressure, release more slowly.
+            max_delete_this_run = CLEANUP_MAX_DELETE_PER_RUN
+            load_ratio = self._system_load_ratio()
+            if load_ratio is not None and load_ratio >= CLEANUP_HIGH_LOAD_RATIO:
+                max_delete_this_run = min(max_delete_this_run, CLEANUP_HIGH_LOAD_MAX_DELETE)
+                logger.info(
+                    "Cleanup running under high load (ratio=%.2f). Reducing delete cap to %d.",
+                    load_ratio,
+                    max_delete_this_run
+                )
+
+            # Prefer oldest expired rules, but limit deletions per /16 (IPv4) or /48 (IPv6) family.
+            eligible_rules.sort(key=lambda r: r['expiry_time_utc'])
+            family_delete_count = defaultdict(int)
+            selected_rules = []
+            held_by_family_cap = 0
+
+            for rule in eligible_rules:
+                if len(selected_rules) >= max_delete_this_run:
+                    break
+
+                family_key = rule.get('family_key')
+                if family_key and family_delete_count[family_key] >= CLEANUP_PER_FAMILY_DELETE_CAP:
+                    held_by_family_cap += 1
+                    continue
+
+                selected_rules.append(rule)
+                if family_key:
+                    family_delete_count[family_key] += 1
+
+            if not selected_rules:
+                logger.info(
+                    "Cleanup heuristic selected 0 deletions (eligible=%d, held_by_family_cap=%d).",
+                    eligible_count,
+                    held_by_family_cap
+                )
+                return 0
+
+            logger.info(
+                "Cleanup heuristic: expired=%d, eligible=%d, selected=%d, held_grace=%d, held_family=%d, cap=%d.",
+                expired_count,
+                eligible_count,
+                len(selected_rules),
+                held_by_grace,
+                held_by_family_cap,
+                max_delete_this_run
+            )
+
+            # Delete by rule number descending to preserve numbering as we remove rules.
+            selected_rule_numbers = [r['rule_number'] for r in selected_rules]
+            for rule_num in sorted(selected_rule_numbers, reverse=True):
+                delete_result = self._run_ufw_command(['delete', str(rule_num)])
+                if delete_result.returncode == 0 and not self.dry_run:
+                    if "Deleting:" in delete_result.stdout and f"rule {rule_num}" in delete_result.stdout:
+                        logger.info(f"Successfully deleted rule {rule_num} (confirmed by stdout).")
+                        deleted_count += 1
+                    elif "Skipping" not in delete_result.stdout:
+                        logger.info(f"Successfully executed delete command for rule {rule_num} (return code 0).")
+                        deleted_count += 1
+                    else:
+                        logger.warning(f"Delete command for rule {rule_num} returned 0 but stdout indicates skipping: {delete_result.stdout}")
+                elif self.dry_run:
+                    deleted_count += 1
 
         except Exception as e:
             logger.error(f"An error occurred during rule cleanup: {e}", exc_info=True)
