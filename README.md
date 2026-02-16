@@ -131,9 +131,9 @@ sudo python3 blocker.py --clean-rules --dry-run
 | `--min-rpm-threshold`          | Minimum requests per minute threshold for blocking (base value, adjusted by CPU load).                  | `10.0`                    |
 | `--min-sustained-percent`      | Minimum percentage of analysis window duration a subnet must be active (base value, adjusted by CPU).   | `25.0`                    |
 | `--max-cpu-load-threshold`     | CPU load percentage threshold for aggressive mode (80-100% triggers dynamic reduction).                 | `80.0`                    |
-| `--near-miss-supernet-block`   | Enables optional `/16` blocking when several `/24` are near effective RPM threshold and sustained.      | `False`                   |
-| `--near-miss-rpm-factor`       | Near-miss factor over effective RPM threshold (e.g. `0.90` means 90% of effective RPM).                 | `0.90`                    |
-| `--near-miss-min-subnets`      | Minimum near-miss `/24` members required inside one `/16` to trigger near-miss supernet block.          | `4`                       |
+| `--supernet-min-rpm-total`     | Principal `/16` distributed-pressure threshold: minimum aggregated req/min across `/24` members.         | `6.0`                     |
+| `--supernet-min-ip-count`      | Principal `/16` distributed-pressure threshold: minimum aggregated unique IP count across `/24` members. | `120`                     |
+| `--supernet-min-requests`      | Principal `/16` distributed-pressure threshold: minimum aggregated request volume in the `/16`.          | `200`                     |
 | `--block-duration`             | Default duration (minutes) for UFW blocks (used if strike count < escalation threshold).               | `60`                      |
 | `--block-escalation-strikes`   | Number of strikes within history window required to trigger escalated block duration (1440 min).       | `4`                       |
 | `--strike-file`                | Path to the JSON file for storing strike history.                                                       | `strike_history.json`     |
@@ -164,15 +164,17 @@ System **Load Average (1-minute, normalized)** is used to dynamically adjust blo
 
 **Blocking decision:** Both conditions 1 AND 2 must be met.
 
-### Optional Near-Miss /16 Escalation
+### Principal /16 Distributed-Pressure Escalation
 
-For highly distributed traffic where many `/24` subnets are close to the RPM threshold but do not cross it individually, you can enable:
+In block mode, the blocker always evaluates `/16` supernets using aggregated pressure from their `/24` members (distributed attack pattern).
 
-- `--near-miss-supernet-block`
-- `--near-miss-rpm-factor` (for example, `0.90`)
-- `--near-miss-min-subnets` (for example, `4`)
+The `/16` is blocked when all configured thresholds are met and CPU is in aggressive mode:
 
-When enabled, and when CPU load is in aggressive mode, the blocker can escalate to `/16` blocks if enough `/24` members are near the effective RPM threshold and also meet sustained activity.
+- `--supernet-min-rpm-total`
+- `--supernet-min-ip-count`
+- `--supernet-min-requests`
+
+The sustained activity requirement still uses the effective dynamic sustained threshold.
 
 ### Gradual Scoring System
 

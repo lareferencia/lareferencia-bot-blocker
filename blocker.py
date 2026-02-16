@@ -193,6 +193,42 @@ def calculate_effective_thresholds(cpu_load_percent, base_min_rpm_threshold, bas
 
     return min_rpm_threshold, min_sustained_percent
 
+
+def aggregate_ipv4_supernet_pressure(threats):
+    """
+    Aggregates /24 threat metrics into /16 distributed-pressure metrics.
+
+    Returns:
+        dict: supernet -> metrics dict with total requests, total ips, total rpm,
+              max subnet timespan, and member /24 subnet objects.
+    """
+    supernet_metrics = defaultdict(lambda: {
+        'total_requests': 0,
+        'total_ips': 0,
+        'total_rpm': 0.0,
+        'max_subnet_time_span': 0.0,
+        'member_subnets': []
+    })
+
+    for threat in threats:
+        subnet = threat.get('id')
+        if not isinstance(subnet, ipaddress.IPv4Network) or subnet.prefixlen != 24:
+            continue
+
+        try:
+            supernet = subnet.supernet(new_prefix=16)
+        except ValueError:
+            continue
+
+        m = supernet_metrics[supernet]
+        m['total_requests'] += int(threat.get('total_requests', 0) or 0)
+        m['total_ips'] += int(threat.get('ip_count', 0) or 0)
+        m['total_rpm'] += float(threat.get('subnet_req_per_min_window', 0.0) or 0.0)
+        m['max_subnet_time_span'] = max(m['max_subnet_time_span'], float(threat.get('subnet_time_span', 0.0) or 0.0))
+        m['member_subnets'].append(subnet)
+
+    return supernet_metrics
+
 def main():
     # --- Determine script directory for default strike file path ---
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -245,16 +281,16 @@ def main():
         help='CPU load percentage threshold for aggressive mode (80-100%% triggers dynamic threshold reduction).'
     )
     parser.add_argument(
-        '--near-miss-supernet-block', action='store_true',
-        help='Enable /16 blocking when multiple /24s are near effective RPM threshold and satisfy sustained activity.'
+        '--supernet-min-rpm-total', type=float, default=6.0,
+        help='Principal /16 distributed-pressure threshold: minimum total req/min aggregated across /24 subnets in the /16.'
     )
     parser.add_argument(
-        '--near-miss-rpm-factor', type=float, default=0.90,
-        help='Near-miss factor over effective RPM threshold for /16 escalation (0.90 = 90%% of effective threshold).'
+        '--supernet-min-ip-count', type=int, default=120,
+        help='Principal /16 distributed-pressure threshold: minimum total unique IP count aggregated across /24 subnets in the /16.'
     )
     parser.add_argument(
-        '--near-miss-min-subnets', type=int, default=4,
-        help='Minimum near-miss /24 subnets inside the same /16 required to trigger near-miss /16 blocking.'
+        '--supernet-min-requests', type=int, default=200,
+        help='Principal /16 distributed-pressure threshold: minimum total request volume in the /16.'
     )
     parser.add_argument(
         '--block-duration', type=int, default=60,
@@ -303,10 +339,12 @@ def main():
     )
     args = parser.parse_args()
 
-    if not (0.0 < args.near_miss_rpm_factor <= 1.0):
-        parser.error("--near-miss-rpm-factor must be > 0 and <= 1.")
-    if args.near_miss_min_subnets < 2:
-        parser.error("--near-miss-min-subnets must be >= 2.")
+    if args.supernet_min_rpm_total <= 0:
+        parser.error("--supernet-min-rpm-total must be > 0.")
+    if args.supernet_min_ip_count <= 0:
+        parser.error("--supernet-min-ip-count must be > 0.")
+    if args.supernet_min_requests <= 0:
+        parser.error("--supernet-min-requests must be > 0.")
 
     # --- Logging Setup ---
     log_level = getattr(logging, args.log_level)
@@ -540,8 +578,8 @@ def main():
     blocked_supernets = set() # Keep track of /16 networks blocked in this execution
     blocked_ips_high_rpm = set() # Keep track of IPs blocked due to high RPM
     strike_history = {} # Initialize strike history dict
-    near_miss_supernets_checked = 0
-    near_miss_supernets_blocked = 0
+    distributed_supernets_checked = 0
+    distributed_supernets_blocked = 0
 
     if args.block:
         if not args.silent:
@@ -555,166 +593,89 @@ def main():
 
         # High-rate IP blocking removed in simplified version
 
-        # 1. Identify and Block /16 Supernets (Simplified Logic)
-        supernets_to_block = defaultdict(list)
-        # Iterate through the original threats list (dictionaries) as it contains the ipaddress objects needed for supernetting
-        for threat in threats: # Use the original list here
-            if threat.get('should_block'):
-                subnet = threat.get('id') # This is the ipaddress object
-                if isinstance(subnet, ipaddress.IPv4Network) and subnet.prefixlen == 24:
-                    try:
-                        supernet = subnet.supernet(new_prefix=16)
-                        supernets_to_block[supernet].append(threat) # Store the threat dict
-                    except ValueError:
-                        continue # Skip if supernet calculation fails
+        # 1. Principal /16 distributed-pressure blocking (always active in block mode)
+        if analysis_duration_seconds <= 0:
+            logger.warning("Distributed /16 blocking skipped: analysis duration is 0 seconds.")
+        elif cpu_load_percent < args.max_cpu_load_threshold:
+            logger.info(
+                "Distributed /16 blocking skipped: CPU load %.1f%% is below trigger %.1f%%.",
+                cpu_load_percent, args.max_cpu_load_threshold
+            )
+        else:
+            min_sustained_seconds = analysis_duration_seconds * (effective_sustained_percent / 100.0)
+            supernet_pressure = aggregate_ipv4_supernet_pressure(threats)
+            distributed_supernets_checked = len(supernet_pressure)
 
-        # Process potential /16 blocks
-        logger.info(f"Checking {len(supernets_to_block)} /16 supernets for potential blocking (>= 2 contained blockable /24s)...")
-        for supernet, contained_blockable_threats in supernets_to_block.items():
-            if len(contained_blockable_threats) >= 2:
+            logger.info(
+                "Checking %d /16 supernets for distributed-pressure blocking: total_rpm >= %.2f, total_ips >= %d, total_requests >= %d, max_timespan >= %.0fs (%.1f%%).",
+                distributed_supernets_checked,
+                args.supernet_min_rpm_total,
+                args.supernet_min_ip_count,
+                args.supernet_min_requests,
+                min_sustained_seconds,
+                effective_sustained_percent
+            )
+
+            for supernet, data in supernet_pressure.items():
+                if data['total_rpm'] < args.supernet_min_rpm_total:
+                    continue
+                if data['total_ips'] < args.supernet_min_ip_count:
+                    continue
+                if data['total_requests'] < args.supernet_min_requests:
+                    continue
+                if data['max_subnet_time_span'] < min_sustained_seconds:
+                    continue
+
                 target_to_block_obj = supernet
-                target_id_str = str(target_to_block_obj) # String for strike history key
-                target_type = "Supernet /16"
-                # --- Strike Logic for Supernets ---
+                target_id_str = str(target_to_block_obj)
+                target_type = "Supernet /16 (Distributed Pressure)"
                 strike_count = len(strike_history.get(target_id_str, []))
-                escalated = strike_count >= args.block_escalation_strikes # Use new arg
+                escalated = strike_count >= args.block_escalation_strikes
                 block_duration = 1440 if escalated else args.block_duration
                 duration_info = f"(Escalated: {strike_count} strikes)" if escalated else f"({strike_count} strikes)"
-                # --- End Strike Logic ---
-                contained_ids_str = ", ".join([str(t['id']) for t in contained_blockable_threats])
-                reason = f"contains >= 2 blockable /24 subnets ({contained_ids_str})"
 
-                logger.info(f"Processing block for {target_type}: {target_to_block_obj}. Reason: {reason}. Duration: {block_duration}m {duration_info}")
+                sample_ids = [str(s) for s in data['member_subnets'][:5]]
+                sample_text = ", ".join(sample_ids)
+                if len(data['member_subnets']) > 5:
+                    sample_text += ", ..."
+
+                reason = (
+                    f"distributed pressure: total_rpm={data['total_rpm']:.2f}, total_ips={data['total_ips']}, "
+                    f"total_requests={data['total_requests']}, max_timespan={data['max_subnet_time_span']:.0f}s. "
+                    f"Sample members: {sample_text}"
+                )
+
+                logger.info(
+                    "Processing block for %s: %s. Reason: %s. Duration: %dm %s",
+                    target_type, target_to_block_obj, reason, block_duration, duration_info
+                )
                 success = ufw_manager_instance.block_target(
                     subnet_or_ip_obj=target_to_block_obj,
                     block_duration_minutes=block_duration
                 )
                 if success:
+                    distributed_supernets_blocked += 1
                     blocked_targets_count += 1
                     action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
                     timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    # ALWAYS PRINT block actions, format based on silent mode
                     if args.silent:
-                         print(f"{timestamp_str} {action} {target_type}: {target_to_block_obj} for {block_duration}m {duration_info}. Reason: {reason}.")
+                        print(f"{timestamp_str} {action} {target_type}: {target_to_block_obj} for {block_duration}m {duration_info}. Reason: {reason}.")
                     else:
-                         print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}. Reason: {reason}.")
-                    # --- Record Strike (only if not dry run) ---
+                        print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}. Reason: {reason}.")
+
                     if not args.dry_run:
                         now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
                         if target_id_str not in strike_history:
                             strike_history[target_id_str] = []
                         strike_history[target_id_str].append(now_iso)
-                    # --- End Record Strike ---
+
                     blocked_supernets.add(target_to_block_obj)
-                    for contained_threat in contained_blockable_threats:
-                        blocked_subnets_via_supernet.add(contained_threat['id'])
+                    for member_subnet in data['member_subnets']:
+                        blocked_subnets_via_supernet.add(member_subnet)
                 else:
-                    # Only print failure if not silent
                     if not args.silent:
                         action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
                         print(f" -> {action} {target_type}: {target_to_block_obj}.")
-
-        # 1.b Optional near-miss /16 blocking for distributed patterns
-        if args.near_miss_supernet_block:
-            if analysis_duration_seconds <= 0:
-                logger.warning("Near-miss /16 blocking skipped: analysis duration is 0 seconds.")
-            elif cpu_load_percent < args.max_cpu_load_threshold:
-                logger.info(
-                    "Near-miss /16 blocking skipped: CPU load %.1f%% is below trigger %.1f%%.",
-                    cpu_load_percent, args.max_cpu_load_threshold
-                )
-            else:
-                near_miss_min_rpm = effective_rpm_threshold * args.near_miss_rpm_factor
-                near_miss_min_sustained_seconds = analysis_duration_seconds * (effective_sustained_percent / 100.0)
-                near_miss_supernets = defaultdict(list)
-
-                for threat in threats:
-                    if threat.get('should_block'):
-                        continue
-
-                    subnet = threat.get('id')
-                    if not isinstance(subnet, ipaddress.IPv4Network) or subnet.prefixlen != 24:
-                        continue
-
-                    threat_rpm = float(threat.get('subnet_req_per_min_window', 0.0) or 0.0)
-                    threat_timespan = float(threat.get('subnet_time_span', 0.0) or 0.0)
-
-                    if threat_rpm < near_miss_min_rpm:
-                        continue
-                    if threat_timespan < near_miss_min_sustained_seconds:
-                        continue
-
-                    try:
-                        supernet = subnet.supernet(new_prefix=16)
-                    except ValueError:
-                        continue
-                    near_miss_supernets[supernet].append(threat)
-
-                near_miss_supernets_checked = len(near_miss_supernets)
-                logger.info(
-                    "Checking %d /16 supernets for near-miss blocking: RPM >= %.2f and sustained >= %.1f%%, minimum %d /24 members.",
-                    near_miss_supernets_checked,
-                    near_miss_min_rpm,
-                    effective_sustained_percent,
-                    args.near_miss_min_subnets
-                )
-
-                for supernet, near_miss_threats in near_miss_supernets.items():
-                    if supernet in blocked_supernets:
-                        continue
-                    if len(near_miss_threats) < args.near_miss_min_subnets:
-                        continue
-
-                    target_to_block_obj = supernet
-                    target_id_str = str(target_to_block_obj)
-                    target_type = "Supernet /16 (Near-Miss)"
-                    strike_count = len(strike_history.get(target_id_str, []))
-                    escalated = strike_count >= args.block_escalation_strikes
-                    block_duration = 1440 if escalated else args.block_duration
-                    duration_info = f"(Escalated: {strike_count} strikes)" if escalated else f"({strike_count} strikes)"
-
-                    sample_ids = [str(t['id']) for t in near_miss_threats[:5]]
-                    sample_text = ", ".join(sample_ids)
-                    if len(near_miss_threats) > 5:
-                        sample_text += ", ..."
-
-                    reason = (
-                        f"contains {len(near_miss_threats)} near-miss /24 subnets "
-                        f"(RPM >= {near_miss_min_rpm:.2f}, Sustained >= {effective_sustained_percent:.1f}%). "
-                        f"Sample members: {sample_text}"
-                    )
-
-                    logger.info(
-                        "Processing block for %s: %s. Reason: %s. Duration: %dm %s",
-                        target_type, target_to_block_obj, reason, block_duration, duration_info
-                    )
-                    success = ufw_manager_instance.block_target(
-                        subnet_or_ip_obj=target_to_block_obj,
-                        block_duration_minutes=block_duration
-                    )
-                    if success:
-                        near_miss_supernets_blocked += 1
-                        blocked_targets_count += 1
-                        action = "Blocked" if not args.dry_run else "Dry Run - Blocked"
-                        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                        if args.silent:
-                            print(f"{timestamp_str} {action} {target_type}: {target_to_block_obj} for {block_duration}m {duration_info}. Reason: {reason}.")
-                        else:
-                            print(f" -> {action} {target_type}: {target_to_block_obj} for {block_duration} minutes {duration_info}. Reason: {reason}.")
-
-                        if not args.dry_run:
-                            now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-                            if target_id_str not in strike_history:
-                                strike_history[target_id_str] = []
-                            strike_history[target_id_str].append(now_iso)
-
-                        blocked_supernets.add(target_to_block_obj)
-                        for contained_threat in near_miss_threats:
-                            blocked_subnets_via_supernet.add(contained_threat['id'])
-                    else:
-                        if not args.silent:
-                            action = "Failed to block" if not args.dry_run else "Dry Run - Failed"
-                            print(f" -> {action} {target_type}: {target_to_block_obj}.")
 
 
         # 2. Process individual /24 or /64 Blocks (ALL threats that should be blocked)
@@ -843,12 +804,11 @@ def main():
 
         if not args.silent:
             print(f"Block processing complete. {blocked_targets_count} targets {'would be' if args.dry_run else 'were'} processed for blocking.")
-            if args.near_miss_supernet_block:
-                action_word = "would be blocked" if args.dry_run else "were blocked"
-                print(
-                    f"Near-miss /16 mode: checked {near_miss_supernets_checked} supernets, "
-                    f"{near_miss_supernets_blocked} {action_word}."
-                )
+            action_word = "would be blocked" if args.dry_run else "were blocked"
+            print(
+                f"Distributed /16 mode: checked {distributed_supernets_checked} supernets, "
+                f"{distributed_supernets_blocked} {action_word}."
+            )
             print("-" * 30)
     else:
         logger.info("Blocking is disabled (--block not specified).")
@@ -881,7 +841,7 @@ def main():
         if args.block:
             action = "Blocked" if not args.dry_run else "[DRY RUN] Marked for blocking"
             print(f"--- {action} based on strategy '{strategy_name}' criteria applied to ALL {len(blockable_threats_for_display)} threats exceeding thresholds ---")
-            print(f"--- NOTE: /16 supernets containing >= 2 blockable /24s may have been blocked instead ---")
+            print(f"--- NOTE: /16 supernets may have been blocked by distributed-pressure mode ---")
 
         for i, threat in enumerate(threats_to_display, 1):
             target_id_obj = threat['id'] # ipaddress object
@@ -1024,10 +984,9 @@ def main():
         print(f"  Block Duration: {args.block_duration} min (default)")
         print(f"  Escalation Threshold: {args.block_escalation_strikes} strikes")
         print(f"  Escalated Duration: 1440 min (24 hours)")
-        print(f"  Near-Miss /16 Mode: {'Yes' if args.near_miss_supernet_block else 'No'}")
-        if args.near_miss_supernet_block:
-            print(f"  Near-Miss RPM Factor: {args.near_miss_rpm_factor:.2f}")
-            print(f"  Near-Miss Min /24s per /16: {args.near_miss_min_subnets}")
+        print(f"  Distributed /16 Min RPM Total: {args.supernet_min_rpm_total:.2f}")
+        print(f"  Distributed /16 Min IP Count: {args.supernet_min_ip_count}")
+        print(f"  Distributed /16 Min Requests: {args.supernet_min_requests}")
         print(f"  Dry Run: {'Yes' if args.dry_run else 'No'}")
     else:
         print(f"  Blocking Enabled: No")
