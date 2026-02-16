@@ -131,6 +131,9 @@ sudo python3 blocker.py --clean-rules --dry-run
 | `--min-rpm-threshold`          | Minimum requests per minute threshold for blocking (base value, adjusted by CPU load).                  | `10.0`                    |
 | `--min-sustained-percent`      | Minimum percentage of analysis window duration a subnet must be active (base value, adjusted by CPU).   | `25.0`                    |
 | `--max-cpu-load-threshold`     | CPU load percentage threshold for aggressive mode (80-100% triggers dynamic reduction).                 | `80.0`                    |
+| `--ip-swarm-threshold`         | Minimum unique IP count in one subnet to consider swarm behavior.                                       | `40`                      |
+| `--ip-swarm-rpm-factor`        | RPM factor over effective RPM used by swarm condition (`0.60` = 60%).                                  | `0.60`                    |
+| `--ip-swarm-bonus-max`         | Maximum score bonus granted by IP diversity (swarm penalty weight).                                     | `1.50`                    |
 | `--supernet-min-rpm-total`     | Principal `/16` distributed-pressure threshold: minimum aggregated req/min across `/24` members.         | `6.0`                     |
 | `--supernet-min-ip-count`      | Principal `/16` distributed-pressure threshold: minimum aggregated unique IP count across `/24` members. | `120`                     |
 | `--supernet-min-requests`      | Principal `/16` distributed-pressure threshold: minimum aggregated request volume in the `/16`.          | `200`                     |
@@ -162,7 +165,7 @@ System **Load Average (1-minute, normalized)** is used to dynamically adjust blo
   - 100%: 2.5 req/min (fixed), 3% time window (minimum)
   - Linear interpolation between threshold points
 
-**Blocking decision:** Both conditions 1 AND 2 must be met.
+**Blocking decision:** Blocks when (1 AND 2) are met, or when swarm condition is met (high IP cardinality + sustained activity + partial RPM).
 
 ### Principal /16 Distributed-Pressure Escalation
 
@@ -185,7 +188,7 @@ Threats are ranked using a gradual score (0-4) for better prioritization:
 | Base score | 0-2 | +1 for each condition met (RPM, Sustained) |
 | Bonus RPM intensity | 0-1.0 | Higher bonus if RPM greatly exceeds threshold |
 | Bonus volume | 0-0.5 | Higher bonus for larger total request count |
-| Bonus IP diversity | 0-0.5 | Higher bonus if multiple IPs in same /24 (indicates distributed bot) |
+| Bonus IP diversity | 0-1.5 | Higher bonus for large IP swarms in the same /24 (stronger distributed-bot penalty) |
 
 **All subnets exceeding thresholds are blocked**, not just a limited number. The `--top` parameter only controls how many are displayed in reports.
 

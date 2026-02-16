@@ -281,6 +281,18 @@ def main():
         help='CPU load percentage threshold for aggressive mode (80-100%% triggers dynamic threshold reduction).'
     )
     parser.add_argument(
+        '--ip-swarm-threshold', type=int, default=40,
+        help='Minimum unique IP count in a subnet to consider swarm behavior.'
+    )
+    parser.add_argument(
+        '--ip-swarm-rpm-factor', type=float, default=0.60,
+        help='RPM factor over effective threshold used by swarm condition (0.60 = 60%%).'
+    )
+    parser.add_argument(
+        '--ip-swarm-bonus-max', type=float, default=1.50,
+        help='Maximum IP diversity bonus added to strategy score.'
+    )
+    parser.add_argument(
         '--supernet-min-rpm-total', type=float, default=6.0,
         help='Principal /16 distributed-pressure threshold: minimum total req/min aggregated across /24 subnets in the /16.'
     )
@@ -345,6 +357,12 @@ def main():
         parser.error("--supernet-min-ip-count must be > 0.")
     if args.supernet_min_requests <= 0:
         parser.error("--supernet-min-requests must be > 0.")
+    if args.ip_swarm_threshold < 2:
+        parser.error("--ip-swarm-threshold must be >= 2.")
+    if not (0.0 < args.ip_swarm_rpm_factor <= 1.0):
+        parser.error("--ip-swarm-rpm-factor must be > 0 and <= 1.")
+    if args.ip_swarm_bonus_max <= 0:
+        parser.error("--ip-swarm-bonus-max must be > 0.")
 
     # --- Logging Setup ---
     log_level = getattr(logging, args.log_level)
@@ -977,6 +995,9 @@ def main():
     print(f"  Base RPM Threshold: {args.min_rpm_threshold:.1f} req/min")
     print(f"  Base Sustained Activity: {args.min_sustained_percent:.1f}%")
     print(f"  CPU Load Threshold: {args.max_cpu_load_threshold:.1f}%")
+    print(f"  IP Swarm Threshold: {args.ip_swarm_threshold} IPs")
+    print(f"  IP Swarm RPM Factor: {args.ip_swarm_rpm_factor:.2f}")
+    print(f"  IP Swarm Bonus Max: {args.ip_swarm_bonus_max:.2f}")
     print(f"  Effective RPM Threshold: {effective_rpm_threshold:.2f} req/min")
     print(f"  Effective Sustained Activity: {effective_sustained_percent:.2f}%")
     if args.block:

@@ -11,13 +11,15 @@ CPU-Based Dynamic Thresholds:
 - At 90% CPU: 2.5 req/min (25%), 6.25% time window (25%)
 - At 100% CPU: 2.5 req/min (fixed), 3% time window (minimum)
 
-Score Calculation (for ranking, max = 4.0):
+Score Calculation (for ranking, max ~= 5.0):
 - Base score: 0-2 (conditions met)
 - Bonus RPM intensity: 0-1.0 (how much above threshold)
 - Bonus volume: 0-0.5 (total request count)
-- Bonus IP diversity: 0-0.5 (multiple IPs in /24 = likely botnet)
+- Bonus IP diversity: 0-1.5 (multiple IPs in /24 = likely botnet swarm)
 
-Blocks when BOTH base conditions are met (RPM AND sustained).
+Blocks when:
+- BOTH base conditions are met (RPM AND sustained), OR
+- Swarm condition is met (high IP cardinality + sustained + partial RPM).
 """
 
 import logging
@@ -29,6 +31,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_MIN_RPM_THRESHOLD = 10.0
 DEFAULT_MIN_SUSTAINED_PERCENT = 25.0
 DEFAULT_MAX_CPU_LOAD_THRESHOLD = 80.0  # CPU load threshold for aggressive mode
+DEFAULT_IP_SWARM_THRESHOLD = 40
+DEFAULT_IP_SWARM_RPM_FACTOR = 0.60
+DEFAULT_IP_SWARM_BONUS_MAX = 1.50
 BLOCKING_SCORE_THRESHOLD = 2.0
 
 # CPU-based dynamic threshold parameters
@@ -45,7 +50,9 @@ class Strategy(BaseStrategy):
     - At <= 80% CPU: use base defaults (10 req/min, 25% time window)
     - At 80-100% CPU: linearly reduce thresholds from 50% to 0% of base values
     
-    Blocks when score >= 2.0 (RPM AND sustained conditions met).
+    Blocks when:
+    - RPM and sustained conditions are met, OR
+    - swarm condition is met (high IP cardinality + sustained + partial RPM).
     """
 
     def get_required_config_keys(self):
@@ -53,7 +60,10 @@ class Strategy(BaseStrategy):
         return [
             'min_rpm_threshold',
             'min_sustained_percent',
-            'max_cpu_load_threshold'
+            'max_cpu_load_threshold',
+            'ip_swarm_threshold',
+            'ip_swarm_rpm_factor',
+            'ip_swarm_bonus_max'
         ]
 
     def calculate_threat_score_and_block(self,
@@ -72,7 +82,9 @@ class Strategy(BaseStrategy):
         - At CPU = 100%: RPM stays at 2.5 req/min, time window at 3% (12% of 25%)
         - Linear interpolation for ranges
         
-        Decides blocking if score >= 2.0 (conditions 1 AND 2 met).
+        Decides blocking if:
+        - conditions 1 AND 2 are met, OR
+        - swarm condition is met.
         """
         score = 0.0
         should_block = False
@@ -87,6 +99,11 @@ class Strategy(BaseStrategy):
         base_min_rpm_threshold = getattr(config, 'min_rpm_threshold', DEFAULT_MIN_RPM_THRESHOLD)
         base_min_sustained_percent = getattr(config, 'min_sustained_percent', DEFAULT_MIN_SUSTAINED_PERCENT)
         max_cpu_load_threshold = getattr(config, 'max_cpu_load_threshold', DEFAULT_MAX_CPU_LOAD_THRESHOLD)
+        ip_swarm_threshold = max(2, int(getattr(config, 'ip_swarm_threshold', DEFAULT_IP_SWARM_THRESHOLD)))
+        ip_swarm_rpm_factor = float(getattr(config, 'ip_swarm_rpm_factor', DEFAULT_IP_SWARM_RPM_FACTOR))
+        ip_swarm_rpm_factor = min(1.0, max(0.05, ip_swarm_rpm_factor))
+        ip_swarm_bonus_max = float(getattr(config, 'ip_swarm_bonus_max', DEFAULT_IP_SWARM_BONUS_MAX))
+        ip_swarm_bonus_max = max(0.1, ip_swarm_bonus_max)
         
         # Get pre-calculated CPU load percentage from shared context
         # This was calculated once at the beginning of the analysis in blocker.py
@@ -147,6 +164,7 @@ class Strategy(BaseStrategy):
         # --- Condition 2: Check sustained activity percentage ---
         sustained_condition_met = False
         current_timespan = threat_data.get('subnet_time_span', 0)
+        ip_count = int(threat_data.get('ip_count', 1) or 1)
         
         if analysis_duration_seconds and analysis_duration_seconds > 0:
             min_timespan_threshold_seconds = analysis_duration_seconds * (min_sustained_percent / 100.0)
@@ -163,6 +181,20 @@ class Strategy(BaseStrategy):
         else:
             block_decision_reasons.append(
                 f"Sustained % check skipped (duration={analysis_duration_seconds})"
+            )
+
+        # --- Condition 3: Swarm behavior ---
+        # Allows blocking distributed swarms with many unique IPs even when RPM is a bit below strict threshold.
+        ip_swarm_condition_met = False
+        swarm_rpm_threshold = min_rpm_threshold * ip_swarm_rpm_factor
+        if sustained_condition_met and ip_count >= ip_swarm_threshold and current_rpm >= swarm_rpm_threshold:
+            ip_swarm_condition_met = True
+            block_decision_reasons.append(
+                f"Swarm >= {ip_swarm_threshold} IPs ({ip_count}) and RPM >= {swarm_rpm_threshold:.1f} ({current_rpm:.1f})"
+            )
+        elif ip_count >= ip_swarm_threshold:
+            block_decision_reasons.append(
+                f"Swarm candidate ({ip_count} IPs) but RPM < {swarm_rpm_threshold:.1f} ({current_rpm:.1f}) or sustained not met"
             )
 
         # --- Bonus Scores for Better Ranking ---
@@ -184,27 +216,34 @@ class Strategy(BaseStrategy):
         
         # Bonus 3: IP diversity (multiple IPs in same /24 = likely distributed bot)
         bonus_ip_diversity = 0.0
-        ip_count = threat_data.get('ip_count', 1)
         if ip_count >= 3:
-            # Scale: 3 IPs = 0.1, 5 IPs = 0.2, 10+ IPs = 0.5
-            bonus_ip_diversity = min(0.5, (ip_count - 1) / 10 * 0.5)
+            # Stronger scaling to penalize "swarm" behavior.
+            # Reaches max bonus around the configured swarm threshold.
+            scale_ref = float(max(10, ip_swarm_threshold))
+            bonus_ip_diversity = min(ip_swarm_bonus_max, ((ip_count - 2) / scale_ref) * ip_swarm_bonus_max)
 
         # --- Final Score Calculation ---
-        # Base score (0-2) + bonuses (0-2) = max theoretical score of 4.0
+        # Base score (0-2) + bonuses (~0-3) => max theoretical score ~= 5.0
         base_score = float(conditions_met_count)
         total_bonus = bonus_rpm + bonus_volume + bonus_ip_diversity
         score = base_score + total_bonus
 
-        # --- Block Decision (unchanged: requires both base conditions) ---
-        if rpm_condition_met and sustained_condition_met:
+        # --- Block Decision ---
+        if (rpm_condition_met and sustained_condition_met) or ip_swarm_condition_met:
             should_block = True
-            met_reasons = [r for r in block_decision_reasons if ">=" in r]
+            met_reasons = []
+            if rpm_condition_met:
+                met_reasons.append(f"RPM >= {min_rpm_threshold:.1f} ({current_rpm:.1f})")
+            if sustained_condition_met:
+                met_reasons.append(f"Sustained >= {min_sustained_percent:.1f}% ({current_timespan:.0f}s)")
+            if ip_swarm_condition_met:
+                met_reasons.append(f"Swarm >= {ip_swarm_threshold} IPs ({ip_count}) and RPM >= {swarm_rpm_threshold:.1f}")
             bonus_info = f"Bonuses: RPM={bonus_rpm:.2f}, Vol={bonus_volume:.2f}, IPs={bonus_ip_diversity:.2f}"
             reason = f"Block: Base {base_score:.0f} + Bonus {total_bonus:.2f} = Score {score:.2f}. Met ({', '.join(met_reasons)}). {bonus_info}"
         else:
             should_block = False
-            failed_reasons = [r for r in block_decision_reasons if "<" in r and ">=" not in r]
-            met_reasons = [r for r in block_decision_reasons if ">=" in r]
+            failed_reasons = [r for r in block_decision_reasons if "<" in r or "candidate" in r]
+            met_reasons = [r for r in block_decision_reasons if ">=" in r and "candidate" not in r]
             reason = f"No Block: Score {score:.2f}. "
             if met_reasons:
                 reason += f"Met ({', '.join(met_reasons)}). "
