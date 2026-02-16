@@ -46,7 +46,7 @@ def calculate_dynamic_thresholds(cpu_load_percent, base_rpm, base_sustained, max
     min_rpm_threshold = float(base_rpm)
     min_sustained_percent = float(base_sustained)
 
-    if cpu_load_percent > max_cpu_load_threshold:
+    if cpu_load_percent >= max_cpu_load_threshold:
         if cpu_load_percent >= 90.0:
             rpm_factor = 0.25
         else:

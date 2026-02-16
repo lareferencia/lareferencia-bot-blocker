@@ -96,7 +96,7 @@ class Strategy(BaseStrategy):
         min_rpm_threshold = base_min_rpm_threshold
         min_sustained_percent = base_min_sustained_percent
         
-        if cpu_load_percent > max_cpu_load_threshold:
+        if cpu_load_percent >= max_cpu_load_threshold:
             # Calculate reduction factor based on CPU load
             # Requirements:
             # At 80% CPU: use 5 req/min (50% of default 10) and 12.5% (50% of 25%)
@@ -125,7 +125,7 @@ class Strategy(BaseStrategy):
             min_rpm_threshold = base_min_rpm_threshold * rpm_factor
             min_sustained_percent = base_min_sustained_percent * sustained_factor
             
-            logger.debug(f"CPU load {cpu_load_percent:.1f}% > {max_cpu_load_threshold:.1f}%: "
+            logger.debug(f"CPU load {cpu_load_percent:.1f}% >= {max_cpu_load_threshold:.1f}%: "
                         f"Applying aggressive thresholds (RPM factor={rpm_factor:.2f}, Sustained factor={sustained_factor:.2f}): "
                         f"RPM={min_rpm_threshold:.2f}, Sustained={min_sustained_percent:.1f}%")
         else:

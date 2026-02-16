@@ -131,6 +131,9 @@ sudo python3 blocker.py --clean-rules --dry-run
 | `--min-rpm-threshold`          | Minimum requests per minute threshold for blocking (base value, adjusted by CPU load).                  | `10.0`                    |
 | `--min-sustained-percent`      | Minimum percentage of analysis window duration a subnet must be active (base value, adjusted by CPU).   | `25.0`                    |
 | `--max-cpu-load-threshold`     | CPU load percentage threshold for aggressive mode (80-100% triggers dynamic reduction).                 | `80.0`                    |
+| `--near-miss-supernet-block`   | Enables optional `/16` blocking when several `/24` are near effective RPM threshold and sustained.      | `False`                   |
+| `--near-miss-rpm-factor`       | Near-miss factor over effective RPM threshold (e.g. `0.90` means 90% of effective RPM).                 | `0.90`                    |
+| `--near-miss-min-subnets`      | Minimum near-miss `/24` members required inside one `/16` to trigger near-miss supernet block.          | `4`                       |
 | `--block-duration`             | Default duration (minutes) for UFW blocks (used if strike count < escalation threshold).               | `60`                      |
 | `--block-escalation-strikes`   | Number of strikes within history window required to trigger escalated block duration (1440 min).       | `4`                       |
 | `--strike-file`                | Path to the JSON file for storing strike history.                                                       | `strike_history.json`     |
@@ -153,13 +156,23 @@ The strategy evaluates two base conditions:
 **System Load-Based Dynamic Thresholds:**
 System **Load Average (1-minute, normalized)** is used to dynamically adjust blocking thresholds:
 - **≤80% Load:** Normal mode - use base thresholds (10 req/min, 25%)
-- **>80% Load:** Aggressive mode - progressively reduce thresholds
+- **>=80% Load:** Aggressive mode - progressively reduce thresholds
   - 80%: 5 req/min (50%), 12.5% time window
   - 90%: 2.5 req/min (25%), 6.25% time window
   - 100%: 2.5 req/min (fixed), 3% time window (minimum)
   - Linear interpolation between threshold points
 
 **Blocking decision:** Both conditions 1 AND 2 must be met.
+
+### Optional Near-Miss /16 Escalation
+
+For highly distributed traffic where many `/24` subnets are close to the RPM threshold but do not cross it individually, you can enable:
+
+- `--near-miss-supernet-block`
+- `--near-miss-rpm-factor` (for example, `0.90`)
+- `--near-miss-min-subnets` (for example, `4`)
+
+When enabled, and when CPU load is in aggressive mode, the blocker can escalate to `/16` blocks if enough `/24` members are near the effective RPM threshold and also meet sustained activity.
 
 ### Gradual Scoring System
 
