@@ -17,7 +17,7 @@ class BaseStrategy(ABC):
         Args:
             threat_data (dict): Dictionary containing aggregated metrics for the threat (subnet).
                                 Expected keys: 'total_requests', 'ip_count',
-                                'subnet_avg_ip_rpm', 'subnet_max_ip_rpm', 'details' (list of top IP dicts), etc.
+                                'subnet_avg_ip_rpm', 'subnet_max_ip_rpm', 'single_ip', etc.
             config (argparse.Namespace): Parsed command-line arguments containing strategy-specific thresholds
                                          (e.g., config.block_danger_threshold).
             shared_context_params (dict): Dictionary containing shared parameters and overall maximums/context.

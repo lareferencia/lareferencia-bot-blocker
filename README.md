@@ -1,5 +1,7 @@
 # LA Referencia Dynamic Bot Blocker
 
+Current version: `v1.1`
+
 > **⚠️ DISCLAIMER: EXPERIMENTAL SOFTWARE**
 >
 > This software is experimental. It is crucial to fully understand the implications of adding firewall restrictions based on log analysis before applying it to production environments. Incorrect parameterization of this script could block legitimate access. LA Referencia is not responsible for improper use or any consequences arising from its use. **Thorough testing in development environments is strongly recommended before production deployment.**
@@ -13,7 +15,8 @@ This tool analyzes web server logs (e.g., Apache, Nginx) to identify potential b
 -   ✅ **Unified Strategy:** Evaluation based on request rate, sustained activity, and **System Load Average** with **gradual scoring**.
 -   ✅ **Gradual Threat Scoring:** Ranks threats using bonus points for RPM intensity, request volume, and IP diversity.
 -   ✅ **Threat Grouping:** Aggregates IP-level metrics by subnet (/24 for IPv4, /64 for IPv6).
--   ✅ **Simplified Supernet Blocking:** Automatically blocks /16 supernet if it contains >= 2 blockable /24 subnets.
+-   ✅ **Principal `/16` Distributed-Pressure Blocking:** Blocks `/16` supernets using aggregated pressure thresholds under aggressive load.
+-   ✅ **Per-IP Persistence Layer:** Evaluates single IPs with stricter persistence thresholds to avoid penalizing whole subnets for isolated bursts.
 -   ✅ **Automated Blocking:** Integrates with UFW to insert temporary `deny` rules with expiration time.
 -   ✅ **Strike System & Escalation:** Tracks block events and escalates block duration for repeat offenders.
 -   ✅ **Rule Cleanup:** Includes a mode to automatically remove expired UFW rules.
@@ -134,6 +137,9 @@ sudo python3 blocker.py --clean-rules --dry-run
 | `--ip-swarm-threshold`         | Minimum unique IP count in one subnet to consider swarm behavior.                                       | `40`                      |
 | `--ip-swarm-rpm-factor`        | RPM factor over effective RPM used by swarm condition (`0.60` = 60%).                                  | `0.60`                    |
 | `--ip-swarm-bonus-max`         | Maximum score bonus granted by IP diversity (swarm penalty weight).                                     | `1.50`                    |
+| `--ip-min-rpm-threshold`       | Per-IP persistence layer: minimum req/min (window-normalized) to block a single IP.                    | `20.0`                    |
+| `--ip-min-sustained-percent`   | Per-IP persistence layer: minimum % of analysis window an IP must stay active.                          | `35.0`                    |
+| `--ip-min-requests`            | Per-IP persistence layer: minimum total requests required to block a single IP.                         | `120`                     |
 | `--supernet-min-rpm-total`     | Principal `/16` distributed-pressure threshold: minimum aggregated req/min across `/24` members.         | `6.0`                     |
 | `--supernet-min-ip-count`      | Principal `/16` distributed-pressure threshold: minimum aggregated unique IP count across `/24` members. | `120`                     |
 | `--supernet-min-requests`      | Principal `/16` distributed-pressure threshold: minimum aggregated request volume in the `/16`.          | `200`                     |
@@ -167,6 +173,8 @@ System **Load Average (1-minute, normalized)** is used to dynamically adjust blo
 
 **Blocking decision:** Blocks when (1 AND 2) are met, or when swarm condition is met (high IP cardinality + sustained activity + partial RPM).
 
+When a blockable subnet has only one observed IP, the blocker targets that IP directly instead of blocking the whole subnet.
+
 ### Principal /16 Distributed-Pressure Escalation
 
 In block mode, the blocker always evaluates `/16` supernets using aggregated pressure from their `/24` members (distributed attack pattern).
@@ -179,9 +187,19 @@ The `/16` is blocked when all configured thresholds are met and CPU is in aggres
 
 The sustained activity requirement still uses the effective dynamic sustained threshold.
 
+### Per-IP Persistence Layer
+
+After `/16` and subnet decisions, block mode evaluates individual IPs as a safety layer.
+This preserves subnet-centric behavior for swarms, but avoids penalizing an entire subnet for an isolated burst.
+
+A single IP is blocked only when all are met:
+- `total_requests >= --ip-min-requests`
+- `req/min(window) >= effective(--ip-min-rpm-threshold)`
+- `timespan >= effective(--ip-min-sustained-percent)`
+
 ### Gradual Scoring System
 
-Threats are ranked using a gradual score (0-4) for better prioritization:
+Threats are ranked using a gradual score (0-5) for better prioritization:
 
 | Component | Range | Description |
 |-----------|-------|-------------|
