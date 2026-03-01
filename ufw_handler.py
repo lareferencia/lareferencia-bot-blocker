@@ -16,6 +16,7 @@ logger = logging.getLogger('botstats.ufw')
 
 # Comment prefix for rules added by this script
 COMMENT_PREFIX = "blocked_by_stats_py_until_"
+BLOCK_TCP_PORTS = (80, 443)
 
 # Cleanup heuristic constants (intentionally fixed, no CLI flags).
 CLEANUP_GRACE_MINUTES = 45
@@ -142,8 +143,8 @@ class UFWManager:
 
     def block_target(self, subnet_or_ip_obj, block_duration_minutes):
         """
-        Blocks an IP or subnet using UFW with an ISO 8601 expiration comment.
-        Inserts the rule at position 1 for priority.
+        Blocks an IP or subnet using UFW on TCP web ports only with an ISO 8601 expiration comment.
+        Inserts the rules at position 1 for priority.
 
         Args:
             subnet_or_ip_obj (ipaddress.network or ipaddress.address): IP/Subnet object to block.
@@ -170,20 +171,30 @@ class UFWManager:
         expiry_str_iso = expiry_time_utc.strftime('%Y%m%dT%H%M%SZ')
         comment = f"{COMMENT_PREFIX}{expiry_str_iso}"
 
-        # Construct command to insert rule at position 1
-        command_args = ["insert", "1", "deny", "from", target_str, "to", "any", "comment", comment]
-
         logger.info(f"Attempting to block: {target_str} until {expiry_str_iso} UTC")
-        result = self._run_ufw_command(command_args)
+        all_rules_succeeded = True
+        for port in BLOCK_TCP_PORTS:
+            command_args = [
+                "insert", "1", "deny",
+                "from", target_str,
+                "to", "any",
+                "port", str(port),
+                "proto", "tcp",
+                "comment", comment
+            ]
+            result = self._run_ufw_command(command_args)
 
-        # Check for success (return code 0) or if rule already existed
-        if result.returncode == 0:
-             return True
-        elif result.returncode !=0 and ("Skipping adding existing rule" in result.stdout or "Skipping adding existing rule" in result.stderr):
-             logger.info(f"Note: The rule for {target_str} probably already existed.")
-             return True # Consider already existing as 'success' in this context
-        else:
-             return False
+            # Check for success (return code 0) or if rule already existed
+            if result.returncode == 0:
+                continue
+            if "Skipping adding existing rule" in result.stdout or "Skipping adding existing rule" in result.stderr:
+                logger.info(f"Note: The {port}/tcp rule for {target_str} probably already existed.")
+                continue
+
+            all_rules_succeeded = False
+            logger.error("Failed to add %s/tcp deny rule for %s.", port, target_str)
+
+        return all_rules_succeeded
 
 
     def clean_expired_rules(self):

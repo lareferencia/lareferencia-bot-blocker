@@ -17,7 +17,7 @@ This tool analyzes web server logs (e.g., Apache, Nginx) to identify potential b
 -   ✅ **Threat Grouping:** Aggregates IP-level metrics by subnet (/24 for IPv4, /64 for IPv6).
 -   ✅ **Principal `/16` Distributed-Pressure Blocking:** Blocks `/16` supernets using aggregated pressure thresholds under aggressive load.
 -   ✅ **Per-IP Persistence Layer:** Evaluates single IPs with stricter persistence thresholds to avoid penalizing whole subnets for isolated bursts.
--   ✅ **Automated Blocking:** Integrates with UFW to insert temporary `deny` rules with expiration time.
+-   ✅ **Automated Blocking:** Integrates with UFW to insert temporary `deny` rules on TCP `80/443` with expiration time.
 -   ✅ **Strike System & Escalation:** Tracks block events and escalates block duration for repeat offenders.
 -   ✅ **Rule Cleanup:** Includes a mode to automatically remove expired UFW rules.
 -   ✅ **Whitelisting:** Supports excluding specific IPs or subnets from analysis and blocking.
