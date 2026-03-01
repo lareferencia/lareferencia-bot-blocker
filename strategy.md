@@ -94,3 +94,4 @@ It prioritizes service stability first, then precision tuning with whitelist and
 - Keep whitelist strict and auditable.
 - Run periodic cleanup (`--clean-rules`) so rule set remains healthy while keeping controlled release behavior.
 - Re-tune based on recent logs and false-positive feedback, not isolated snapshots.
+- Use `tuning_snapshot.py` to generate a Markdown report before changing thresholds; it can auto-read the blocker baseline from cron and the latest blocker `PARAMS` log line.

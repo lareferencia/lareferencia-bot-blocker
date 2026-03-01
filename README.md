@@ -126,8 +126,8 @@ sudo python3 blocker.py --clean-rules --dry-run
 | Option                         | Description                                                                                              | Default                   |
 | :----------------------------- | :------------------------------------------------------------------------------------------------------- | :------------------------ |
 | `--file, -f`                   | Path to the log file to analyze (required unless `--clean-rules`).                                      | `None`                    |
-| `--start-date, -s`             | Analyze logs from this date/time (Format: `dd/Mmm/YYYY:HH:MM:SS`).                                      | `None`                    |
-| `--time-window, -tw`           | Analyze logs from the `hour` (default), `6hour`, `day`, or `week` (overrides `--start-date`).           | `hour`                    |
+| `--start-date, -s`             | Analyze logs from this date/time (Format: `dd/Mmm/YYYY:HH:MM:SS`) when `--time-window` is not passed.   | `None`                    |
+| `--time-window, -tw`           | Analyze logs from the `hour` (default), `6hour`, `day`, or `week`. If omitted, `--start-date` is used. | `hour`                    |
 | `--top, -n`                    | Number of threats to display in report (0 = show all). All threats exceeding thresholds are blocked.    | `10`                      |
 | `--whitelist, -w`              | Path to a file containing IPs/subnets to exclude (one per line, `#` for comments).                      | `None`                    |
 | `--block`                      | Enable blocking of threats using UFW. Requires appropriate permissions.                                 | `False`                   |
@@ -214,7 +214,7 @@ Threats are ranked using a gradual score (0-5) for better prioritization:
 
 -   **History Storage:** Maintains block events in JSON file specified by `--strike-file`
 -   **Configurable Window:** Automatically discards timestamps older than `--strike-max-age-hours` (default: 48)
--   **Escalation:** If strike count >= `--block-escalation-strikes` (default 4), block duration escalates to 1440 minutes (24 hours)
+-   **Escalation:** If strike count including the current block >= `--block-escalation-strikes` (default 4), block duration escalates to 1440 minutes (24 hours)
 -   **Default Duration:** Otherwise uses `--block-duration` (default 60 minutes)
 
 ## Scheduled Execution with Cron
@@ -239,6 +239,70 @@ sudo crontab -e
 -   **Logging:** Use `--log-file` and redirect output for debugging
 -   **Tuning:** Start with higher thresholds and shorter durations; monitor and adjust
 
+## Markdown Tuning Snapshot
+
+Use `tuning_snapshot.py` to generate a Markdown report that summarizes a recent log window for human review or LLM-assisted threshold tuning.
+
+The script is intentionally easier to run than `blocker.py`:
+- It uses `/var/log/httpd/access_log` by default.
+- It defaults to the last hour when no window is specified.
+- It tries to derive the current baseline automatically from:
+  1. `--execution-log` if you pass one
+  2. the blocker execution log redirected by cron (for example `>> /var/log/lareferencia-bot-blocker.log 2>&1`)
+  3. the blocker cron command (`--cron-command`, `--cron-file`, or `crontab -l`)
+  4. the internal preset `lareferencia-hourly`
+
+### Quick Start
+
+```bash
+# Use defaults: /var/log/httpd/access_log, auto-detect cron/log baseline, output to tuning-snapshot.md
+python3 tuning_snapshot.py
+
+# Write the report somewhere explicit
+python3 tuning_snapshot.py -o /tmp/tuning-snapshot.md
+
+# Analyze a different log file
+python3 tuning_snapshot.py -f /var/log/nginx/access.log -o /tmp/tuning-snapshot.md
+
+# Force a specific start date
+python3 tuning_snapshot.py -s 01/Mar/2026:09:00:00 -o /tmp/tuning-snapshot.md
+```
+
+### What It Auto-Detects
+
+- If the blocker cron line contains `--time-window`, the snapshot uses that window when you do not pass `--time-window` or `--start-date`.
+- If the blocker cron line redirects stdout to a file and the blocker log contains a recent `PARAMS` line, the snapshot uses the last executed blocker thresholds instead of only the cron thresholds.
+- If no cron entry exists and no execution log is available, it falls back to the internal `lareferencia-hourly` baseline.
+
+### Main Snapshot Options
+
+| Option | Description | Default |
+| :----- | :---------- | :------ |
+| `--file, -f` | Access log to analyze. | `/var/log/httpd/access_log` |
+| `--time-window, -tw` | Analyze `hour`, `6hour`, `day`, or `week`. | Auto-detected or `hour` |
+| `--start-date, -s` | Manual start date (`dd/Mmm/YYYY:HH:MM:SS`). | `None` |
+| `--output, -o` | Markdown report output path. | `tuning-snapshot.md` |
+| `--top, -n` | Top examples shown in each section. | `5` |
+| `--profile-set` | Sweep size (`default`, `conservative`, `aggressive`, `extended`). | `default` |
+| `--baseline-preset` | Baseline fallback if cron/log are unavailable. | `lareferencia-hourly` |
+| `--cron-file` | Read a cron entry from a file. | `None` |
+| `--cron-command` | Parse a literal cron line. | `None` |
+| `--execution-log` | Explicitly override the auto-detected blocker execution log. | `None` |
+
+### Report Contents
+
+The generated Markdown report includes:
+- window summary
+- traffic shape percentiles
+- current baseline outcome
+- near-miss analysis (`IP`, `/24`, `/16`)
+- sensitivity sweep across conservative/balanced/aggressive profiles
+- recommended tuning direction
+- operational cautions
+- the exact parameters and source chain used to build the report
+
+This makes the output reproducible and suitable for reviewing threshold changes before running `blocker.py --block`.
+
 ## Whitelist Format
 
 The whitelist file should contain one IP address or CIDR subnet per line. Lines starting with `#` are ignored.
@@ -260,6 +324,7 @@ The whitelist file should contain one IP address or CIDR subnet per line. Lines 
 -   `strategies/`: Directory containing strategy modules
     -   `base_strategy.py`: Abstract base class
     -   `unified.py`: Unified blocking strategy
+-   `tuning_snapshot.py`: Markdown tuning report generator with cron/log auto-detection
 
 ## License
 
