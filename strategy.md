@@ -17,9 +17,10 @@ Observed pattern:
 The blocker now uses a layered model:
 
 1. Distributed-pressure detection at `/16` (principal anti-swarm layer).
-2. Local detection at `/24` (and single-IP when applicable) using unified scoring.
-3. Strike-based duration escalation.
-4. Controlled cleanup of expired UFW rules (drip release, not mass release).
+2. Local detection at `/24` using unified scoring.
+3. Per-IP persistence layer with stricter single-IP thresholds.
+4. Strike-based duration escalation.
+5. Controlled cleanup of expired UFW rules (drip release, not mass release).
 
 ## Layer 1: Principal `/16` Distributed-Pressure Blocking
 When CPU is in aggressive mode, the blocker aggregates `/24` metrics into `/16` totals and blocks a `/16` if it passes all conditions:
@@ -43,6 +44,13 @@ The strategy also supports swarm-oriented blocking logic where very high IP dive
 Reason:
 - Improves detection of bot swarms that fan out across many IPs.
 - Keeps sensitivity to concentrated subnet abuse.
+
+## Layer 3: Single-IP Persistence Layer
+After `/16` and `/24` decisions, the blocker evaluates each IP with stricter thresholds (minimum requests, sustained presence, and window-normalized RPM).
+
+Reason:
+- Avoids penalizing an entire subnet for a single short burst.
+- Still blocks persistent abusive IPs even if subnet-level thresholds are not met.
 
 ## Dynamic Thresholds by System Load
 Thresholds are adjusted dynamically using normalized system load and CPU trigger level:
@@ -86,3 +94,4 @@ It prioritizes service stability first, then precision tuning with whitelist and
 - Keep whitelist strict and auditable.
 - Run periodic cleanup (`--clean-rules`) so rule set remains healthy while keeping controlled release behavior.
 - Re-tune based on recent logs and false-positive feedback, not isolated snapshots.
+- Use `tuning_snapshot.py` to generate a Markdown report before changing thresholds; it can auto-read the blocker baseline from cron and the latest blocker `PARAMS` log line.

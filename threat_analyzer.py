@@ -151,29 +151,30 @@ class ThreatAnalyzer:
 
         logger.info("Aggregating metrics by subnet...")
 
-        # Group IP metrics by subnet
+        # Group IP metrics by subnet (keep IP string for single-IP targeting)
         subnet_groups = defaultdict(list)
         for ip, metrics in self.ip_metrics.items():
             subnet = metrics.get('subnet')
             if subnet:
-                subnet_groups[subnet].append(metrics)
+                subnet_groups[subnet].append((ip, metrics))
 
         # Aggregate metrics for each subnet
         self.subnet_metrics = {}
-        for subnet, ip_list in subnet_groups.items():
+        for subnet, ip_entries in subnet_groups.items():
             # Sum total requests
-            total_requests = sum(m['total_requests'] for m in ip_list)
+            total_requests = sum(m['total_requests'] for _, m in ip_entries)
             
             # Count unique IPs
-            ip_count = len(ip_list)
+            ip_count = len(ip_entries)
             
             # Calculate subnet time span (min first_seen to max last_seen)
-            first_seen_values = [m['first_seen'] for m in ip_list]
-            last_seen_values = [m['last_seen'] for m in ip_list]
+            first_seen_values = [m['first_seen'] for _, m in ip_entries]
+            last_seen_values = [m['last_seen'] for _, m in ip_entries]
             subnet_first_seen = min(first_seen_values)
             subnet_last_seen = max(last_seen_values)
             subnet_time_span = (subnet_last_seen - subnet_first_seen).total_seconds()
             subnet_time_span = max(0, subnet_time_span)
+            single_ip = ip_entries[0][0] if ip_count == 1 else None
 
             # Calculate requests per minute over the entire analysis window
             if analysis_duration_seconds and analysis_duration_seconds > 0:
@@ -185,7 +186,8 @@ class ThreatAnalyzer:
                 'total_requests': total_requests,
                 'ip_count': ip_count,
                 'subnet_time_span': subnet_time_span,
-                'subnet_req_per_min_window': subnet_req_per_min_window
+                'subnet_req_per_min_window': subnet_req_per_min_window,
+                'single_ip': single_ip
             }
 
         logger.info(f"Finished aggregating metrics for {len(self.subnet_metrics)} subnets.")
@@ -284,6 +286,7 @@ class ThreatAnalyzer:
                      'id': subnet_obj,
                      'total_requests': int(threat_data.get('total_requests', 0)),
                      'ip_count': int(threat_data.get('ip_count', 0)),
+                     'single_ip': threat_data.get('single_ip'),
                      'subnet_time_span': round(threat_data.get('subnet_time_span', 0), 2),
                      'subnet_req_per_min_window': round(threat_data.get('subnet_req_per_min_window', 0), 2),
                      'strategy_score': score,

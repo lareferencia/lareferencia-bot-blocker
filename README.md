@@ -1,5 +1,7 @@
 # LA Referencia Dynamic Bot Blocker
 
+Current version: `v1.1`
+
 > **⚠️ DISCLAIMER: EXPERIMENTAL SOFTWARE**
 >
 > This software is experimental. It is crucial to fully understand the implications of adding firewall restrictions based on log analysis before applying it to production environments. Incorrect parameterization of this script could block legitimate access. LA Referencia is not responsible for improper use or any consequences arising from its use. **Thorough testing in development environments is strongly recommended before production deployment.**
@@ -13,8 +15,9 @@ This tool analyzes web server logs (e.g., Apache, Nginx) to identify potential b
 -   ✅ **Unified Strategy:** Evaluation based on request rate, sustained activity, and **System Load Average** with **gradual scoring**.
 -   ✅ **Gradual Threat Scoring:** Ranks threats using bonus points for RPM intensity, request volume, and IP diversity.
 -   ✅ **Threat Grouping:** Aggregates IP-level metrics by subnet (/24 for IPv4, /64 for IPv6).
--   ✅ **Simplified Supernet Blocking:** Automatically blocks /16 supernet if it contains >= 2 blockable /24 subnets.
--   ✅ **Automated Blocking:** Integrates with UFW to insert temporary `deny` rules with expiration time.
+-   ✅ **Principal `/16` Distributed-Pressure Blocking:** Blocks `/16` supernets using aggregated pressure thresholds under aggressive load.
+-   ✅ **Per-IP Persistence Layer:** Evaluates single IPs with stricter persistence thresholds to avoid penalizing whole subnets for isolated bursts.
+-   ✅ **Automated Blocking:** Integrates with UFW to insert temporary `deny` rules on TCP `80/443` with expiration time.
 -   ✅ **Strike System & Escalation:** Tracks block events and escalates block duration for repeat offenders.
 -   ✅ **Rule Cleanup:** Includes a mode to automatically remove expired UFW rules.
 -   ✅ **Whitelisting:** Supports excluding specific IPs or subnets from analysis and blocking.
@@ -123,8 +126,8 @@ sudo python3 blocker.py --clean-rules --dry-run
 | Option                         | Description                                                                                              | Default                   |
 | :----------------------------- | :------------------------------------------------------------------------------------------------------- | :------------------------ |
 | `--file, -f`                   | Path to the log file to analyze (required unless `--clean-rules`).                                      | `None`                    |
-| `--start-date, -s`             | Analyze logs from this date/time (Format: `dd/Mmm/YYYY:HH:MM:SS`).                                      | `None`                    |
-| `--time-window, -tw`           | Analyze logs from the `hour` (default), `6hour`, `day`, or `week` (overrides `--start-date`).           | `hour`                    |
+| `--start-date, -s`             | Analyze logs from this date/time (Format: `dd/Mmm/YYYY:HH:MM:SS`) when `--time-window` is not passed.   | `None`                    |
+| `--time-window, -tw`           | Analyze logs from the `hour` (default), `6hour`, `day`, or `week`. If omitted, `--start-date` is used. | `hour`                    |
 | `--top, -n`                    | Number of threats to display in report (0 = show all). All threats exceeding thresholds are blocked.    | `10`                      |
 | `--whitelist, -w`              | Path to a file containing IPs/subnets to exclude (one per line, `#` for comments).                      | `None`                    |
 | `--block`                      | Enable blocking of threats using UFW. Requires appropriate permissions.                                 | `False`                   |
@@ -134,6 +137,9 @@ sudo python3 blocker.py --clean-rules --dry-run
 | `--ip-swarm-threshold`         | Minimum unique IP count in one subnet to consider swarm behavior.                                       | `40`                      |
 | `--ip-swarm-rpm-factor`        | RPM factor over effective RPM used by swarm condition (`0.60` = 60%).                                  | `0.60`                    |
 | `--ip-swarm-bonus-max`         | Maximum score bonus granted by IP diversity (swarm penalty weight).                                     | `1.50`                    |
+| `--ip-min-rpm-threshold`       | Per-IP persistence layer: minimum req/min (window-normalized) to block a single IP.                    | `20.0`                    |
+| `--ip-min-sustained-percent`   | Per-IP persistence layer: minimum % of analysis window an IP must stay active.                          | `35.0`                    |
+| `--ip-min-requests`            | Per-IP persistence layer: minimum total requests required to block a single IP.                         | `120`                     |
 | `--supernet-min-rpm-total`     | Principal `/16` distributed-pressure threshold: minimum aggregated req/min across `/24` members.         | `6.0`                     |
 | `--supernet-min-ip-count`      | Principal `/16` distributed-pressure threshold: minimum aggregated unique IP count across `/24` members. | `120`                     |
 | `--supernet-min-requests`      | Principal `/16` distributed-pressure threshold: minimum aggregated request volume in the `/16`.          | `200`                     |
@@ -167,6 +173,8 @@ System **Load Average (1-minute, normalized)** is used to dynamically adjust blo
 
 **Blocking decision:** Blocks when (1 AND 2) are met, or when swarm condition is met (high IP cardinality + sustained activity + partial RPM).
 
+When a blockable subnet has only one observed IP, the blocker targets that IP directly instead of blocking the whole subnet.
+
 ### Principal /16 Distributed-Pressure Escalation
 
 In block mode, the blocker always evaluates `/16` supernets using aggregated pressure from their `/24` members (distributed attack pattern).
@@ -179,9 +187,19 @@ The `/16` is blocked when all configured thresholds are met and CPU is in aggres
 
 The sustained activity requirement still uses the effective dynamic sustained threshold.
 
+### Per-IP Persistence Layer
+
+After `/16` and subnet decisions, block mode evaluates individual IPs as a safety layer.
+This preserves subnet-centric behavior for swarms, but avoids penalizing an entire subnet for an isolated burst.
+
+A single IP is blocked only when all are met:
+- `total_requests >= --ip-min-requests`
+- `req/min(window) >= effective(--ip-min-rpm-threshold)`
+- `timespan >= effective(--ip-min-sustained-percent)`
+
 ### Gradual Scoring System
 
-Threats are ranked using a gradual score (0-4) for better prioritization:
+Threats are ranked using a gradual score (0-5) for better prioritization:
 
 | Component | Range | Description |
 |-----------|-------|-------------|
@@ -196,7 +214,7 @@ Threats are ranked using a gradual score (0-4) for better prioritization:
 
 -   **History Storage:** Maintains block events in JSON file specified by `--strike-file`
 -   **Configurable Window:** Automatically discards timestamps older than `--strike-max-age-hours` (default: 48)
--   **Escalation:** If strike count >= `--block-escalation-strikes` (default 4), block duration escalates to 1440 minutes (24 hours)
+-   **Escalation:** If strike count including the current block >= `--block-escalation-strikes` (default 4), block duration escalates to 1440 minutes (24 hours)
 -   **Default Duration:** Otherwise uses `--block-duration` (default 60 minutes)
 
 ## Scheduled Execution with Cron
@@ -221,6 +239,70 @@ sudo crontab -e
 -   **Logging:** Use `--log-file` and redirect output for debugging
 -   **Tuning:** Start with higher thresholds and shorter durations; monitor and adjust
 
+## Markdown Tuning Snapshot
+
+Use `tuning_snapshot.py` to generate a Markdown report that summarizes a recent log window for human review or LLM-assisted threshold tuning.
+
+The script is intentionally easier to run than `blocker.py`:
+- It uses `/var/log/httpd/access_log` by default.
+- It defaults to the last hour when no window is specified.
+- It tries to derive the current baseline automatically from:
+  1. `--execution-log` if you pass one
+  2. the blocker execution log redirected by cron (for example `>> /var/log/lareferencia-bot-blocker.log 2>&1`)
+  3. the blocker cron command (`--cron-command`, `--cron-file`, or `crontab -l`)
+  4. the internal preset `lareferencia-hourly`
+
+### Quick Start
+
+```bash
+# Use defaults: /var/log/httpd/access_log, auto-detect cron/log baseline, output to tuning-snapshot.md
+python3 tuning_snapshot.py
+
+# Write the report somewhere explicit
+python3 tuning_snapshot.py -o /tmp/tuning-snapshot.md
+
+# Analyze a different log file
+python3 tuning_snapshot.py -f /var/log/nginx/access.log -o /tmp/tuning-snapshot.md
+
+# Force a specific start date
+python3 tuning_snapshot.py -s 01/Mar/2026:09:00:00 -o /tmp/tuning-snapshot.md
+```
+
+### What It Auto-Detects
+
+- If the blocker cron line contains `--time-window`, the snapshot uses that window when you do not pass `--time-window` or `--start-date`.
+- If the blocker cron line redirects stdout to a file and the blocker log contains a recent `PARAMS` line, the snapshot uses the last executed blocker thresholds instead of only the cron thresholds.
+- If no cron entry exists and no execution log is available, it falls back to the internal `lareferencia-hourly` baseline.
+
+### Main Snapshot Options
+
+| Option | Description | Default |
+| :----- | :---------- | :------ |
+| `--file, -f` | Access log to analyze. | `/var/log/httpd/access_log` |
+| `--time-window, -tw` | Analyze `hour`, `6hour`, `day`, or `week`. | Auto-detected or `hour` |
+| `--start-date, -s` | Manual start date (`dd/Mmm/YYYY:HH:MM:SS`). | `None` |
+| `--output, -o` | Markdown report output path. | `tuning-snapshot.md` |
+| `--top, -n` | Top examples shown in each section. | `5` |
+| `--profile-set` | Sweep size (`default`, `conservative`, `aggressive`, `extended`). | `default` |
+| `--baseline-preset` | Baseline fallback if cron/log are unavailable. | `lareferencia-hourly` |
+| `--cron-file` | Read a cron entry from a file. | `None` |
+| `--cron-command` | Parse a literal cron line. | `None` |
+| `--execution-log` | Explicitly override the auto-detected blocker execution log. | `None` |
+
+### Report Contents
+
+The generated Markdown report includes:
+- window summary
+- traffic shape percentiles
+- current baseline outcome
+- near-miss analysis (`IP`, `/24`, `/16`)
+- sensitivity sweep across conservative/balanced/aggressive profiles
+- recommended tuning direction
+- operational cautions
+- the exact parameters and source chain used to build the report
+
+This makes the output reproducible and suitable for reviewing threshold changes before running `blocker.py --block`.
+
 ## Whitelist Format
 
 The whitelist file should contain one IP address or CIDR subnet per line. Lines starting with `#` are ignored.
@@ -242,6 +324,7 @@ The whitelist file should contain one IP address or CIDR subnet per line. Lines 
 -   `strategies/`: Directory containing strategy modules
     -   `base_strategy.py`: Abstract base class
     -   `unified.py`: Unified blocking strategy
+-   `tuning_snapshot.py`: Markdown tuning report generator with cron/log auto-detection
 
 ## License
 
