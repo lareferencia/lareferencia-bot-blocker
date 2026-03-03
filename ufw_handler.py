@@ -191,9 +191,13 @@ class UFWManager:
         return all_rules_succeeded
 
 
-    def clean_expired_rules(self):
+    def clean_expired_rules(self, delete_all=False):
         """
         Removes expired UFW rules based on the ISO 8601 UTC timestamp comment.
+
+        Args:
+            delete_all (bool): If True, delete all expired rules in one run and
+                bypass grace period and cleanup throttling.
 
         Returns:
             int: The number of UFW rules deleted.
@@ -243,7 +247,7 @@ class UFWManager:
                             expired_rule_count += 1
                             age_seconds = (now_utc - expiry_time_utc).total_seconds()
                             age_minutes = age_seconds / 60.0
-                            is_eligible = age_minutes >= CLEANUP_GRACE_MINUTES
+                            is_eligible = delete_all or (age_minutes >= CLEANUP_GRACE_MINUTES)
                             if not is_eligible:
                                 held_by_grace += 1
 
@@ -303,35 +307,47 @@ class UFWManager:
                 )
                 return 0
 
-            # Heuristic cap: if host is still under pressure, release more slowly.
-            max_delete_this_run = CLEANUP_MAX_DELETE_PER_RUN
-            load_ratio = self._system_load_ratio()
-            if load_ratio is not None and load_ratio >= CLEANUP_HIGH_LOAD_RATIO:
-                max_delete_this_run = min(max_delete_this_run, CLEANUP_HIGH_LOAD_MAX_DELETE)
-                logger.info(
-                    "Cleanup running under high load (ratio=%.2f). Reducing delete cap to %d.",
-                    load_ratio,
-                    max_delete_this_run
-                )
-
-            # Prefer oldest expired rules, but limit deletions per /16 (IPv4) or /48 (IPv6) family.
             eligible_blocks.sort(key=lambda block: block['expiry_time_utc'])
-            family_delete_count = defaultdict(int)
-            selected_blocks = []
-            held_by_family_cap = 0
+            if delete_all:
+                selected_blocks = eligible_blocks
+                held_by_family_cap = 0
+                max_delete_this_run = len(selected_blocks)
+                logger.info(
+                    "Cleanup full mode: expired_rules=%d, expired_blocks=%d, eligible_blocks=%d, selected_blocks=%d (grace/caps disabled).",
+                    expired_rule_count,
+                    expired_block_count,
+                    eligible_count,
+                    len(selected_blocks)
+                )
+            else:
+                # Heuristic cap: if host is still under pressure, release more slowly.
+                max_delete_this_run = CLEANUP_MAX_DELETE_PER_RUN
+                load_ratio = self._system_load_ratio()
+                if load_ratio is not None and load_ratio >= CLEANUP_HIGH_LOAD_RATIO:
+                    max_delete_this_run = min(max_delete_this_run, CLEANUP_HIGH_LOAD_MAX_DELETE)
+                    logger.info(
+                        "Cleanup running under high load (ratio=%.2f). Reducing delete cap to %d.",
+                        load_ratio,
+                        max_delete_this_run
+                    )
 
-            for block in eligible_blocks:
-                if len(selected_blocks) >= max_delete_this_run:
-                    break
+                # Prefer oldest expired rules, but limit deletions per /16 (IPv4) or /48 (IPv6) family.
+                family_delete_count = defaultdict(int)
+                selected_blocks = []
+                held_by_family_cap = 0
 
-                family_key = block.get('family_key')
-                if family_key and family_delete_count[family_key] >= CLEANUP_PER_FAMILY_DELETE_CAP:
-                    held_by_family_cap += 1
-                    continue
+                for block in eligible_blocks:
+                    if len(selected_blocks) >= max_delete_this_run:
+                        break
 
-                selected_blocks.append(block)
-                if family_key:
-                    family_delete_count[family_key] += 1
+                    family_key = block.get('family_key')
+                    if family_key and family_delete_count[family_key] >= CLEANUP_PER_FAMILY_DELETE_CAP:
+                        held_by_family_cap += 1
+                        continue
+
+                    selected_blocks.append(block)
+                    if family_key:
+                        family_delete_count[family_key] += 1
 
             if not selected_blocks:
                 logger.info(
@@ -341,16 +357,17 @@ class UFWManager:
                 )
                 return 0
 
-            logger.info(
-                "Cleanup heuristic: expired_rules=%d, expired_blocks=%d, eligible_blocks=%d, selected_blocks=%d, held_grace=%d, held_family=%d, cap=%d.",
-                expired_rule_count,
-                expired_block_count,
-                eligible_count,
-                len(selected_blocks),
-                held_by_grace,
-                held_by_family_cap,
-                max_delete_this_run
-            )
+            if not delete_all:
+                logger.info(
+                    "Cleanup heuristic: expired_rules=%d, expired_blocks=%d, eligible_blocks=%d, selected_blocks=%d, held_grace=%d, held_family=%d, cap=%d.",
+                    expired_rule_count,
+                    expired_block_count,
+                    eligible_count,
+                    len(selected_blocks),
+                    held_by_grace,
+                    held_by_family_cap,
+                    max_delete_this_run
+                )
 
             rule_numbers_to_delete = []
             for block in selected_blocks:

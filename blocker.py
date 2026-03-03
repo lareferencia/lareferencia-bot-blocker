@@ -428,12 +428,19 @@ def main():
         help='Run cleanup of expired UFW rules and exit.'
     )
     parser.add_argument(
+        '--clean-rules-all', action='store_true',
+        help='With --clean-rules, remove all expired UFW rules in one run (ignores grace period and cleanup throttling).'
+    )
+    parser.add_argument(
         '--silent', action='store_true',
         help='Suppress most output, only show blocked targets.'
     )
     args = parser.parse_args()
     if args.time_window is None and not args.start_date:
         args.time_window = 'hour'
+
+    if args.clean_rules_all and not args.clean_rules:
+        parser.error("--clean-rules-all requires --clean-rules.")
 
     if args.supernet_min_rpm_total <= 0:
         parser.error("--supernet-min-rpm-total must be > 0.")
@@ -483,7 +490,7 @@ def main():
         logger.info("Starting cleanup of expired UFW rules...")
         # Instance is already created here for cleanup
         ufw_manager_instance = ufw_handler.UFWManager(args.dry_run)
-        count = ufw_manager_instance.clean_expired_rules()
+        count = ufw_manager_instance.clean_expired_rules(delete_all=args.clean_rules_all)
         logger.info("Cleanup completed. Rules deleted: %d", count)
         return
 
