@@ -1729,9 +1729,12 @@ def main():
         except json.JSONDecodeError as exc:
             logger.error("AI advisory response was not valid JSON: %s", exc)
             sys.exit(1)
+        ai_advice_artifact = {
+            **ai_advice_artifact,
+            "operator_approval_reference": args.ai_operator_approval,
+            "dry_run_required_before_production": True,
+        }
         with open(args.ai_advice_output, "w", encoding="utf-8") as handle:
-            ai_advice_artifact["operator_approval_reference"] = args.ai_operator_approval
-            ai_advice_artifact["dry_run_required_before_production"] = True
             json.dump(ai_advice_artifact, handle, indent=2, sort_keys=True)
         print(f"AI advisory artifact written to {args.ai_advice_output}")
 
