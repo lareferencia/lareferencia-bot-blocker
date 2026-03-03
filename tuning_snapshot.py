@@ -6,13 +6,19 @@ This script summarizes a log window in a compact format intended for human
 review or LLM-assisted parameter tuning.
 """
 import argparse
+import copy
 import ipaddress
+import json
 import logging
 import math
 import os
+import re
 import shlex
+import socket
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -26,6 +32,11 @@ from strategies.unified import Strategy
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 DEFAULT_ACCESS_LOG = "/var/log/httpd/access_log"
+DEFAULT_AI_TIMEOUT_SECONDS = 30
+AI_ENDPOINT_ENV = "BOT_BLOCKER_AI_ENDPOINT_URL"
+AI_API_KEY_ENV = "BOT_BLOCKER_AI_API_KEY"
+AI_MODEL_ENV = "BOT_BLOCKER_AI_MODEL"
+MAX_AI_PARAMS_TO_CHANGE = 2
 
 DEFAULT_MIN_RPM_THRESHOLD = 10.0
 DEFAULT_MIN_SUSTAINED_PERCENT = 25.0
@@ -407,6 +418,258 @@ def parse_execution_log(filepath):
         except (TypeError, ValueError):
             continue
     return extracted
+
+
+def summarize_execution_log(filepath):
+    """Return a compact summary from blocker execution log."""
+    summary = {
+        "path": filepath,
+        "exists": bool(filepath and os.path.exists(filepath)),
+        "params_detected": False,
+        "latest_params": {},
+    }
+    if not summary["exists"]:
+        return summary
+    params = parse_execution_log(filepath)
+    summary["params_detected"] = bool(params)
+    summary["latest_params"] = params
+    return summary
+
+
+def summarize_ufw_status():
+    """Return a compact `ufw status numbered` summary."""
+    summary = {
+        "available": False,
+        "status": "unknown",
+        "numbered_rules": 0,
+        "managed_rules": 0,
+        "sample": [],
+    }
+    try:
+        result = subprocess.run(
+            ["ufw", "status", "numbered"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+    except Exception as exc:
+        summary["status"] = f"error:{exc.__class__.__name__}"
+        return summary
+
+    output = (result.stdout or "").splitlines()
+    summary["available"] = (result.returncode == 0)
+    summary["status"] = "ok" if result.returncode == 0 else f"command_failed:{result.returncode}"
+    summary["numbered_rules"] = sum(1 for line in output if line.strip().startswith("["))
+    summary["managed_rules"] = sum(1 for line in output if "blocked_by_stats_py_until_" in line)
+    summary["sample"] = output[:20]
+    return summary
+
+
+def build_ai_bundle(args, start_date_utc, end_date_utc, analysis_duration_seconds,
+                    analyzer, total_overall_requests, cpu_load_percent, simulations,
+                    command_line, execution_log_path):
+    """Build compact JSON payload for external AI analysis."""
+    baseline = simulations[0]
+    subnet_near = classify_subnet_near_misses(baseline, analysis_duration_seconds)
+    supernet_near = classify_supernet_near_misses(baseline, analysis_duration_seconds, cpu_load_percent)
+    ip_near = classify_ip_near_misses(baseline, analyzer, analysis_duration_seconds)
+
+    supernet_ids = set()
+    for subnet_obj in analyzer.subnet_metrics:
+        if isinstance(subnet_obj, ipaddress.IPv4Network) and subnet_obj.prefixlen == 24:
+            try:
+                supernet_ids.add(subnet_obj.supernet(new_prefix=16))
+            except ValueError:
+                continue
+
+    return {
+        "generated_utc": end_date_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "command_line": command_line,
+        "inputs": {
+            "log_file": args.file,
+            "time_window": args.time_window,
+            "start_date_arg": args.start_date,
+            "execution_log": execution_log_path,
+            "profile_set": args.profile_set,
+            "baseline_preset": args.baseline_preset,
+        },
+        "window": {
+            "start_utc": start_date_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end_utc": end_date_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "duration_seconds": analysis_duration_seconds,
+            "total_requests": total_overall_requests,
+            "unique_ips": len(analyzer.ip_metrics),
+            "unique_ipv4_subnets_24": len(analyzer.subnet_metrics),
+            "unique_ipv4_supernets_16": len(supernet_ids),
+            "cpu_load_percent": cpu_load_percent,
+        },
+        "baseline": {
+            "label": baseline["profile_label"],
+            "source_chain": baseline["config"].baseline_source_chain,
+            "min_rpm_threshold": baseline["config"].min_rpm_threshold,
+            "min_sustained_percent": baseline["config"].min_sustained_percent,
+            "ip_min_requests": baseline["config"].ip_min_requests,
+            "supernet_min_ip_count": baseline["config"].supernet_min_ip_count,
+            "effective_rpm_threshold": baseline["effective_rpm_threshold"],
+            "effective_sustained_percent": baseline["effective_sustained_percent"],
+        },
+        "outcome": {
+            "blocked_ips": len(baseline["blocked_ips"]),
+            "blocked_subnets_24": len(baseline["blocked_subnets_direct"]),
+            "blocked_supernets_16": len(baseline["blocked_supernets"]),
+            "estimated_rules": baseline["estimated_rules"],
+            "covered_requests": baseline["covered_requests"],
+            "coverage_percent": baseline["coverage_percent"],
+        },
+        "near_miss": {
+            "subnet_24": subnet_near,
+            "supernet_16": supernet_near,
+            "ip": ip_near,
+        },
+        "execution_log_summary": summarize_execution_log(execution_log_path),
+        "ufw_status_summary": summarize_ufw_status(),
+    }
+
+
+def _redact_path(value):
+    """Redact local paths while keeping filename hints."""
+    if not isinstance(value, str) or not value:
+        return value
+    basename = os.path.basename(value)
+    return f".../{basename}" if basename else "<path>"
+
+
+def _redact_text_for_ai(value):
+    """Redact IP/CIDR mentions from free text before external calls."""
+    if not isinstance(value, str):
+        return value
+    return re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b", "<ip>", value)
+
+
+def sanitize_ai_bundle_for_external_call(bundle):
+    """Minimize and redact sensitive details from AI input bundle."""
+    sanitized = copy.deepcopy(bundle)
+    sanitized["command_line"] = "<redacted>"
+
+    inputs = sanitized.get("inputs", {})
+    if "log_file" in inputs:
+        inputs["log_file"] = _redact_path(inputs["log_file"])
+    if "execution_log" in inputs:
+        inputs["execution_log"] = _redact_path(inputs["execution_log"])
+
+    log_summary = sanitized.get("execution_log_summary", {})
+    if "path" in log_summary:
+        log_summary["path"] = _redact_path(log_summary["path"])
+
+    ufw_summary = sanitized.get("ufw_status_summary", {})
+    if isinstance(ufw_summary.get("sample"), list):
+        ufw_summary["sample"] = [_redact_text_for_ai(line) for line in ufw_summary["sample"]]
+
+    return sanitized
+
+
+def validate_structured_ai_advice(parsed_advice):
+    """Validate strict operator-in-the-loop advisory schema."""
+    if not isinstance(parsed_advice, dict):
+        raise ValueError("AI advisory response must be a JSON object.")
+
+    required = ("params_to_change", "candidate_ips_or_subnets", "reasons", "risk_level")
+    missing = [key for key in required if key not in parsed_advice]
+    if missing:
+        raise ValueError("AI advisory response missing required keys: " + ", ".join(missing))
+
+    params_to_change = parsed_advice.get("params_to_change")
+    if not isinstance(params_to_change, list):
+        raise ValueError("AI advisory 'params_to_change' must be a list.")
+    if len(params_to_change) > MAX_AI_PARAMS_TO_CHANGE:
+        raise ValueError(
+            f"AI advisory 'params_to_change' must contain at most {MAX_AI_PARAMS_TO_CHANGE} entries."
+        )
+
+    if not isinstance(parsed_advice.get("candidate_ips_or_subnets"), list):
+        raise ValueError("AI advisory 'candidate_ips_or_subnets' must be a list.")
+    if not isinstance(parsed_advice.get("reasons"), list):
+        raise ValueError("AI advisory 'reasons' must be a list.")
+
+    risk_level = parsed_advice.get("risk_level")
+    if risk_level not in ("low", "medium", "high"):
+        raise ValueError("AI advisory 'risk_level' must be one of: low, medium, high.")
+
+
+def request_openai_compatible_advisory(ai_bundle, timeout_seconds):
+    """Call OpenAI-compatible chat endpoint with sanitized snapshot evidence."""
+    endpoint = os.getenv(AI_ENDPOINT_ENV)
+    api_key = os.getenv(AI_API_KEY_ENV)
+    model = os.getenv(AI_MODEL_ENV)
+    missing = [name for name, value in (
+        (AI_ENDPOINT_ENV, endpoint),
+        (AI_API_KEY_ENV, api_key),
+        (AI_MODEL_ENV, model),
+    ) if not value]
+    if missing:
+        raise ValueError("Missing required AI environment variables: " + ", ".join(missing))
+
+    evidence = sanitize_ai_bundle_for_external_call(ai_bundle)
+    system_prompt = (
+        "You are a bot-blocker tuning advisor. Advisory only: never propose direct enforcement. "
+        "Return strict JSON with keys: params_to_change (max 2 entries), candidate_ips_or_subnets, "
+        "reasons, risk_level, dry_run_plan. Keep recommendations conservative."
+    )
+    user_prompt = (
+        "Analyze this snapshot evidence and produce advisory output only.\n"
+        + json.dumps(evidence, ensure_ascii=False, sort_keys=True)
+    )
+    payload = {
+        "model": model,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        raw_response = response.read().decode("utf-8", errors="replace")
+    response_json = json.loads(raw_response)
+
+    choices = response_json.get("choices") or []
+    content = ""
+    if choices and isinstance(choices[0], dict):
+        message = choices[0].get("message") or {}
+        content = message.get("content") or ""
+
+    parsed_advice = None
+    if isinstance(content, str) and content.strip():
+        try:
+            parsed_advice = json.loads(content)
+        except (TypeError, ValueError):
+            raise ValueError("AI advisory content is not valid JSON.")
+    validate_structured_ai_advice(parsed_advice)
+
+    return {
+        "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "provider": "openai-compatible",
+        "endpoint": endpoint,
+        "model": model,
+        "advisory_only": True,
+        "request_evidence": evidence,
+        "response": {
+            "id": response_json.get("id"),
+            "usage": response_json.get("usage"),
+            "content": content,
+            "parsed": parsed_advice,
+        },
+    }
 
 
 def build_config_from_sources(args):
@@ -1325,6 +1588,27 @@ def main():
         default=None,
         help="Optional blocker execution log; overrides auto-detected cron log and latest PARAMS line overrides cron/preset values."
     )
+    parser.add_argument(
+        "--ai-bundle-output",
+        default=None,
+        help="Optional JSON output path with compact snapshot data for OpenAI-compatible analysis."
+    )
+    parser.add_argument(
+        "--ai-advice-output",
+        default=None,
+        help="Optional JSON output path for OpenAI-compatible advisory response artifact."
+    )
+    parser.add_argument(
+        "--ai-timeout-seconds",
+        type=int,
+        default=DEFAULT_AI_TIMEOUT_SECONDS,
+        help="HTTP timeout for the optional OpenAI-compatible advisory call."
+    )
+    parser.add_argument(
+        "--ai-operator-approval",
+        default=None,
+        help="Required operator approval reference when using --ai-advice-output (Phase 3 gate)."
+    )
 
     args = parser.parse_args()
     base_cfg, source_time_window, resolved_execution_log = build_config_from_sources(args)
@@ -1402,6 +1686,57 @@ def main():
 
     with open(args.output, "w", encoding="utf-8") as handle:
         handle.write(markdown)
+
+    ai_bundle = None
+    if args.ai_bundle_output or args.ai_advice_output:
+        ai_bundle = build_ai_bundle(
+            args=args,
+            start_date_utc=start_date_utc,
+            end_date_utc=now_utc,
+            analysis_duration_seconds=analysis_duration_seconds,
+            analyzer=analyzer,
+            total_overall_requests=total_overall_requests,
+            cpu_load_percent=cpu_load_percent,
+            simulations=simulations,
+            command_line=command_line,
+            execution_log_path=resolved_execution_log
+        )
+
+    if args.ai_bundle_output:
+        with open(args.ai_bundle_output, "w", encoding="utf-8") as handle:
+            json.dump(ai_bundle, handle, indent=2, sort_keys=True)
+        print(f"AI bundle written to {args.ai_bundle_output}")
+
+    if args.ai_advice_output:
+        if not args.ai_operator_approval:
+            logger.error("Missing required --ai-operator-approval for --ai-advice-output.")
+            sys.exit(1)
+        timeout_seconds = args.ai_timeout_seconds
+        if timeout_seconds < 1:
+            logger.warning("Adjusted --ai-timeout-seconds from %s to 1.", timeout_seconds)
+            timeout_seconds = 1
+        try:
+            ai_advice_artifact = request_openai_compatible_advisory(
+                ai_bundle=ai_bundle,
+                timeout_seconds=timeout_seconds
+            )
+        except ValueError as exc:
+            logger.error("AI advisory configuration error: %s", exc)
+            sys.exit(1)
+        except (urllib.error.URLError, socket.timeout) as exc:
+            logger.error("AI advisory network error: %s", exc)
+            sys.exit(1)
+        except json.JSONDecodeError as exc:
+            logger.error("AI advisory response was not valid JSON: %s", exc)
+            sys.exit(1)
+        ai_advice_artifact = {
+            **ai_advice_artifact,
+            "operator_approval_reference": args.ai_operator_approval,
+            "dry_run_required_before_production": True,
+        }
+        with open(args.ai_advice_output, "w", encoding="utf-8") as handle:
+            json.dump(ai_advice_artifact, handle, indent=2, sort_keys=True)
+        print(f"AI advisory artifact written to {args.ai_advice_output}")
 
     print(f"Markdown snapshot written to {args.output}")
 

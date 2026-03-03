@@ -292,6 +292,10 @@ python3 tuning_snapshot.py -s 01/Mar/2026:09:00:00 -o /tmp/tuning-snapshot.md
 | `--cron-file` | Read a cron entry from a file. | `None` |
 | `--cron-command` | Parse a literal cron line. | `None` |
 | `--execution-log` | Explicitly override the auto-detected blocker execution log. | `None` |
+| `--ai-bundle-output` | Optional JSON bundle with compact snapshot + near-miss + execution/UFW summaries for AI analysis. | `None` |
+| `--ai-advice-output` | Optional JSON artifact with OpenAI-compatible advisory response (advisory only). | `None` |
+| `--ai-timeout-seconds` | HTTP timeout for optional OpenAI-compatible advisory call. | `30` |
+| `--ai-operator-approval` | Required operator approval reference when using `--ai-advice-output` (Phase 3 gate). | `None` |
 
 ### Report Contents
 
@@ -306,6 +310,31 @@ The generated Markdown report includes:
 - the exact parameters and source chain used to build the report
 
 This makes the output reproducible and suitable for reviewing threshold changes before running `blocker.py --block`.
+
+If `--ai-bundle-output` is provided, the script also writes a compact JSON bundle designed for OpenAI-compatible advisory flows (for example OpenRouter).
+
+If `--ai-advice-output` is provided, the script sends a sanitized evidence bundle to an OpenAI-compatible endpoint and stores the full advisory artifact to disk (still advisory-only, never auto-applied). Responses must be strict JSON proposals with `params_to_change`, `candidate_ips_or_subnets`, `reasons`, and `risk_level`; free-form text responses are rejected. Phase 3 gate also requires `--ai-operator-approval`.
+
+### Optional OpenAI-Compatible Advisory Mode (Phase 2b)
+
+Set these environment variables before using `--ai-advice-output`:
+
+- `BOT_BLOCKER_AI_ENDPOINT_URL`
+- `BOT_BLOCKER_AI_API_KEY`
+- `BOT_BLOCKER_AI_MODEL`
+
+Example:
+
+```bash
+BOT_BLOCKER_AI_ENDPOINT_URL="https://openrouter.ai/api/v1/chat/completions" \
+BOT_BLOCKER_AI_API_KEY="***" \
+BOT_BLOCKER_AI_MODEL="openai/gpt-4o-mini" \
+python3 tuning_snapshot.py \
+  --time-window hour \
+  --ai-bundle-output /tmp/tuning-snapshot-ai.json \
+  --ai-advice-output /tmp/tuning-advice.json \
+  --ai-operator-approval OPS-2026-03-03-01
+```
 
 ## Whitelist Format
 

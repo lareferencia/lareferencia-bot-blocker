@@ -389,3 +389,69 @@ The operator should still decide:
 - whether the traffic is legitimate
 - whether the risk of collateral blocking is acceptable
 - whether the experiment is safe to move toward production
+
+## Action Plan: OpenAI-Compatible Advisor (OpenRouter Example)
+
+The idea is viable and consistent with the current `tuning_snapshot.py` workflow, as long as AI output is kept as **advisory** and not applied directly to UFW.
+
+Below is an incremental implementation plan that keeps the operator fully in control.
+
+### Why It Fits This Repository
+
+- `tuning_snapshot.py` already produces compact, structured context for AI consumption.
+- `TUNING_SNAPSHOT_CONTEXT.md` already defines safe interpretation rules.
+- The blocker already supports dry-run and explicit parameter tuning, which is ideal for controlled experiments.
+
+### Additional Inputs To Include
+
+To improve recommendation quality, extend the snapshot package (or companion context) with:
+
+1. blocker execution log summary (recent `PARAMS`, block counts, errors)
+2. `ufw status numbered` summary (current active rules and expiration metadata)
+3. log-stat deltas across recent windows (not only one point-in-time snapshot)
+
+### Proposed Phased Implementation
+
+1. **Phase 1 (No runtime changes, documentation + process)**
+   - Define a standard "AI input bundle":
+     - `tuning-snapshot.md`
+     - `TUNING_SNAPSHOT_CONTEXT.md`
+     - summarized blocker execution logs
+     - summarized UFW state
+   - Define a constrained prompt template requiring:
+     - bottleneck diagnosis (`IP`/`/24`/`/16`)
+     - maximum 1-2 threshold changes
+     - explicit dry-run validation step
+     - false-positive risk notes
+
+2. **Phase 2 (Optional script support, still advisory only)**
+   - Add an optional exporter that writes a single JSON payload with the same evidence used in the Markdown snapshot.
+   - Add an optional client mode for OpenAI-compatible APIs (such as OpenRouter), controlled by environment variables:
+     - endpoint URL
+     - API key
+     - model name
+   - Persist AI responses as artifacts for auditability.
+
+3. **Phase 3 (Operator-in-the-loop enforcement)**
+   - Add a validation gate: never execute direct blocks from AI output.
+   - Accept only structured proposals (`params_to_change`, `candidate_ips_or_subnets`, `reasons`, `risk_level`).
+   - Require human approval + `blocker.py --dry-run` before any production change.
+
+### Security and Safety Constraints
+
+- Never send raw full logs when a summarized view is enough (data minimization).
+- Redact sensitive paths, tokens, and host-identifying details before external API calls.
+- Redaction examples: local filesystem paths, hostnames, internal private IP ranges,
+  usernames, and full request URLs with query strings.
+- Enforce strict output schema validation; reject free-form "auto-action" responses.
+- Maintain an allowlist policy for any direct IP/subnet suggestion and review against trusted networks.
+- Keep "auto-apply" disabled by default.
+
+### Definition of Success
+
+This approach is working when:
+
+- AI recommendations are reproducible from the same evidence bundle.
+- Recommended changes stay conservative (1-2 thresholds at a time).
+- Dry-run results show measurable improvement with controlled rule growth.
+- Operators can trace each recommendation back to snapshot evidence and safety checks.
