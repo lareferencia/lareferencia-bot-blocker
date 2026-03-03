@@ -292,6 +292,7 @@ python3 tuning_snapshot.py -s 01/Mar/2026:09:00:00 -o /tmp/tuning-snapshot.md
 | `--cron-file` | Read a cron entry from a file. | `None` |
 | `--cron-command` | Parse a literal cron line. | `None` |
 | `--execution-log` | Explicitly override the auto-detected blocker execution log. | `None` |
+| `--ai-bundle-output` | Optional JSON bundle with compact snapshot + near-miss + execution/UFW summaries for AI analysis. | `None` |
 
 ### Report Contents
 
@@ -306,6 +307,8 @@ The generated Markdown report includes:
 - the exact parameters and source chain used to build the report
 
 This makes the output reproducible and suitable for reviewing threshold changes before running `blocker.py --block`.
+
+If `--ai-bundle-output` is provided, the script also writes a compact JSON bundle designed for OpenAI-compatible advisory flows (for example OpenRouter).
 
 ## Whitelist Format
 

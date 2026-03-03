@@ -7,6 +7,7 @@ review or LLM-assisted parameter tuning.
 """
 import argparse
 import ipaddress
+import json
 import logging
 import math
 import os
@@ -407,6 +408,118 @@ def parse_execution_log(filepath):
         except (TypeError, ValueError):
             continue
     return extracted
+
+
+def summarize_execution_log(filepath):
+    """Return a compact summary from blocker execution log."""
+    summary = {
+        "path": filepath,
+        "exists": bool(filepath and os.path.exists(filepath)),
+        "params_detected": False,
+        "latest_params": {},
+    }
+    if not summary["exists"]:
+        return summary
+    params = parse_execution_log(filepath)
+    summary["params_detected"] = bool(params)
+    summary["latest_params"] = params
+    return summary
+
+
+def summarize_ufw_status():
+    """Return a compact `ufw status numbered` summary."""
+    summary = {
+        "available": False,
+        "status": "unknown",
+        "numbered_rules": 0,
+        "managed_rules": 0,
+        "sample": [],
+    }
+    try:
+        result = subprocess.run(
+            ["ufw", "status", "numbered"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+    except Exception as exc:
+        summary["status"] = f"error:{exc.__class__.__name__}"
+        return summary
+
+    output = (result.stdout or "").splitlines()
+    summary["available"] = (result.returncode == 0)
+    summary["status"] = "ok" if result.returncode == 0 else f"command_failed:{result.returncode}"
+    summary["numbered_rules"] = sum(1 for line in output if line.strip().startswith("["))
+    summary["managed_rules"] = sum(1 for line in output if "blocked_by_stats_py_until_" in line)
+    summary["sample"] = output[:20]
+    return summary
+
+
+def build_ai_bundle(args, start_date_utc, end_date_utc, analysis_duration_seconds,
+                    analyzer, total_overall_requests, cpu_load_percent, simulations,
+                    command_line, execution_log_path):
+    """Build compact JSON payload for external AI analysis."""
+    baseline = simulations[0]
+    subnet_near = classify_subnet_near_misses(baseline, analysis_duration_seconds)
+    supernet_near = classify_supernet_near_misses(baseline, analysis_duration_seconds, cpu_load_percent)
+    ip_near = classify_ip_near_misses(baseline, analyzer, analysis_duration_seconds)
+
+    supernet_ids = set()
+    for subnet_obj in analyzer.subnet_metrics:
+        if isinstance(subnet_obj, ipaddress.IPv4Network) and subnet_obj.prefixlen == 24:
+            try:
+                supernet_ids.add(subnet_obj.supernet(new_prefix=16))
+            except ValueError:
+                continue
+
+    return {
+        "generated_utc": end_date_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "command_line": command_line,
+        "inputs": {
+            "log_file": args.file,
+            "time_window": args.time_window,
+            "start_date_arg": args.start_date,
+            "execution_log": execution_log_path,
+            "profile_set": args.profile_set,
+            "baseline_preset": args.baseline_preset,
+        },
+        "window": {
+            "start_utc": start_date_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end_utc": end_date_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "duration_seconds": analysis_duration_seconds,
+            "total_requests": total_overall_requests,
+            "unique_ips": len(analyzer.ip_metrics),
+            "unique_ipv4_subnets_24": len(analyzer.subnet_metrics),
+            "unique_ipv4_supernets_16": len(supernet_ids),
+            "cpu_load_percent": cpu_load_percent,
+        },
+        "baseline": {
+            "label": baseline["profile_label"],
+            "source_chain": baseline["config"].baseline_source_chain,
+            "min_rpm_threshold": baseline["config"].min_rpm_threshold,
+            "min_sustained_percent": baseline["config"].min_sustained_percent,
+            "ip_min_requests": baseline["config"].ip_min_requests,
+            "supernet_min_ip_count": baseline["config"].supernet_min_ip_count,
+            "effective_rpm_threshold": baseline["effective_rpm_threshold"],
+            "effective_sustained_percent": baseline["effective_sustained_percent"],
+        },
+        "outcome": {
+            "blocked_ips": len(baseline["blocked_ips"]),
+            "blocked_subnets_24": len(baseline["blocked_subnets_direct"]),
+            "blocked_supernets_16": len(baseline["blocked_supernets"]),
+            "estimated_rules": baseline["estimated_rules"],
+            "covered_requests": baseline["covered_requests"],
+            "coverage_percent": baseline["coverage_percent"],
+        },
+        "near_miss": {
+            "subnet_24": subnet_near,
+            "supernet_16": supernet_near,
+            "ip": ip_near,
+        },
+        "execution_log_summary": summarize_execution_log(execution_log_path),
+        "ufw_status_summary": summarize_ufw_status(),
+    }
 
 
 def build_config_from_sources(args):
@@ -1325,6 +1438,11 @@ def main():
         default=None,
         help="Optional blocker execution log; overrides auto-detected cron log and latest PARAMS line overrides cron/preset values."
     )
+    parser.add_argument(
+        "--ai-bundle-output",
+        default=None,
+        help="Optional JSON output path with compact snapshot data for OpenAI-compatible analysis."
+    )
 
     args = parser.parse_args()
     base_cfg, source_time_window, resolved_execution_log = build_config_from_sources(args)
@@ -1402,6 +1520,23 @@ def main():
 
     with open(args.output, "w", encoding="utf-8") as handle:
         handle.write(markdown)
+
+    if args.ai_bundle_output:
+        ai_bundle = build_ai_bundle(
+            args=args,
+            start_date_utc=start_date_utc,
+            end_date_utc=now_utc,
+            analysis_duration_seconds=analysis_duration_seconds,
+            analyzer=analyzer,
+            total_overall_requests=total_overall_requests,
+            cpu_load_percent=cpu_load_percent,
+            simulations=simulations,
+            command_line=command_line,
+            execution_log_path=resolved_execution_log
+        )
+        with open(args.ai_bundle_output, "w", encoding="utf-8") as handle:
+            json.dump(ai_bundle, handle, indent=2, sort_keys=True)
+        print(f"AI bundle written to {args.ai_bundle_output}")
 
     print(f"Markdown snapshot written to {args.output}")
 
