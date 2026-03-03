@@ -394,6 +394,8 @@ The operator should still decide:
 
 The idea is viable and consistent with the current `tuning_snapshot.py` workflow, as long as AI output is kept as **advisory** and not applied directly to UFW.
 
+Below is an incremental implementation plan that keeps the operator fully in control.
+
 ### Why It Fits This Repository
 
 - `tuning_snapshot.py` already produces compact, structured context for AI consumption.
@@ -424,7 +426,7 @@ To improve recommendation quality, extend the snapshot package (or companion con
 
 2. **Phase 2 (Optional script support, still advisory only)**
    - Add an optional exporter that writes a single JSON payload with the same evidence used in the Markdown snapshot.
-   - Add an optional client mode for OpenAI-compatible APIs (for example OpenRouter), controlled by environment variables:
+   - Add an optional client mode for OpenAI-compatible APIs (such as OpenRouter), controlled by environment variables:
      - endpoint URL
      - API key
      - model name
@@ -439,6 +441,8 @@ To improve recommendation quality, extend the snapshot package (or companion con
 
 - Never send raw full logs when a summarized view is enough (data minimization).
 - Redact sensitive paths, tokens, and host-identifying details before external API calls.
+- Redaction examples: local filesystem paths, hostnames, internal private IP ranges,
+  usernames, and full request URLs with query strings.
 - Enforce strict output schema validation; reject free-form "auto-action" responses.
 - Maintain an allowlist policy for any direct IP/subnet suggestion and review against trusted networks.
 - Keep "auto-apply" disabled by default.
