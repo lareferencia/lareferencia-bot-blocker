@@ -176,7 +176,77 @@ def test_ai_advice_writes_artifact():
         server.server_close()
 
 
+def test_ai_advice_rejects_unstructured_response():
+    try:
+        import psutil  # noqa: F401
+    except Exception:
+        print("SKIP: psutil is not available in this environment.")
+        return
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            response = {
+                "id": "mock-chat-2",
+                "usage": {"total_tokens": 7},
+                "choices": [{"message": {"content": "please block everything now"}}],
+            }
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode("utf-8"))
+
+        def log_message(self, msg_format, *args):  # noqa: A003
+            return
+
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    script_path = os.path.join(repo_root, "tuning_snapshot.py")
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        endpoint = f"http://127.0.0.1:{server.server_port}/v1/chat/completions"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = os.path.join(tmpdir, "access.log")
+            md_path = os.path.join(tmpdir, "snapshot.md")
+            advice_path = os.path.join(tmpdir, "advice.json")
+            _write_dummy_log(log_path)
+
+            env = os.environ.copy()
+            env["BOT_BLOCKER_AI_ENDPOINT_URL"] = endpoint
+            env["BOT_BLOCKER_AI_API_KEY"] = "test-key"
+            env["BOT_BLOCKER_AI_MODEL"] = "test-model"
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    script_path,
+                    "--file",
+                    log_path,
+                    "--time-window",
+                    "hour",
+                    "--output",
+                    md_path,
+                    "--ai-advice-output",
+                    advice_path,
+                    "--log-level",
+                    "ERROR",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+            assert result.returncode != 0
+            assert "AI advisory configuration error" in (result.stderr + result.stdout)
+            assert "not valid JSON" in (result.stderr + result.stdout)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 if __name__ == "__main__":
     test_ai_advice_requires_env_vars()
     test_ai_advice_writes_artifact()
+    test_ai_advice_rejects_unstructured_response()
     print("Tuning snapshot AI advisory tests passed.")

@@ -312,7 +312,7 @@ This makes the output reproducible and suitable for reviewing threshold changes 
 
 If `--ai-bundle-output` is provided, the script also writes a compact JSON bundle designed for OpenAI-compatible advisory flows (for example OpenRouter).
 
-If `--ai-advice-output` is provided, the script sends a sanitized evidence bundle to an OpenAI-compatible endpoint and stores the full advisory artifact to disk (still advisory-only, never auto-applied).
+If `--ai-advice-output` is provided, the script sends a sanitized evidence bundle to an OpenAI-compatible endpoint and stores the full advisory artifact to disk (still advisory-only, never auto-applied). Responses must be strict JSON proposals with `params_to_change`, `candidate_ips_or_subnets`, `reasons`, and `risk_level`; free-form text responses are rejected.
 
 ### Optional OpenAI-Compatible Advisory Mode (Phase 2b)
 

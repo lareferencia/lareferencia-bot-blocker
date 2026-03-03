@@ -568,6 +568,32 @@ def sanitize_ai_bundle_for_external_call(bundle):
     return sanitized
 
 
+def validate_structured_ai_advice(parsed_advice):
+    """Validate strict operator-in-the-loop advisory schema."""
+    if not isinstance(parsed_advice, dict):
+        raise ValueError("AI advisory response must be a JSON object.")
+
+    required = ("params_to_change", "candidate_ips_or_subnets", "reasons", "risk_level")
+    missing = [key for key in required if key not in parsed_advice]
+    if missing:
+        raise ValueError("AI advisory response missing required keys: " + ", ".join(missing))
+
+    params_to_change = parsed_advice.get("params_to_change")
+    if not isinstance(params_to_change, list):
+        raise ValueError("AI advisory 'params_to_change' must be a list.")
+    if len(params_to_change) > 2:
+        raise ValueError("AI advisory 'params_to_change' must contain at most 2 entries.")
+
+    if not isinstance(parsed_advice.get("candidate_ips_or_subnets"), list):
+        raise ValueError("AI advisory 'candidate_ips_or_subnets' must be a list.")
+    if not isinstance(parsed_advice.get("reasons"), list):
+        raise ValueError("AI advisory 'reasons' must be a list.")
+
+    risk_level = parsed_advice.get("risk_level")
+    if risk_level not in ("low", "medium", "high"):
+        raise ValueError("AI advisory 'risk_level' must be one of: low, medium, high.")
+
+
 def request_openai_compatible_advisory(ai_bundle, timeout_seconds):
     """Call OpenAI-compatible chat endpoint with sanitized snapshot evidence."""
     endpoint = os.getenv(AI_ENDPOINT_ENV)
@@ -624,10 +650,8 @@ def request_openai_compatible_advisory(ai_bundle, timeout_seconds):
         try:
             parsed_advice = json.loads(content)
         except (TypeError, ValueError):
-            logging.getLogger("tuning_snapshot").warning(
-                "AI response content was not valid JSON; storing raw_text."
-            )
-            parsed_advice = {"raw_text": content}
+            raise ValueError("AI advisory content is not valid JSON.")
+    validate_structured_ai_advice(parsed_advice)
 
     return {
         "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
