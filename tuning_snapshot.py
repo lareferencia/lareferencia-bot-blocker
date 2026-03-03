@@ -36,6 +36,7 @@ DEFAULT_AI_TIMEOUT_SECONDS = 30
 AI_ENDPOINT_ENV = "BOT_BLOCKER_AI_ENDPOINT_URL"
 AI_API_KEY_ENV = "BOT_BLOCKER_AI_API_KEY"
 AI_MODEL_ENV = "BOT_BLOCKER_AI_MODEL"
+MAX_AI_PARAMS_TO_CHANGE = 2
 
 DEFAULT_MIN_RPM_THRESHOLD = 10.0
 DEFAULT_MIN_SUSTAINED_PERCENT = 25.0
@@ -581,8 +582,10 @@ def validate_structured_ai_advice(parsed_advice):
     params_to_change = parsed_advice.get("params_to_change")
     if not isinstance(params_to_change, list):
         raise ValueError("AI advisory 'params_to_change' must be a list.")
-    if len(params_to_change) > 2:
-        raise ValueError("AI advisory 'params_to_change' must contain at most 2 entries.")
+    if len(params_to_change) > MAX_AI_PARAMS_TO_CHANGE:
+        raise ValueError(
+            f"AI advisory 'params_to_change' must contain at most {MAX_AI_PARAMS_TO_CHANGE} entries."
+        )
 
     if not isinstance(parsed_advice.get("candidate_ips_or_subnets"), list):
         raise ValueError("AI advisory 'candidate_ips_or_subnets' must be a list.")
