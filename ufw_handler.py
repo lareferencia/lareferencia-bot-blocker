@@ -4,7 +4,6 @@ Module for handling interactions with the UFW firewall using ISO 8601 comments.
 """
 import re
 import subprocess
-import sys
 import os
 from datetime import datetime, timezone, timedelta
 import ipaddress
@@ -51,15 +50,25 @@ class UFWManager:
         """Executes a UFW command."""
         full_command_list = ['sudo', 'ufw'] + command_args
         command_str = ' '.join(full_command_list)
+        is_read_only = bool(command_args) and command_args[0] == 'status'
 
-        if self.dry_run:
+        if self.dry_run and not is_read_only:
             log_prefix = "[DRY RUN]"
             logger.info(f"{log_prefix} Would execute: {command_str}")
             return subprocess.CompletedProcess(args=full_command_list, returncode=0, stdout=f"{log_prefix} Command not executed.\n", stderr="")
 
         logger.debug(f"Executing: {command_str}")
         try:
-            result = subprocess.run(full_command_list, capture_output=True, text=True, check=False)
+            env = os.environ.copy()
+            env["LC_ALL"] = "C"
+            env["LANG"] = "C"
+            result = subprocess.run(
+                full_command_list,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
             if result.returncode != 0:
                 logger.warning(f"Command '{command_str}' failed with code {result.returncode}")
                 logger.warning(f"Stderr: {result.stderr.strip()}")
@@ -126,82 +135,6 @@ class UFWManager:
         except Exception:
             return None
 
-    def _remove_expired_rules_from_file(self, rules_file, rules_to_remove):
-        """
-        Remove expired rule blocks from a UFW rules file.
-
-        Each block consists of a ``### tuple ###`` metadata line followed by
-        one or more iptables command lines (``-A`` / ``-I``).  A block is
-        removed when any of its lines contains both the target IP/subnet string
-        and the associated comment string from *rules_to_remove*.
-
-        Args:
-            rules_file (str): Path to a UFW rules file (e.g. /etc/ufw/user.rules).
-            rules_to_remove (set): Set of (ip_str, comment_str) pairs to match.
-
-        Returns:
-            int: Number of rule blocks removed.
-        """
-        try:
-            with open(rules_file, 'r') as fh:
-                lines = fh.readlines()
-        except FileNotFoundError:
-            logger.debug("Rules file not found, skipping: %s", rules_file)
-            return 0
-        except OSError as exc:
-            logger.error("Could not read %s: %s", rules_file, exc)
-            return 0
-
-        new_lines = []
-        removed_blocks = 0
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            if line.strip().startswith('### tuple ###'):
-                # Collect the full block: the tuple metadata line plus all
-                # immediately following iptables command lines.
-                block = [line]
-                j = i + 1
-                while j < len(lines) and lines[j].strip().startswith(_UFW_IPTABLES_PREFIXES):
-                    block.append(lines[j])
-                    j += 1
-
-                # Remove the block if any line in it references one of the
-                # (ip, comment) pairs we want to delete.
-                # Use " {ip_str}" (space-prefixed) to avoid matching a longer
-                # IP that happens to contain ip_str as a substring
-                # (e.g. prevent '1.2.3.4/32' matching '11.2.3.4/32').
-                if any(
-                    f" {ip_str}" in bl and comment_str in bl
-                    for ip_str, comment_str in rules_to_remove
-                    for bl in block
-                ):
-                    removed_blocks += 1
-                    logger.debug(
-                        "Removing expired rule block from %s: %s",
-                        rules_file, block[0].strip(),
-                    )
-                else:
-                    new_lines.extend(block)
-                i = j
-            else:
-                new_lines.append(line)
-                i += 1
-
-        if removed_blocks > 0:
-            try:
-                with open(rules_file, 'w') as fh:
-                    fh.writelines(new_lines)
-                logger.debug(
-                    "Removed %d expired rule block(s) from %s.",
-                    removed_blocks, rules_file,
-                )
-            except OSError as exc:
-                logger.error("Could not write %s: %s", rules_file, exc)
-                return 0
-
-        return removed_blocks
-
     def block_target(self, subnet_or_ip_obj, block_duration_minutes):
         """
         Blocks an IP or subnet using UFW on TCP web ports only with an ISO 8601 expiration comment.
@@ -263,7 +196,7 @@ class UFWManager:
         Removes expired UFW rules based on the ISO 8601 UTC timestamp comment.
 
         Returns:
-            int: The number of rules deleted.
+            int: The number of UFW rules deleted.
         """
         deleted_count = 0
         logger.debug(f"Starting expired rule cleanup (prefix: '{COMMENT_PREFIX}').")
@@ -272,9 +205,6 @@ class UFWManager:
             if result.returncode != 0:
                 logger.error(f"Failed to get UFW status: {result.stderr}")
                 return 0
-            if self.dry_run and "[DRY RUN]" in result.stdout:
-                 logger.info("[DRY RUN] Skipping rule parsing.")
-                 return 0
 
             logger.debug("--- UFW Status Output ---")
             logger.debug(result.stdout)
@@ -290,8 +220,8 @@ class UFWManager:
 
             now_utc = datetime.now(timezone.utc)
             logger.debug(f"Current UTC time for comparison: {now_utc}")
-            parsed_rules = []
-            expired_count = 0
+            expired_rule_entries = []
+            expired_rule_count = 0
             held_by_grace = 0
 
             lines = result.stdout.splitlines()
@@ -310,14 +240,14 @@ class UFWManager:
                         family_key = self._network_family_key(target_network)
 
                         if now_utc >= expiry_time_utc:
-                            expired_count += 1
+                            expired_rule_count += 1
                             age_seconds = (now_utc - expiry_time_utc).total_seconds()
                             age_minutes = age_seconds / 60.0
                             is_eligible = age_minutes >= CLEANUP_GRACE_MINUTES
                             if not is_eligible:
                                 held_by_grace += 1
 
-                            parsed_rules.append({
+                            expired_rule_entries.append({
                                 'rule_number': rule_number,
                                 'expiry_time_utc': expiry_time_utc,
                                 'expiry_timestamp_str': expiry_timestamp_str,
@@ -333,16 +263,42 @@ class UFWManager:
                     except Exception as e:
                          logger.error(f"Error processing rule details for rule {rule_number_str} - Error: {e}")
 
-            if expired_count == 0:
+            if expired_rule_count == 0:
                 logger.info("No expired rules found matching the criteria.")
                 return 0
 
-            eligible_rules = [r for r in parsed_rules if r['eligible']]
-            eligible_count = len(eligible_rules)
+            # Group the port-specific rules into logical block entries so we never
+            # delete only one port (80 or 443) for the same target/comment pair.
+            grouped_blocks = {}
+            for rule in expired_rule_entries:
+                target_network = rule.get('target_network')
+                target_key = str(target_network) if target_network is not None else None
+                group_key = (target_key, rule['expiry_timestamp_str'])
+                group = grouped_blocks.get(group_key)
+                if group is None:
+                    group = {
+                        'target_key': target_key,
+                        'expiry_time_utc': rule['expiry_time_utc'],
+                        'expiry_timestamp_str': rule['expiry_timestamp_str'],
+                        'eligible': rule['eligible'],
+                        'family_key': rule.get('family_key'),
+                        'rule_numbers': [],
+                    }
+                    grouped_blocks[group_key] = group
+                else:
+                    group['eligible'] = group['eligible'] and rule['eligible']
+                    if rule['expiry_time_utc'] < group['expiry_time_utc']:
+                        group['expiry_time_utc'] = rule['expiry_time_utc']
+                group['rule_numbers'].append(rule['rule_number'])
+
+            expired_block_count = len(grouped_blocks)
+            eligible_blocks = [block for block in grouped_blocks.values() if block['eligible']]
+            eligible_count = len(eligible_blocks)
             if eligible_count == 0:
                 logger.info(
-                    "Cleanup heuristic held all expired rules in grace period (expired=%d, grace=%dm).",
-                    expired_count,
+                    "Cleanup heuristic held all expired blocks in grace period (expired_rules=%d, expired_blocks=%d, grace=%dm).",
+                    expired_rule_count,
+                    expired_block_count,
                     CLEANUP_GRACE_MINUTES
                 )
                 return 0
@@ -359,93 +315,68 @@ class UFWManager:
                 )
 
             # Prefer oldest expired rules, but limit deletions per /16 (IPv4) or /48 (IPv6) family.
-            eligible_rules.sort(key=lambda r: r['expiry_time_utc'])
+            eligible_blocks.sort(key=lambda block: block['expiry_time_utc'])
             family_delete_count = defaultdict(int)
-            selected_rules = []
+            selected_blocks = []
             held_by_family_cap = 0
 
-            for rule in eligible_rules:
-                if len(selected_rules) >= max_delete_this_run:
+            for block in eligible_blocks:
+                if len(selected_blocks) >= max_delete_this_run:
                     break
 
-                family_key = rule.get('family_key')
+                family_key = block.get('family_key')
                 if family_key and family_delete_count[family_key] >= CLEANUP_PER_FAMILY_DELETE_CAP:
                     held_by_family_cap += 1
                     continue
 
-                selected_rules.append(rule)
+                selected_blocks.append(block)
                 if family_key:
                     family_delete_count[family_key] += 1
 
-            if not selected_rules:
+            if not selected_blocks:
                 logger.info(
-                    "Cleanup heuristic selected 0 deletions (eligible=%d, held_by_family_cap=%d).",
+                    "Cleanup heuristic selected 0 block deletions (eligible_blocks=%d, held_by_family_cap=%d).",
                     eligible_count,
                     held_by_family_cap
                 )
                 return 0
 
             logger.info(
-                "Cleanup heuristic: expired=%d, eligible=%d, selected=%d, held_grace=%d, held_family=%d, cap=%d.",
-                expired_count,
+                "Cleanup heuristic: expired_rules=%d, expired_blocks=%d, eligible_blocks=%d, selected_blocks=%d, held_grace=%d, held_family=%d, cap=%d.",
+                expired_rule_count,
+                expired_block_count,
                 eligible_count,
-                len(selected_rules),
+                len(selected_blocks),
                 held_by_grace,
                 held_by_family_cap,
                 max_delete_this_run
             )
 
-            # Build (ip_str, comment_str) pairs so we can match exact rule blocks in
-            # the UFW rules files.  Using per-rule keys avoids accidentally removing
-            # an unselected rule that happens to share the same expiry timestamp.
-            rules_to_remove = set()
-            for rule in selected_rules:
-                ts_str = rule.get('expiry_timestamp_str', '')
-                target = rule.get('target_network')
-                if ts_str and target:
-                    rules_to_remove.add((str(target), f"{COMMENT_PREFIX}{ts_str}"))
-                else:
-                    logger.debug(
-                        "Skipping rule %s: missing expiry_timestamp_str or target_network.",
-                        rule.get('rule_number'),
-                    )
+            rule_numbers_to_delete = []
+            for block in selected_blocks:
+                rule_numbers_to_delete.extend(block['rule_numbers'])
+
+            # Delete in descending order so the rule numbers reported by
+            # `ufw status numbered` remain valid for the remaining deletions.
+            rule_numbers_to_delete = sorted(set(rule_numbers_to_delete), reverse=True)
 
             if self.dry_run:
-                deleted_count = len(selected_rules)
+                deleted_count = len(rule_numbers_to_delete)
+                logger.info(
+                    "[DRY RUN] Cleanup would delete %d rule(s): %s",
+                    deleted_count,
+                    ', '.join(str(rule_number) for rule_number in rule_numbers_to_delete)
+                )
             else:
-                # Edit the persistent UFW rules files then reload.
-                # `ufw delete <num>` triggers initcaps() in UFW's Python backend, which
-                # runs `iptables -N <chain>`.  On some systems (e.g. Amazon Linux with
-                # iptables-nft) iptables writes the "Chain already exists" error to
-                # stderr while UFW only checks stdout, so UFW treats it as fatal and
-                # returns code 1 without deleting anything.
-                # `ufw reload` (= stop + start) removes all chains first, so the
-                # fresh `iptables -N` calls in start/initcaps succeed cleanly.
-                ufw_rules_files = ['/etc/ufw/user.rules', '/etc/ufw/user6.rules']
-                total_removed = 0
-                for rules_file in UFW_RULES_FILES:
-                    total_removed += self._remove_expired_rules_from_file(
-                        rules_file, rules_to_remove
-                    )
+                for rule_number in rule_numbers_to_delete:
+                    delete_result = self._run_ufw_command(['--force', 'delete', str(rule_number)])
+                    if delete_result.returncode == 0:
+                        deleted_count += 1
+                        continue
 
-                if total_removed > 0:
-                    reload_result = self._run_ufw_command(['--force', 'reload'])
-                    if reload_result.returncode == 0:
-                        deleted_count = total_removed
-                        logger.info(
-                            "Cleanup applied: removed %d rule block(s) from rules files and reloaded UFW.",
-                            deleted_count,
-                        )
-                    else:
-                        logger.error(
-                            "UFW reload failed after editing rules files. "
-                            "Rules files were modified but iptables state may be stale."
-                        )
-                else:
-                    logger.warning(
-                        "No expired rule blocks found in UFW rules files "
-                        "(%s). Rules may have been added outside this script.",
-                        ', '.join(UFW_RULES_FILES),
+                    logger.error(
+                        "Failed to delete expired UFW rule number %s via CLI.",
+                        rule_number,
                     )
 
         except Exception as e:
