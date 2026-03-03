@@ -73,10 +73,13 @@ def test_ai_advice_writes_artifact():
         print("SKIP: psutil is not available in this environment.")
         return
 
+    captured = {"auth": None, "body": None}
+
     class _Handler(BaseHTTPRequestHandler):
         def do_POST(self):  # noqa: N802
             length = int(self.headers.get("Content-Length", "0"))
-            self.rfile.read(length)
+            captured["auth"] = self.headers.get("Authorization")
+            captured["body"] = self.rfile.read(length).decode("utf-8")
             response = {
                 "id": "mock-chat-1",
                 "usage": {"total_tokens": 42},
@@ -121,7 +124,8 @@ def test_ai_advice_writes_artifact():
 
             env = os.environ.copy()
             env["BOT_BLOCKER_AI_ENDPOINT_URL"] = endpoint
-            env["BOT_BLOCKER_AI_API_KEY"] = "test-key"
+            test_api_key = "test-key"
+            env["BOT_BLOCKER_AI_API_KEY"] = test_api_key
             env["BOT_BLOCKER_AI_MODEL"] = "test-model"
 
             result = subprocess.run(
@@ -154,6 +158,19 @@ def test_ai_advice_writes_artifact():
             assert artifact["advisory_only"] is True
             assert artifact["provider"] == "openai-compatible"
             assert artifact["response"]["parsed"]["risk_level"] == "low"
+            assert captured["auth"] == f"Bearer {test_api_key}"
+            request_payload = json.loads(captured["body"])
+            assert "messages" in request_payload, "Expected messages in outbound payload"
+            assert len(request_payload["messages"]) >= 2, "Expected system+user messages in outbound payload"
+            assert request_payload["messages"][0].get("role") == "system", "Expected first message role=system"
+            assert request_payload["messages"][1].get("role") == "user", "Expected second message role=user"
+            user_content = request_payload["messages"][1]["content"]
+            content_parts = user_content.split("\n", 1)
+            assert len(content_parts) == 2, "Expected prompt header and JSON evidence in user content"
+            assert content_parts[0].strip(), "Expected non-empty prompt header in user content"
+            evidence_json = content_parts[1]
+            evidence = json.loads(evidence_json)
+            assert evidence["command_line"] == "<redacted>"
     finally:
         server.shutdown()
         server.server_close()
