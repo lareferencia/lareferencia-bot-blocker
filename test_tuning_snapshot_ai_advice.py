@@ -54,6 +54,8 @@ def test_ai_advice_requires_env_vars():
                 md_path,
                 "--ai-advice-output",
                 advice_path,
+                "--ai-operator-approval",
+                "OPS-TEST-1",
                 "--log-level",
                 "ERROR",
             ],
@@ -64,6 +66,50 @@ def test_ai_advice_requires_env_vars():
         )
         assert result.returncode != 0
         assert "Missing required AI environment variables" in (result.stderr + result.stdout)
+
+
+def test_ai_advice_requires_operator_approval():
+    try:
+        import psutil  # noqa: F401
+    except Exception:
+        print("SKIP: psutil is not available in this environment.")
+        return
+
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    script_path = os.path.join(repo_root, "tuning_snapshot.py")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = os.path.join(tmpdir, "access.log")
+        md_path = os.path.join(tmpdir, "snapshot.md")
+        advice_path = os.path.join(tmpdir, "advice.json")
+        _write_dummy_log(log_path)
+
+        env = os.environ.copy()
+        env["BOT_BLOCKER_AI_ENDPOINT_URL"] = "http://127.0.0.1:9/v1/chat/completions"
+        env["BOT_BLOCKER_AI_API_KEY"] = "test-key"
+        env["BOT_BLOCKER_AI_MODEL"] = "test-model"
+        result = subprocess.run(
+            [
+                "python3",
+                script_path,
+                "--file",
+                log_path,
+                "--time-window",
+                "hour",
+                "--output",
+                md_path,
+                "--ai-advice-output",
+                advice_path,
+                "--log-level",
+                "ERROR",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        assert result.returncode != 0
+        assert "Missing required --ai-operator-approval" in (result.stderr + result.stdout)
 
 
 def test_ai_advice_writes_artifact():
@@ -142,6 +188,8 @@ def test_ai_advice_writes_artifact():
                     bundle_path,
                     "--ai-advice-output",
                     advice_path,
+                    "--ai-operator-approval",
+                    "OPS-TEST-2",
                     "--log-level",
                     "ERROR",
                 ],
@@ -157,6 +205,8 @@ def test_ai_advice_writes_artifact():
                 artifact = json.load(handle)
             assert artifact["advisory_only"] is True
             assert artifact["provider"] == "openai-compatible"
+            assert artifact["operator_approval_reference"] == "OPS-TEST-2"
+            assert artifact["dry_run_required_before_production"] is True
             assert artifact["response"]["parsed"]["risk_level"] == "low"
             assert captured["auth"] == f"Bearer {test_api_key}"
             request_payload = json.loads(captured["body"])
@@ -229,6 +279,8 @@ def test_ai_advice_rejects_unstructured_response():
                     md_path,
                     "--ai-advice-output",
                     advice_path,
+                    "--ai-operator-approval",
+                    "OPS-TEST-3",
                     "--log-level",
                     "ERROR",
                 ],
@@ -247,6 +299,7 @@ def test_ai_advice_rejects_unstructured_response():
 
 if __name__ == "__main__":
     test_ai_advice_requires_env_vars()
+    test_ai_advice_requires_operator_approval()
     test_ai_advice_writes_artifact()
     test_ai_advice_rejects_unstructured_response()
     print("Tuning snapshot AI advisory tests passed.")

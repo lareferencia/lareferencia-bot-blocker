@@ -1604,6 +1604,11 @@ def main():
         default=DEFAULT_AI_TIMEOUT_SECONDS,
         help="HTTP timeout for the optional OpenAI-compatible advisory call."
     )
+    parser.add_argument(
+        "--ai-operator-approval",
+        default=None,
+        help="Required operator approval reference when using --ai-advice-output (Phase 3 gate)."
+    )
 
     args = parser.parse_args()
     base_cfg, source_time_window, resolved_execution_log = build_config_from_sources(args)
@@ -1703,6 +1708,9 @@ def main():
         print(f"AI bundle written to {args.ai_bundle_output}")
 
     if args.ai_advice_output:
+        if not args.ai_operator_approval:
+            logger.error("Missing required --ai-operator-approval for --ai-advice-output.")
+            sys.exit(1)
         timeout_seconds = args.ai_timeout_seconds
         if timeout_seconds < 1:
             logger.warning("Adjusted --ai-timeout-seconds from %s to 1.", timeout_seconds)
@@ -1722,6 +1730,8 @@ def main():
             logger.error("AI advisory response was not valid JSON: %s", exc)
             sys.exit(1)
         with open(args.ai_advice_output, "w", encoding="utf-8") as handle:
+            ai_advice_artifact["operator_approval_reference"] = args.ai_operator_approval
+            ai_advice_artifact["dry_run_required_before_production"] = True
             json.dump(ai_advice_artifact, handle, indent=2, sort_keys=True)
         print(f"AI advisory artifact written to {args.ai_advice_output}")
 
