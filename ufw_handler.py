@@ -55,8 +55,9 @@ class UFWManager:
         final_command = full_command_list
 
         is_delete_command = command_args and command_args[0] == 'delete'
+        is_status_command = command_args and command_args[0] == 'status'
 
-        if self.dry_run:
+        if self.dry_run and not is_status_command:
             log_prefix = "[DRY RUN]"
             if is_delete_command:
                 command_str = f"echo y | {command_str}"
@@ -186,9 +187,13 @@ class UFWManager:
              return False
 
 
-    def clean_expired_rules(self):
+    def clean_expired_rules(self, delete_all=False):
         """
         Removes expired UFW rules based on the ISO 8601 UTC timestamp comment.
+
+        Args:
+            delete_all (bool): If True, delete all expired rules in one run and
+                bypass grace period and cleanup throttling.
 
         Returns:
             int: The number of rules deleted.
@@ -200,9 +205,6 @@ class UFWManager:
             if result.returncode != 0:
                 logger.error(f"Failed to get UFW status: {result.stderr}")
                 return 0
-            if self.dry_run and "[DRY RUN]" in result.stdout:
-                 logger.info("[DRY RUN] Skipping rule parsing.")
-                 return 0
 
             logger.debug("--- UFW Status Output ---")
             logger.debug(result.stdout)
@@ -241,7 +243,7 @@ class UFWManager:
                             expired_count += 1
                             age_seconds = (now_utc - expiry_time_utc).total_seconds()
                             age_minutes = age_seconds / 60.0
-                            is_eligible = age_minutes >= CLEANUP_GRACE_MINUTES
+                            is_eligible = delete_all or (age_minutes >= CLEANUP_GRACE_MINUTES)
                             if not is_eligible:
                                 held_by_grace += 1
 
@@ -274,35 +276,46 @@ class UFWManager:
                 )
                 return 0
 
-            # Heuristic cap: if host is still under pressure, release more slowly.
-            max_delete_this_run = CLEANUP_MAX_DELETE_PER_RUN
-            load_ratio = self._system_load_ratio()
-            if load_ratio is not None and load_ratio >= CLEANUP_HIGH_LOAD_RATIO:
-                max_delete_this_run = min(max_delete_this_run, CLEANUP_HIGH_LOAD_MAX_DELETE)
-                logger.info(
-                    "Cleanup running under high load (ratio=%.2f). Reducing delete cap to %d.",
-                    load_ratio,
-                    max_delete_this_run
-                )
-
-            # Prefer oldest expired rules, but limit deletions per /16 (IPv4) or /48 (IPv6) family.
             eligible_rules.sort(key=lambda r: r['expiry_time_utc'])
-            family_delete_count = defaultdict(int)
-            selected_rules = []
-            held_by_family_cap = 0
+            if delete_all:
+                selected_rules = eligible_rules
+                held_by_family_cap = 0
+                max_delete_this_run = len(selected_rules)
+                logger.info(
+                    "Cleanup full mode: expired=%d, eligible=%d, selected=%d (grace/caps disabled).",
+                    expired_count,
+                    eligible_count,
+                    len(selected_rules)
+                )
+            else:
+                # Heuristic cap: if host is still under pressure, release more slowly.
+                max_delete_this_run = CLEANUP_MAX_DELETE_PER_RUN
+                load_ratio = self._system_load_ratio()
+                if load_ratio is not None and load_ratio >= CLEANUP_HIGH_LOAD_RATIO:
+                    max_delete_this_run = min(max_delete_this_run, CLEANUP_HIGH_LOAD_MAX_DELETE)
+                    logger.info(
+                        "Cleanup running under high load (ratio=%.2f). Reducing delete cap to %d.",
+                        load_ratio,
+                        max_delete_this_run
+                    )
 
-            for rule in eligible_rules:
-                if len(selected_rules) >= max_delete_this_run:
-                    break
+                # Prefer oldest expired rules, but limit deletions per /16 (IPv4) or /48 (IPv6) family.
+                family_delete_count = defaultdict(int)
+                selected_rules = []
+                held_by_family_cap = 0
 
-                family_key = rule.get('family_key')
-                if family_key and family_delete_count[family_key] >= CLEANUP_PER_FAMILY_DELETE_CAP:
-                    held_by_family_cap += 1
-                    continue
+                for rule in eligible_rules:
+                    if len(selected_rules) >= max_delete_this_run:
+                        break
 
-                selected_rules.append(rule)
-                if family_key:
-                    family_delete_count[family_key] += 1
+                    family_key = rule.get('family_key')
+                    if family_key and family_delete_count[family_key] >= CLEANUP_PER_FAMILY_DELETE_CAP:
+                        held_by_family_cap += 1
+                        continue
+
+                    selected_rules.append(rule)
+                    if family_key:
+                        family_delete_count[family_key] += 1
 
             if not selected_rules:
                 logger.info(
@@ -312,15 +325,16 @@ class UFWManager:
                 )
                 return 0
 
-            logger.info(
-                "Cleanup heuristic: expired=%d, eligible=%d, selected=%d, held_grace=%d, held_family=%d, cap=%d.",
-                expired_count,
-                eligible_count,
-                len(selected_rules),
-                held_by_grace,
-                held_by_family_cap,
-                max_delete_this_run
-            )
+            if not delete_all:
+                logger.info(
+                    "Cleanup heuristic: expired=%d, eligible=%d, selected=%d, held_grace=%d, held_family=%d, cap=%d.",
+                    expired_count,
+                    eligible_count,
+                    len(selected_rules),
+                    held_by_grace,
+                    held_by_family_cap,
+                    max_delete_this_run
+                )
 
             # Delete by rule number descending to preserve numbering as we remove rules.
             selected_rule_numbers = [r['rule_number'] for r in selected_rules]

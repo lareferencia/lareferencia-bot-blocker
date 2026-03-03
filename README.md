@@ -116,6 +116,9 @@ sudo python3 blocker.py --clean-rules
 
 # See which rules would be removed (Dry Run)
 sudo python3 blocker.py --clean-rules --dry-run
+
+# Remove all expired UFW rules in one run (ignores grace period and cleanup throttling)
+sudo python3 blocker.py --clean-rules --clean-rules-all
 ```
 
 ## Options
@@ -147,6 +150,7 @@ sudo python3 blocker.py --clean-rules --dry-run
 | `--log-file`                   | File path to save execution logs.                                                                       | `None`                    |
 | `--log-level`                  | Logging detail level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`).                                 | `INFO`                    |
 | `--clean-rules`                | Run cleanup of expired UFW rules and exit. Requires permissions.                                        | `False`                   |
+| `--clean-rules-all`            | With `--clean-rules`, remove all expired UFW rules in one run (ignores grace period and cleanup limits). | `False`                |
 | `--silent`                     | Suppress most console output (except block actions and final summary).                                  | `False`                   |
 
 ## Unified Strategy
