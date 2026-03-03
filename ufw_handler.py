@@ -56,19 +56,18 @@ class UFWManager:
 
         is_delete_command = command_args and command_args[0] == 'delete'
 
+        if is_delete_command:
+            full_command_list = ['sudo', 'ufw', '--force'] + command_args
+            command_str = ' '.join(full_command_list)
+            final_command = full_command_list
+            logger.debug("Using '--force' for UFW delete command to skip confirmation.")
+
         if self.dry_run:
             log_prefix = "[DRY RUN]"
-            if is_delete_command:
-                command_str = f"echo y | {command_str}"
             logger.info(f"{log_prefix} Would execute: {command_str}")
             return subprocess.CompletedProcess(args=final_command, returncode=0, stdout=f"{log_prefix} Command not executed.\n", stderr="")
         else:
             log_prefix = ""
-            if is_delete_command:
-                command_str = f"echo y | {command_str}"
-                shell_needed = True
-                final_command = command_str
-                logger.debug("Using 'shell=True' for UFW delete command to handle confirmation.")
 
             logger.debug(f"{log_prefix}Executing: {command_str}")
             try:
