@@ -1,6 +1,6 @@
 import os
 import logging
-from datetime import datetime, timezone
+import ipaddress
 from threat_analyzer import ThreatAnalyzer
 
 # Setup basic logging
@@ -61,13 +61,23 @@ def test_streaming_analysis():
     
     threats = analyzer.identify_threats(
         strategy_name='unified',
-        effective_min_requests=1,
         shared_context_params=shared_context,
         config=Config()
     )
     
     if threats is not None:
         print(f"Threats identified: {len(threats)}")
+        single_ip_threat = None
+        for threat in threats:
+            if threat['id'] == ipaddress.ip_network("10.0.0.0/24"):
+                single_ip_threat = threat
+                break
+        if single_ip_threat is None:
+            print("FAIL: Expected threat for 10.0.0.0/24 not found.")
+            return
+        if single_ip_threat.get('single_ip') != '10.0.0.1':
+            print(f"FAIL: Expected single_ip=10.0.0.1, got {single_ip_threat.get('single_ip')}")
+            return
         print("Identify Threats verification passed.")
     else:
         print("FAIL: identify_threats returned None")

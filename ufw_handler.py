@@ -4,7 +4,6 @@ Module for handling interactions with the UFW firewall using ISO 8601 comments.
 """
 import re
 import subprocess
-import sys
 import os
 from datetime import datetime, timezone, timedelta
 import ipaddress
@@ -16,6 +15,7 @@ logger = logging.getLogger('botstats.ufw')
 
 # Comment prefix for rules added by this script
 COMMENT_PREFIX = "blocked_by_stats_py_until_"
+BLOCK_TCP_PORTS = (80, 443)
 
 # Cleanup heuristic constants (intentionally fixed, no CLI flags).
 CLEANUP_GRACE_MINUTES = 45
@@ -47,46 +47,41 @@ class UFWManager:
             return False
 
     def _run_ufw_command(self, command_args):
-        """Executes a UFW command, handling potential 'delete' confirmation."""
-        base_command = ['sudo', 'ufw']
-        full_command_list = base_command + command_args
+        """Executes a UFW command."""
+        full_command_list = ['sudo', 'ufw'] + command_args
         command_str = ' '.join(full_command_list)
-        shell_needed = False
-        final_command = full_command_list
+        is_read_only = bool(command_args) and command_args[0] == 'status'
 
-        is_delete_command = command_args and command_args[0] == 'delete'
-        is_status_command = command_args and command_args[0] == 'status'
-
-        if self.dry_run and not is_status_command:
+        if self.dry_run and not is_read_only:
             log_prefix = "[DRY RUN]"
-            if is_delete_command:
-                command_str = f"echo y | {command_str}"
             logger.info(f"{log_prefix} Would execute: {command_str}")
-            return subprocess.CompletedProcess(args=final_command, returncode=0, stdout=f"{log_prefix} Command not executed.\n", stderr="")
-        else:
-            log_prefix = ""
-            if is_delete_command:
-                command_str = f"echo y | {command_str}"
-                shell_needed = True
-                final_command = command_str
-                logger.debug("Using 'shell=True' for UFW delete command to handle confirmation.")
+            return subprocess.CompletedProcess(args=full_command_list, returncode=0, stdout=f"{log_prefix} Command not executed.\n", stderr="")
 
-            logger.debug(f"{log_prefix}Executing: {command_str}")
-            try:
-                result = subprocess.run(final_command, capture_output=True, text=True, check=False, shell=shell_needed)
-                if result.returncode != 0:
-                    logger.warning(f"Command '{command_str}' failed with code {result.returncode}")
-                    logger.warning(f"Stderr: {result.stderr.strip()}")
-                    logger.warning(f"Stdout: {result.stdout.strip()}")
-                else:
-                    logger.debug(f"Command '{command_str}' executed successfully.")
-                return result
-            except FileNotFoundError:
-                logger.error(f"Error: 'sudo' or 'ufw' command not found.")
-                return subprocess.CompletedProcess(args=final_command, returncode=127, stdout="", stderr="Command not found")
-            except Exception as e:
-                logger.error(f"Error executing UFW command '{command_str}': {e}")
-                return subprocess.CompletedProcess(args=final_command, returncode=1, stdout="", stderr=str(e))
+        logger.debug(f"Executing: {command_str}")
+        try:
+            env = os.environ.copy()
+            env["LC_ALL"] = "C"
+            env["LANG"] = "C"
+            result = subprocess.run(
+                full_command_list,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+            if result.returncode != 0:
+                logger.warning(f"Command '{command_str}' failed with code {result.returncode}")
+                logger.warning(f"Stderr: {result.stderr.strip()}")
+                logger.warning(f"Stdout: {result.stdout.strip()}")
+            else:
+                logger.debug(f"Command '{command_str}' executed successfully.")
+            return result
+        except FileNotFoundError:
+            logger.error(f"Error: 'sudo' or 'ufw' command not found.")
+            return subprocess.CompletedProcess(args=full_command_list, returncode=127, stdout="", stderr="Command not found")
+        except Exception as e:
+            logger.error(f"Error executing UFW command '{command_str}': {e}")
+            return subprocess.CompletedProcess(args=full_command_list, returncode=1, stdout="", stderr=str(e))
 
     @staticmethod
     def _extract_target_network(line):
@@ -140,11 +135,10 @@ class UFWManager:
         except Exception:
             return None
 
-
     def block_target(self, subnet_or_ip_obj, block_duration_minutes):
         """
-        Blocks an IP or subnet using UFW with an ISO 8601 expiration comment.
-        Inserts the rule at position 1 for priority.
+        Blocks an IP or subnet using UFW on TCP web ports only with an ISO 8601 expiration comment.
+        Inserts the rules at position 1 for priority.
 
         Args:
             subnet_or_ip_obj (ipaddress.network or ipaddress.address): IP/Subnet object to block.
@@ -171,20 +165,30 @@ class UFWManager:
         expiry_str_iso = expiry_time_utc.strftime('%Y%m%dT%H%M%SZ')
         comment = f"{COMMENT_PREFIX}{expiry_str_iso}"
 
-        # Construct command to insert rule at position 1
-        command_args = ["insert", "1", "deny", "from", target_str, "to", "any", "comment", comment]
-
         logger.info(f"Attempting to block: {target_str} until {expiry_str_iso} UTC")
-        result = self._run_ufw_command(command_args)
+        all_rules_succeeded = True
+        for port in BLOCK_TCP_PORTS:
+            command_args = [
+                "insert", "1", "deny",
+                "from", target_str,
+                "to", "any",
+                "port", str(port),
+                "proto", "tcp",
+                "comment", comment
+            ]
+            result = self._run_ufw_command(command_args)
 
-        # Check for success (return code 0) or if rule already existed
-        if result.returncode == 0:
-             return True
-        elif result.returncode !=0 and ("Skipping adding existing rule" in result.stdout or "Skipping adding existing rule" in result.stderr):
-             logger.info(f"Note: The rule for {target_str} probably already existed.")
-             return True # Consider already existing as 'success' in this context
-        else:
-             return False
+            # Check for success (return code 0) or if rule already existed
+            if result.returncode == 0:
+                continue
+            if "Skipping adding existing rule" in result.stdout or "Skipping adding existing rule" in result.stderr:
+                logger.info(f"Note: The {port}/tcp rule for {target_str} probably already existed.")
+                continue
+
+            all_rules_succeeded = False
+            logger.error("Failed to add %s/tcp deny rule for %s.", port, target_str)
+
+        return all_rules_succeeded
 
 
     def clean_expired_rules(self, delete_all=False):
@@ -196,7 +200,7 @@ class UFWManager:
                 bypass grace period and cleanup throttling.
 
         Returns:
-            int: The number of rules deleted.
+            int: The number of UFW rules deleted.
         """
         deleted_count = 0
         logger.debug(f"Starting expired rule cleanup (prefix: '{COMMENT_PREFIX}').")
@@ -220,8 +224,8 @@ class UFWManager:
 
             now_utc = datetime.now(timezone.utc)
             logger.debug(f"Current UTC time for comparison: {now_utc}")
-            parsed_rules = []
-            expired_count = 0
+            expired_rule_entries = []
+            expired_rule_count = 0
             held_by_grace = 0
 
             lines = result.stdout.splitlines()
@@ -240,16 +244,17 @@ class UFWManager:
                         family_key = self._network_family_key(target_network)
 
                         if now_utc >= expiry_time_utc:
-                            expired_count += 1
+                            expired_rule_count += 1
                             age_seconds = (now_utc - expiry_time_utc).total_seconds()
                             age_minutes = age_seconds / 60.0
                             is_eligible = delete_all or (age_minutes >= CLEANUP_GRACE_MINUTES)
                             if not is_eligible:
                                 held_by_grace += 1
 
-                            parsed_rules.append({
+                            expired_rule_entries.append({
                                 'rule_number': rule_number,
                                 'expiry_time_utc': expiry_time_utc,
+                                'expiry_timestamp_str': expiry_timestamp_str,
                                 'age_minutes': age_minutes,
                                 'eligible': is_eligible,
                                 'target_network': target_network,
@@ -262,30 +267,57 @@ class UFWManager:
                     except Exception as e:
                          logger.error(f"Error processing rule details for rule {rule_number_str} - Error: {e}")
 
-            if expired_count == 0:
+            if expired_rule_count == 0:
                 logger.info("No expired rules found matching the criteria.")
                 return 0
 
-            eligible_rules = [r for r in parsed_rules if r['eligible']]
-            eligible_count = len(eligible_rules)
+            # Group the port-specific rules into logical block entries so we never
+            # delete only one port (80 or 443) for the same target/comment pair.
+            grouped_blocks = {}
+            for rule in expired_rule_entries:
+                target_network = rule.get('target_network')
+                target_key = str(target_network) if target_network is not None else None
+                group_key = (target_key, rule['expiry_timestamp_str'])
+                group = grouped_blocks.get(group_key)
+                if group is None:
+                    group = {
+                        'target_key': target_key,
+                        'expiry_time_utc': rule['expiry_time_utc'],
+                        'expiry_timestamp_str': rule['expiry_timestamp_str'],
+                        'eligible': rule['eligible'],
+                        'family_key': rule.get('family_key'),
+                        'rule_numbers': [],
+                    }
+                    grouped_blocks[group_key] = group
+                else:
+                    group['eligible'] = group['eligible'] and rule['eligible']
+                    if rule['expiry_time_utc'] < group['expiry_time_utc']:
+                        group['expiry_time_utc'] = rule['expiry_time_utc']
+                group['rule_numbers'].append(rule['rule_number'])
+
+            expired_block_count = len(grouped_blocks)
+            eligible_blocks = [block for block in grouped_blocks.values() if block['eligible']]
+            eligible_count = len(eligible_blocks)
             if eligible_count == 0:
                 logger.info(
-                    "Cleanup heuristic held all expired rules in grace period (expired=%d, grace=%dm).",
-                    expired_count,
+                    "Cleanup heuristic held all expired blocks in grace period (expired_rules=%d, expired_blocks=%d, grace=%dm).",
+                    expired_rule_count,
+                    expired_block_count,
                     CLEANUP_GRACE_MINUTES
                 )
                 return 0
 
-            eligible_rules.sort(key=lambda r: r['expiry_time_utc'])
+            eligible_blocks.sort(key=lambda block: block['expiry_time_utc'])
             if delete_all:
-                selected_rules = eligible_rules
+                selected_blocks = eligible_blocks
                 held_by_family_cap = 0
-                max_delete_this_run = len(selected_rules)
+                max_delete_this_run = len(selected_blocks)
                 logger.info(
-                    "Cleanup full mode: expired=%d, eligible=%d, selected=%d (grace/caps disabled).",
-                    expired_count,
+                    "Cleanup full mode: expired_rules=%d, expired_blocks=%d, eligible_blocks=%d, selected_blocks=%d (grace/caps disabled).",
+                    expired_rule_count,
+                    expired_block_count,
                     eligible_count,
-                    len(selected_rules)
+                    len(selected_blocks)
                 )
             else:
                 # Heuristic cap: if host is still under pressure, release more slowly.
@@ -301,25 +333,25 @@ class UFWManager:
 
                 # Prefer oldest expired rules, but limit deletions per /16 (IPv4) or /48 (IPv6) family.
                 family_delete_count = defaultdict(int)
-                selected_rules = []
+                selected_blocks = []
                 held_by_family_cap = 0
 
-                for rule in eligible_rules:
-                    if len(selected_rules) >= max_delete_this_run:
+                for block in eligible_blocks:
+                    if len(selected_blocks) >= max_delete_this_run:
                         break
 
-                    family_key = rule.get('family_key')
+                    family_key = block.get('family_key')
                     if family_key and family_delete_count[family_key] >= CLEANUP_PER_FAMILY_DELETE_CAP:
                         held_by_family_cap += 1
                         continue
 
-                    selected_rules.append(rule)
+                    selected_blocks.append(block)
                     if family_key:
                         family_delete_count[family_key] += 1
 
-            if not selected_rules:
+            if not selected_blocks:
                 logger.info(
-                    "Cleanup heuristic selected 0 deletions (eligible=%d, held_by_family_cap=%d).",
+                    "Cleanup heuristic selected 0 block deletions (eligible_blocks=%d, held_by_family_cap=%d).",
                     eligible_count,
                     held_by_family_cap
                 )
@@ -327,30 +359,42 @@ class UFWManager:
 
             if not delete_all:
                 logger.info(
-                    "Cleanup heuristic: expired=%d, eligible=%d, selected=%d, held_grace=%d, held_family=%d, cap=%d.",
-                    expired_count,
+                    "Cleanup heuristic: expired_rules=%d, expired_blocks=%d, eligible_blocks=%d, selected_blocks=%d, held_grace=%d, held_family=%d, cap=%d.",
+                    expired_rule_count,
+                    expired_block_count,
                     eligible_count,
-                    len(selected_rules),
+                    len(selected_blocks),
                     held_by_grace,
                     held_by_family_cap,
                     max_delete_this_run
                 )
 
-            # Delete by rule number descending to preserve numbering as we remove rules.
-            selected_rule_numbers = [r['rule_number'] for r in selected_rules]
-            for rule_num in sorted(selected_rule_numbers, reverse=True):
-                delete_result = self._run_ufw_command(['delete', str(rule_num)])
-                if delete_result.returncode == 0 and not self.dry_run:
-                    if "Deleting:" in delete_result.stdout and f"rule {rule_num}" in delete_result.stdout:
-                        logger.info(f"Successfully deleted rule {rule_num} (confirmed by stdout).")
+            rule_numbers_to_delete = []
+            for block in selected_blocks:
+                rule_numbers_to_delete.extend(block['rule_numbers'])
+
+            # Delete in descending order so the rule numbers reported by
+            # `ufw status numbered` remain valid for the remaining deletions.
+            rule_numbers_to_delete = sorted(set(rule_numbers_to_delete), reverse=True)
+
+            if self.dry_run:
+                deleted_count = len(rule_numbers_to_delete)
+                logger.info(
+                    "[DRY RUN] Cleanup would delete %d rule(s): %s",
+                    deleted_count,
+                    ', '.join(str(rule_number) for rule_number in rule_numbers_to_delete)
+                )
+            else:
+                for rule_number in rule_numbers_to_delete:
+                    delete_result = self._run_ufw_command(['--force', 'delete', str(rule_number)])
+                    if delete_result.returncode == 0:
                         deleted_count += 1
-                    elif "Skipping" not in delete_result.stdout:
-                        logger.info(f"Successfully executed delete command for rule {rule_num} (return code 0).")
-                        deleted_count += 1
-                    else:
-                        logger.warning(f"Delete command for rule {rule_num} returned 0 but stdout indicates skipping: {delete_result.stdout}")
-                elif self.dry_run:
-                    deleted_count += 1
+                        continue
+
+                    logger.error(
+                        "Failed to delete expired UFW rule number %s via CLI.",
+                        rule_number,
+                    )
 
         except Exception as e:
             logger.error(f"An error occurred during rule cleanup: {e}", exc_info=True)
