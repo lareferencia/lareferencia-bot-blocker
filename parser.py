@@ -102,49 +102,60 @@ def stream_log_entries(log_file, start_date_utc=None, whitelist=None):
             logger.info("Processing log file forwards (oldest first)")
             log_source = open(log_file, 'r', encoding='utf-8', errors='ignore')
 
+        stop_reverse_scan = False
         for line in log_source:
             total_lines += 1
-            match = LOG_PATTERN.search(line)
-            if not match:
+            matches = list(LOG_PATTERN.finditer(line))
+            if not matches:
                 skipped_parsing += 1
                 continue
 
-            data = match.groupdict()
-            ip = data['ip']
-            dt_str = data['datetime'] # Get raw datetime string
+            if reading_mode == "reverse":
+                matches_iter = reversed(matches)
+            else:
+                matches_iter = matches
 
-            # 1. Whitelist Check (early exit)
-            if is_ip_in_whitelist(ip, whitelist):
-                skipped_whitelist += 1
-                continue
+            for match in matches_iter:
+                data = match.groupdict()
+                ip = data['ip']
+                dt_str = data['datetime'] # Get raw datetime string
 
-            # 2. Date Parsing and Filtering
-            timestamp_utc = parse_datetime_to_utc(dt_str) # Pass raw string
-            if timestamp_utc is None:
-                skipped_date += 1
-                continue
+                # 1. Whitelist Check (early exit)
+                if is_ip_in_whitelist(ip, whitelist):
+                    skipped_whitelist += 1
+                    continue
 
-            # --- Add Debugging for reverse mode ---
-            if reading_mode == "reverse" and first_line_processed_reverse:
-                logger.debug(f"First line (reverse): Raw='{dt_str}', ParsedUTC='{timestamp_utc}', StartDateUTC='{start_date_utc}'")
-                first_line_processed_reverse = False # Only log once
-            # --- End Debugging ---
-
-            # Stop reverse reading if timestamp is before start_date_utc
-            if start_date_utc and timestamp_utc < start_date_utc:
-                if reading_mode == "reverse":
-                    logger.info(f"Reached entry older than {start_date_utc}. Stopping reverse scan.")
-                    # --- Add Debugging ---
-                    logger.debug(f"Stopping because ParsedUTC ({timestamp_utc}) < StartDateUTC ({start_date_utc})")
-                    # --- End Debugging ---
-                    break
-                else: # Forward reading, just skip this line
+                # 2. Date Parsing and Filtering
+                timestamp_utc = parse_datetime_to_utc(dt_str) # Pass raw string
+                if timestamp_utc is None:
                     skipped_date += 1
                     continue
 
-            # Yield relevant data
-            yield {'ip': ip, 'timestamp': timestamp_utc}
-            yielded_count += 1
+                # --- Add Debugging for reverse mode ---
+                if reading_mode == "reverse" and first_line_processed_reverse:
+                    logger.debug(f"First line (reverse): Raw='{dt_str}', ParsedUTC='{timestamp_utc}', StartDateUTC='{start_date_utc}'")
+                    first_line_processed_reverse = False # Only log once
+                # --- End Debugging ---
+
+                # Stop reverse reading if timestamp is before start_date_utc
+                if start_date_utc and timestamp_utc < start_date_utc:
+                    if reading_mode == "reverse":
+                        logger.info(f"Reached entry older than {start_date_utc}. Stopping reverse scan.")
+                        # --- Add Debugging ---
+                        logger.debug(f"Stopping because ParsedUTC ({timestamp_utc}) < StartDateUTC ({start_date_utc})")
+                        # --- End Debugging ---
+                        stop_reverse_scan = True
+                        break
+                    else: # Forward reading, just skip this line
+                        skipped_date += 1
+                        continue
+
+                # Yield relevant data
+                yield {'ip': ip, 'timestamp': timestamp_utc}
+                yielded_count += 1
+
+            if stop_reverse_scan:
+                break
 
         logger.info(f"Finished reading log file. Total lines: {total_lines}")
         logger.info(f"Entries yielded: {yielded_count}, Skipped (Parsing): {skipped_parsing}, Skipped (Date): {skipped_date}, Skipped (Whitelist): {skipped_whitelist}")
