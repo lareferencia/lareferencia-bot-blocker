@@ -2,7 +2,12 @@ import ipaddress
 import subprocess
 from datetime import datetime, timedelta, timezone
 
-from ufw_handler import BLOCK_TCP_PORTS, COMMENT_PREFIX, UFWManager
+from ufw_handler import (
+    BLOCK_TCP_PORTS,
+    CLEANUP_FORCE_DELETE_AFTER_HOURS,
+    COMMENT_PREFIX,
+    UFWManager,
+)
 
 
 class RecordingUFWManager(UFWManager):
@@ -95,8 +100,30 @@ def test_get_active_managed_targets_returns_only_unexpired_normalized_targets():
     assert active_targets == {"14.191.0.0/16", "1.2.3.4"}
 
 
+def test_clean_expired_rules_always_drains_stale_backlog():
+    now_utc = datetime.now(timezone.utc)
+    stale_ts = (
+        now_utc - timedelta(hours=CLEANUP_FORCE_DELETE_AFTER_HOURS + 1)
+    ).strftime("%Y%m%dT%H%M%SZ")
+    status_lines = [
+        f"[{idx:2d}] 80/tcp DENY IN 14.191.{idx}.0/24 # {COMMENT_PREFIX}{stale_ts}"
+        for idx in range(1, 31)
+    ]
+    manager = CleanupRecordingUFWManager(
+        status_stdout="\n".join(status_lines),
+        dry_run=True,
+        load_ratio=10.0,
+    )
+
+    deleted_count = manager.clean_expired_rules()
+
+    assert deleted_count == 30
+    assert manager.commands == [["status", "numbered"]]
+
+
 if __name__ == "__main__":
     test_block_target_restricts_rules_to_web_ports()
     test_clean_expired_rules_uses_cli_delete_in_descending_order()
     test_get_active_managed_targets_returns_only_unexpired_normalized_targets()
+    test_clean_expired_rules_always_drains_stale_backlog()
     print("UFW handler test passed.")

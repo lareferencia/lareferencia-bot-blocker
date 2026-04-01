@@ -23,6 +23,7 @@ CLEANUP_MAX_DELETE_PER_RUN = 24
 CLEANUP_PER_FAMILY_DELETE_CAP = 2
 CLEANUP_HIGH_LOAD_RATIO = 1.5
 CLEANUP_HIGH_LOAD_MAX_DELETE = 8
+CLEANUP_FORCE_DELETE_AFTER_HOURS = 48
 
 class UFWManager:
     """
@@ -348,6 +349,7 @@ class UFWManager:
                         'expiry_timestamp_str': rule['expiry_timestamp_str'],
                         'eligible': rule['eligible'],
                         'family_key': rule.get('family_key'),
+                        'max_age_minutes': rule.get('age_minutes', 0.0),
                         'rule_numbers': [],
                     }
                     grouped_blocks[group_key] = group
@@ -355,6 +357,7 @@ class UFWManager:
                     group['eligible'] = group['eligible'] and rule['eligible']
                     if rule['expiry_time_utc'] < group['expiry_time_utc']:
                         group['expiry_time_utc'] = rule['expiry_time_utc']
+                    group['max_age_minutes'] = max(group['max_age_minutes'], rule.get('age_minutes', 0.0))
                 group['rule_numbers'].append(rule['rule_number'])
 
             expired_block_count = len(grouped_blocks)
@@ -382,6 +385,16 @@ class UFWManager:
                     len(selected_blocks)
                 )
             else:
+                force_delete_after_minutes = CLEANUP_FORCE_DELETE_AFTER_HOURS * 60
+                stale_blocks = [
+                    block for block in eligible_blocks
+                    if block.get('max_age_minutes', 0.0) >= force_delete_after_minutes
+                ]
+                recent_eligible_blocks = [
+                    block for block in eligible_blocks
+                    if block.get('max_age_minutes', 0.0) < force_delete_after_minutes
+                ]
+
                 # Heuristic cap: if host is still under pressure, release more slowly.
                 max_delete_this_run = CLEANUP_MAX_DELETE_PER_RUN
                 load_ratio = self._system_load_ratio()
@@ -395,11 +408,11 @@ class UFWManager:
 
                 # Prefer oldest expired rules, but limit deletions per /16 (IPv4) or /48 (IPv6) family.
                 family_delete_count = defaultdict(int)
-                selected_blocks = []
+                selected_blocks = list(stale_blocks)
                 held_by_family_cap = 0
 
-                for block in eligible_blocks:
-                    if len(selected_blocks) >= max_delete_this_run:
+                for block in recent_eligible_blocks:
+                    if len(selected_blocks) >= len(stale_blocks) + max_delete_this_run:
                         break
 
                     family_key = block.get('family_key')
@@ -421,14 +434,17 @@ class UFWManager:
 
             if not delete_all:
                 logger.info(
-                    "Cleanup heuristic: expired_rules=%d, expired_blocks=%d, eligible_blocks=%d, selected_blocks=%d, held_grace=%d, held_family=%d, cap=%d.",
+                    "Cleanup heuristic: expired_rules=%d, expired_blocks=%d, eligible_blocks=%d, stale_blocks=%d, selected_blocks=%d, held_grace=%d, held_family=%d, cap=%d, force_after_h=%d.",
                     expired_rule_count,
                     expired_block_count,
                     eligible_count,
+                    len(stale_blocks),
                     len(selected_blocks),
                     held_by_grace,
                     held_by_family_cap,
                     max_delete_this_run
+                    ,
+                    CLEANUP_FORCE_DELETE_AFTER_HOURS
                 )
 
             rule_numbers_to_delete = []

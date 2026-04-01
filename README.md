@@ -124,6 +124,13 @@ sudo python3 blocker.py --clean-rules --dry-run
 sudo python3 blocker.py --clean-rules --clean-rules-all
 ```
 
+Cleanup policy:
+- Recently expired rules are removed gradually.
+- Cleanup applies a 45-minute grace period after expiry before rules become eligible.
+- Normal cleanup is throttled and may slow down further under high host load.
+- Expired backlog older than 48 hours is always drained, even when normal throttling would otherwise hold it back.
+- `--clean-rules-all` still bypasses all cleanup throttling and grace checks.
+
 ## Options
 
 | Option                         | Description                                                                                              | Default                   |
