@@ -6,16 +6,16 @@ import re
 from datetime import datetime, timezone
 import ipaddress
 import logging
-import math
 import os # Needed for _read_lines_reverse
 
 # Logger for this module
 logger = logging.getLogger('botstats.parser')
 
-# Pre-compile log pattern for efficiency
-LOG_PATTERN = re.compile(
-    r'(?P<ip>\S+) \S+ \S+ \[(?P<datetime>[^\]]+)\] "(?P<request>[^"]+)" '
-    r'(?P<status>\d{3}) (?P<size>\S+) "(?P<referer>[^"]+)" "(?P<useragent>[^"]+)"'
+# Lightweight record locator: we only need source IP and timestamp prefix.
+# This accepts both the existing "full" format and shorter lines that stop after
+# status/size, because the rest of the line is intentionally ignored.
+RECORD_START_PATTERN = re.compile(
+    r'((?:\d{1,3}\.){3}\d{1,3}|(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f:.]+)\s+\S+\s+\S+\s+\['
 )
 
 # Helper function for efficient reverse reading (copied from threat_analyzer)
@@ -68,6 +68,24 @@ def parse_datetime_to_utc(dt_str):
             logger.warning(f"Skipping line due to malformed date: {dt_str}")
             return None
 
+
+def _extract_minimal_entries(line):
+    """
+    Extracts only the metric-relevant fields from a physical log line.
+
+    Returns:
+        list[tuple[str, str]]: (ip, raw_datetime_string) pairs.
+    """
+    entries = []
+    for match in RECORD_START_PATTERN.finditer(line):
+        ip = match.group(1)
+        dt_start = match.end()
+        dt_end = line.find(']', dt_start)
+        if dt_end == -1:
+            continue
+        entries.append((ip, line[dt_start:dt_end]))
+    return entries
+
 def stream_log_entries(log_file, start_date_utc=None, whitelist=None):
     """
     Reads a log file, parses relevant fields, filters by date and whitelist,
@@ -105,20 +123,17 @@ def stream_log_entries(log_file, start_date_utc=None, whitelist=None):
         stop_reverse_scan = False
         for line in log_source:
             total_lines += 1
-            matches = list(LOG_PATTERN.finditer(line))
-            if not matches:
+            entries = _extract_minimal_entries(line)
+            if not entries:
                 skipped_parsing += 1
                 continue
 
             if reading_mode == "reverse":
-                matches_iter = reversed(matches)
+                entries_iter = reversed(entries)
             else:
-                matches_iter = matches
+                entries_iter = entries
 
-            for match in matches_iter:
-                data = match.groupdict()
-                ip = data['ip']
-                dt_str = data['datetime'] # Get raw datetime string
+            for ip, dt_str in entries_iter:
 
                 # 1. Whitelist Check (early exit)
                 if is_ip_in_whitelist(ip, whitelist):
