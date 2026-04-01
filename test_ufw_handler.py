@@ -79,7 +79,24 @@ def test_clean_expired_rules_uses_cli_delete_in_descending_order():
     ]
 
 
+def test_get_active_managed_targets_returns_only_unexpired_normalized_targets():
+    now_utc = datetime.now(timezone.utc)
+    active_ts = (now_utc + timedelta(minutes=90)).strftime("%Y%m%dT%H%M%SZ")
+    expired_ts = (now_utc - timedelta(minutes=90)).strftime("%Y%m%dT%H%M%SZ")
+    status_stdout = "\n".join([
+        f"[ 1] 80/tcp DENY IN 14.191.0.0/16 # {COMMENT_PREFIX}{active_ts}",
+        f"[ 2] 443/tcp DENY IN 1.2.3.4/32 # {COMMENT_PREFIX}{active_ts}",
+        f"[ 3] 80/tcp DENY IN 5.6.7.0/24 # {COMMENT_PREFIX}{expired_ts}",
+    ])
+    manager = CleanupRecordingUFWManager(status_stdout=status_stdout)
+
+    active_targets = manager.get_active_managed_targets()
+
+    assert active_targets == {"14.191.0.0/16", "1.2.3.4"}
+
+
 if __name__ == "__main__":
     test_block_target_restricts_rules_to_web_ports()
     test_clean_expired_rules_uses_cli_delete_in_descending_order()
+    test_get_active_managed_targets_returns_only_unexpired_normalized_targets()
     print("UFW handler test passed.")

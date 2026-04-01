@@ -709,12 +709,14 @@ def main():
     distributed_supernets_blocked = 0
     ip_layer_checked = 0
     ip_layer_blocked = 0
+    active_managed_targets = set()
 
     if args.block:
         if not args.silent:
             print("-" * 30)
         logger.info(f"Processing blocks (Dry Run: {args.dry_run})...")
         ufw_manager_instance = ufw_handler.UFWManager(args.dry_run)
+        active_managed_targets = ufw_manager_instance.get_active_managed_targets()
 
         # --- Load Strike History ---
         strike_history = load_strike_history(args.strike_file, args.strike_max_age_hours)
@@ -758,6 +760,18 @@ def main():
                 target_to_block_obj = supernet
                 target_id_str = str(target_to_block_obj)
                 target_type = "Supernet /16 (Distributed Pressure)"
+
+                if target_id_str in active_managed_targets:
+                    logger.info(
+                        "Skipping block for %s %s: active blocker-managed UFW rule already exists.",
+                        target_type,
+                        target_to_block_obj
+                    )
+                    blocked_supernets.add(target_to_block_obj)
+                    for member_subnet in data['member_subnets']:
+                        blocked_subnets_via_supernet.add(member_subnet)
+                    continue
+
                 previous_strikes = len(strike_history.get(target_id_str, []))
                 strike_count = previous_strikes + 1
                 escalated = strike_count >= args.block_escalation_strikes
@@ -877,6 +891,18 @@ def main():
 
                 # --- Strike Logic for Individual Threats ---
                 target_id_str = str(target_to_block_obj) # String for strike history key
+                if target_id_str in active_managed_targets:
+                    logger.info(
+                        "Skipping block for %s %s: active blocker-managed UFW rule already exists.",
+                        target_type,
+                        target_to_block_obj
+                    )
+                    if isinstance(target_to_block_obj, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+                        blocked_ips_individual.add(target_to_block_obj)
+                    elif isinstance(target_to_block_obj, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
+                        blocked_subnets_individual.add(target_to_block_obj)
+                    continue
+
                 previous_strikes = len(strike_history.get(target_id_str, []))
                 strike_count = previous_strikes + 1
                 escalated = strike_count >= args.block_escalation_strikes # Use new arg
@@ -967,6 +993,15 @@ def main():
                 target_to_block_obj = ip_obj
                 target_type = "Single IP (Persistence Layer)"
                 target_id_str = str(target_to_block_obj)
+                if target_id_str in active_managed_targets:
+                    logger.info(
+                        "Skipping block for %s %s: active blocker-managed UFW rule already exists.",
+                        target_type,
+                        target_to_block_obj
+                    )
+                    blocked_ips_individual.add(target_to_block_obj)
+                    continue
+
                 previous_strikes = len(strike_history.get(target_id_str, []))
                 strike_count = previous_strikes + 1
                 escalated = strike_count >= args.block_escalation_strikes

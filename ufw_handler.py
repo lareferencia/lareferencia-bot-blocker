@@ -135,6 +135,68 @@ class UFWManager:
         except Exception:
             return None
 
+    @staticmethod
+    def _normalize_target_identifier(target):
+        """Normalizes a network/address into the same string form used by blocker.py."""
+        if target is None:
+            return None
+
+        if isinstance(target, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+            return str(target)
+
+        if isinstance(target, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
+            max_prefix = 32 if target.version == 4 else 128
+            if target.prefixlen == max_prefix:
+                return str(target.network_address)
+            return str(target)
+
+        return str(target)
+
+    def get_active_managed_targets(self):
+        """
+        Returns the currently active blocker-managed targets from `ufw status numbered`.
+
+        Active means the rule comment has not yet expired. Targets are normalized to
+        match blocker.py identifiers, e.g. IPv4 host rules become `1.2.3.4`, while
+        subnets remain in CIDR form such as `1.2.3.0/24`.
+        """
+        result = self._run_ufw_command(['status', 'numbered'])
+        if result.returncode != 0:
+            logger.error("Failed to get UFW status while checking active managed targets: %s", result.stderr)
+            return set()
+
+        rule_pattern = re.compile(
+            r"\[\s*(\d+)\].*?#\s*" +
+            re.escape(COMMENT_PREFIX) +
+            r"(\d{8}T\d{6}Z)"
+        )
+        now_utc = datetime.now(timezone.utc)
+        active_targets = set()
+
+        for line in result.stdout.splitlines():
+            match = rule_pattern.search(line)
+            if not match:
+                continue
+
+            _rule_number_str, expiry_timestamp_str = match.groups()
+            try:
+                expiry_time_utc = datetime.strptime(
+                    expiry_timestamp_str, '%Y%m%dT%H%M%SZ'
+                ).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+
+            if expiry_time_utc < now_utc:
+                continue
+
+            target_network = self._extract_target_network(line)
+            target_id = self._normalize_target_identifier(target_network)
+            if target_id:
+                active_targets.add(target_id)
+
+        logger.info("Detected %d active blocker-managed targets already present in UFW.", len(active_targets))
+        return active_targets
+
     def block_target(self, subnet_or_ip_obj, block_duration_minutes):
         """
         Blocks an IP or subnet using UFW on TCP web ports only with an ISO 8601 expiration comment.
